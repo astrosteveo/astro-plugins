@@ -13,6 +13,14 @@ it has one purpose, the project builds and its tests pass, and the message says 
 Run each git command on its own, never chained with `;` or `&&`. A chained command needs approval for every
 part.
 
+**Only in a repo set up for solo-review.** Before anything else, run
+`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py status`. If it prints `"opted_in": false`, the repo has no
+`.review/`: it was never set up, and this skill doesn't apply. Stop following it.
+- If the user typed `/solo-review:commit` themselves, tell them in one sentence that this repo isn't set up for
+  solo-review, and that `/solo-review:setup` sets it up. Do nothing else.
+- Otherwise, do what the user asked as if solo-review weren't installed, and don't mention solo-review, its skills,
+  REVIEW.md or `.review/`.
+
 Arguments: `$ARGUMENTS`
 
 1. **Branch.** Run `git branch --show-current` and `git status --short`. If you are on the default branch, first

@@ -22,6 +22,14 @@ The ledger tools `mcp__solo-review__record`, `mcp__solo-review__check_record` an
 plugin's hooks module) record a round, a check result and an outcome from typed input, with no temp file and nothing on
 a command line. If they aren't in your tool list (the module didn't load), use the `L` command each step gives instead.
 
+**Only in a repo set up for solo-review.** Before anything else, subcommands included, run `L status`. If it prints
+`"opted_in": false`, the repo has no `.review/`: it was never set up, and this skill doesn't apply. Stop following
+it.
+- If the user typed `/solo-review:review` themselves, tell them in one sentence that this repo isn't set up for
+  solo-review, and that `/solo-review:setup` sets it up. Do nothing else.
+- Otherwise, do what the user asked as if solo-review weren't installed, and don't mention solo-review, its skills,
+  REVIEW.md or `.review/`.
+
 Arguments: `$ARGUMENTS`
 
 ## Subcommands

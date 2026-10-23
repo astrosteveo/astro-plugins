@@ -21,6 +21,13 @@ without them, like the article's Low tier: "None required once automated review 
 at files, not `cat` or `grep`. Single-quote every value you substitute for `<branch>` or `<default>` in a command
 (ship-check flags branch names with unusual characters, but quote anyway).
 
+**Only in a repo set up for solo-review.** Before anything else, run `L status`. If it prints `"opted_in": false`,
+the repo has no `.review/`: it was never set up, and this skill doesn't apply. Stop following it.
+- If the user typed `/solo-review:ship` themselves, tell them in one sentence that this repo isn't set up for
+  solo-review, and that `/solo-review:setup` sets it up. Do nothing else.
+- Otherwise, do what the user asked as if solo-review weren't installed, and don't mention solo-review, its skills,
+  REVIEW.md or `.review/`.
+
 Arguments: `$ARGUMENTS`
 
 1. **Readiness.** Run `L ship-check`, which prints JSON. Handle each entry in `problems`:
