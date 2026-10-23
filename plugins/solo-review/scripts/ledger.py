@@ -26,7 +26,8 @@ from datetime import datetime, timezone
 
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES = {name: os.path.join(PLUGIN_ROOT, "templates", name)
-             for name in ("REVIEW.md", "pull_request_template.md", "verify-section.md", "solo-review.json")}
+             for name in ("REVIEW.md", "pull_request_template.md", "verify-section.md", "git-section.md",
+                          "solo-review.json")}
 CONFIG_PATH = os.path.join(".claude", "solo-review.json")
 SCRATCH = ".solo-review"
 
@@ -271,9 +272,10 @@ def origin_default(db):
 
 
 def default_merge_base(db):
-    """Where HEAD left the default branch `db`: the newest commit HEAD shares with either copy of it, since either can
-    be the newer one (a local branch not pulled, or local commits not pushed)."""
-    return git("merge-base", "HEAD", *default_refs(db))
+    """Where HEAD left the default branch `db`. With a remote that's origin's copy: a pull request holds every commit
+    origin's default branch lacks, so commits made on the local default branch and never pushed are part of the
+    change. Without a remote it's the local branch."""
+    return git("merge-base", "HEAD", origin_default(db) or db)
 
 
 def pick_base(arg_base):
@@ -1127,7 +1129,8 @@ def cmd_ship_check(args):
     cfg = load_config()
     branch, db = current_branch(), default_branch()
     out = {"branch": branch, "default": db, "on_default": branch in (db, "HEAD"), "merge": cfg["merge"],
-           "check": cfg["check"], "github": github_remote(), "gh": shutil.which("gh") is not None,
+           "check": cfg["check"], "origin": git("remote", "get-url", "origin", check=False) or None,
+           "github": github_remote(), "gh": shutil.which("gh") is not None,
            "pr_template": find_pr_template(), "problems": []}
     if not has_commits():
         out["problems"].append("no commits yet")
@@ -1419,8 +1422,8 @@ def cmd_setup_info(args):
         "github": is_repo and github_remote(), "gh": shutil.which("gh") is not None,
         "gitignore": os.path.isfile(".gitignore"), "ignore_gaps": ignore_gaps(is_repo),
         "uncommitted": uncommitted_paths()[:40] if is_repo else [],
-        "unpushed": (git("rev-list", "--count", f"{origin_default(db)}..HEAD", check=False) or None)
-                    if is_repo and origin_default(db) else None,
+        "unpushed": int(git("rev-list", "--count", f"{origin_default(db)}..HEAD", check=False) or 0)
+                    if is_repo and origin_default(db) and has_commits() else None,
         "ci_files": [p for p in tracked if matches(p, [".github/workflows/**", "**/.gitlab-ci*.yml", "**/.circleci/**"])],
         "review_md": os.path.isfile("REVIEW.md"), "config": os.path.isfile(CONFIG_PATH),
         "config_now": {k: v for k, v in load_config().items() if k in DEFAULTS},
@@ -1430,6 +1433,8 @@ def cmd_setup_info(args):
         # a section that lists the commands to run counts, whatever its name
         "claude_md_has_verify": bool(text and re.search(
             r"^#+\s*(verify|verification|checks?|testing|tests|commands|development)\b", text, re.I | re.M)),
+        # whether it already says how changes land: a branch per change, merged through a pull request
+        "claude_md_has_git": bool(text and re.search(r"pull request|\bPRs?\b|\bbranch(es)?\b", text, re.I)),
         "pr_template": find_pr_template(), "readme": next((p for p in ("README.md", "README") if os.path.isfile(p)),
                                                           None),
         "manifests": manifests, "inferred_check": infer_check(), "candidate_high": candidates[:15],
@@ -1497,6 +1502,140 @@ def cmd_publish_scan(args):
     }, indent=1))
 
 
+# ---------------------------------------------------------------- branch guard
+
+EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+GIT_VALUE_OPTS = {"-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+BRANCH_HINT = "`git switch -c <type>/<short-name>` (feat, fix, refactor, docs or chore)"
+
+
+def operation_in_progress():
+    """A rebase, merge, cherry-pick or revert is underway: HEAD may be detached or on the default branch, and the
+    edits and commits that finish it must go through."""
+    return any(os.path.exists(git("rev-parse", "--git-path", p, check=False))
+               for p in ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"))
+
+
+def enabled():
+    """solo-review is set up in this repository: setup ran here (it creates the ledger folder) or its settings exist."""
+    return os.path.isfile(CONFIG_PATH) or os.path.isdir(state_dir())
+
+
+def guarded_default():
+    """The default branch's name when the guard applies in the current directory's repo, else None: solo-review is
+    set up, there is history (a new repository's first commit has nothing to open a PR against), HEAD is on the
+    default branch, and no rebase or merge is underway."""
+    if not enabled() or not has_commits() or operation_in_progress():
+        return None
+    db = default_branch()
+    return db if db and current_branch() == db else None
+
+
+def git_commit_dirs(command, cwd):
+    """The folders a shell command runs `git commit` in, read the way a shell splits it: separators inside quotes
+    stay in their words, and each command's leading VAR=value words, `env`, and git's own options (-C dir) are
+    skipped. Anything it can't split counts as no commit: the guard fails open."""
+    if "commit" not in command or "git" not in command:
+        return []
+    lex = shlex.shlex(command, posix=True, punctuation_chars=";&|\n")
+    lex.whitespace, lex.whitespace_split = " \t\r", True
+    try:
+        tokens = list(lex)
+    except ValueError:
+        return []
+    dirs, words = [], []
+    for tok in tokens + [";"]:
+        if tok and set(tok) <= set(";&|\n"):
+            while words and (words[0] == "env" or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0])):
+                words.pop(0)
+            if words and os.path.basename(words[0]) == "git":
+                d, i = cwd, 1
+                while i < len(words) and words[i].startswith("-"):
+                    if words[i] == "-C" and i + 1 < len(words):
+                        d = os.path.join(d, os.path.expanduser(words[i + 1]))
+                        i += 2
+                    else:
+                        i += 2 if words[i] in GIT_VALUE_OPTS else 1
+                if i < len(words) and words[i] == "commit":
+                    dirs.append(d)
+            words = []
+        else:
+            words.append(tok)
+    return dirs
+
+
+def guard_reason(payload):
+    """Why the tool call in a PreToolUse payload would put a change on the default branch without a PR, or None."""
+    tool, ti = payload.get("tool_name"), payload.get("tool_input") or {}
+    cwd = payload.get("cwd") or os.getcwd()
+    if tool in EDIT_TOOLS:
+        path = ti.get("file_path") or ti.get("notebook_path")
+        if not isinstance(path, str) or not path:
+            return None
+        path = os.path.normpath(os.path.join(cwd, os.path.expanduser(path)))
+        d = os.path.dirname(path)
+        while d and not os.path.isdir(d):  # a new file's folder may not exist yet
+            d = os.path.dirname(d)
+        r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+        if r.returncode:
+            return None  # not in a repository
+        root = r.stdout.strip()
+        os.chdir(root)
+        rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root))
+        if rel.startswith("..") or rel.split(os.sep)[0] in (".git", SCRATCH):
+            return None
+        db = guarded_default()
+        # an ignored file never reaches a commit, so editing it on the default branch can't skip review
+        if not db or subprocess.run(["git", "check-ignore", "-q", "--", rel], capture_output=True).returncode == 0:
+            return None
+        return (f"solo-review: you're on {db}, and changes reach {db} only through a reviewed PR. Start a branch "
+                f"before editing: {BRANCH_HINT}. Uncommitted changes come with you.")
+    if tool == "Bash" and isinstance(ti.get("command"), str):
+        for d in git_commit_dirs(ti["command"], cwd):
+            if not os.path.isdir(d):
+                continue
+            r = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+            if r.returncode:
+                continue
+            os.chdir(r.stdout.strip())
+            db = guarded_default()
+            if db:
+                return (f"solo-review: this commits to {db}, and changes reach {db} only through a reviewed PR. "
+                        f"Start a branch first: {BRANCH_HINT}. Your changes come with you.")
+    return None
+
+
+def cmd_guard(args):
+    """PreToolUse hook: refuse a file edit or a `git commit` on the default branch of a repository set up for
+    solo-review. It is a guard against slips, not a sandbox (an edit made through the shell gets past it), and it
+    fails open: anything unexpected allows the call."""
+    try:
+        reason = guard_reason(json.load(sys.stdin))
+    except Exception:
+        return
+    if reason:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                 "permissionDecisionReason": reason}}))
+
+
+def cmd_where(args):
+    """Where the work is, as JSON: the branch, whether it's the default one, and what isn't on origin yet."""
+    db, branch, commits = default_branch(), current_branch(), has_commits()
+    up = origin_default(db) if db else None
+    print(json.dumps({
+        "branch": branch, "default": db, "on_default": bool(db) and branch == db, "has_commits": commits,
+        "origin_default": up, "uncommitted": len(uncommitted_paths()),
+        "unpushed": int(git("rev-list", "--count", f"{up}..HEAD", check=False) or 0) if up and commits else None,
+        "guarded": guarded_default() is not None}, indent=1))
+
+
+def cmd_enable(args):
+    """Mark this repository as set up for solo-review, which turns the branch guard on here."""
+    os.makedirs(state_dir(), exist_ok=True)
+    print(f"solo-review is on in {os.getcwd()}: edits and commits on {default_branch() or 'the default branch'} "
+          "now need a branch first.")
+
+
 def main():
     p = argparse.ArgumentParser(prog="ledger.py")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1547,8 +1686,14 @@ def main():
     sub.add_parser("setup-info")
     sub.add_parser("publish-scan")
     sub.add_parser("import-v1")
+    sub.add_parser("guard")
+    sub.add_parser("where")
+    sub.add_parser("enable")
     args = p.parse_args()
 
+    if args.cmd == "guard":  # a hook: it finds the repository from the payload and changes nothing
+        cmd_guard(args)
+        return
     root = repo_root()
     if not root and args.cmd == "setup-info":  # setup runs before the folder is a repository, to make it one
         cmd_setup_info(args)

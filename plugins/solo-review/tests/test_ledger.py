@@ -424,5 +424,83 @@ class BrownfieldTest(TempDirCase):
         self.assertEqual(r.run("open", "--all").stdout.count("F-7"), 1)
 
 
+class GuardTest(TempDirCase):
+    def guard(self, cwd, tool, **tool_input):
+        payload = {"tool_name": tool, "tool_input": tool_input, "cwd": cwd}
+        r = subprocess.run([sys.executable, LEDGER, "guard"], cwd=self.tmp, input=json.dumps(payload),
+                           capture_output=True, text=True, env=GIT_ENV)
+        self.assertEqual(r.returncode, 0, r.stderr)  # a hook that fails must fail open
+        return json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] if r.stdout.strip() else "allow"
+
+    def guarded_repo(self):
+        r = self.new_repo()
+        r.write(".gitignore", "local.env\n")
+        r.commit("ignore")
+        r.run("enable")
+        return r
+
+    def test_not_set_up_means_no_guard(self):
+        r = self.new_repo()
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "allow")
+        self.assertEqual(self.guard(r.path, "Bash", command="git commit -m x"), "allow")
+
+    def test_edits_on_the_default_branch_are_refused(self):
+        r = self.guarded_repo()
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "deny")
+        self.assertEqual(self.guard(r.path, "Write", file_path=os.path.join(r.path, "new/dir/x.py")), "deny")
+        self.assertEqual(self.guard(r.path, "NotebookEdit", notebook_path="n.ipynb"), "deny")
+        self.assertTrue(r.json("where")["guarded"])
+
+    def test_what_the_guard_lets_through_on_the_default_branch(self):
+        r = self.guarded_repo()
+        self.assertEqual(self.guard(r.path, "Write", file_path=".solo-review/record.json"), "allow")
+        self.assertEqual(self.guard(r.path, "Edit", file_path="local.env"), "allow")  # ignored: never committed
+        self.assertEqual(self.guard(r.path, "Write", file_path=os.path.join(self.tmp, "outside.txt")), "allow")
+        os.makedirs(os.path.join(r.path, ".git", "rebase-merge"))  # finishing a rebase
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "allow")
+        self.assertEqual(self.guard(r.path, "Bash", command="git commit -m x"), "allow")
+
+    def test_a_branch_is_free(self):
+        r = self.guarded_repo()
+        r.git("switch", "-q", "-c", "feat/x")
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "allow")
+        self.assertEqual(self.guard(r.path, "Bash", command="git commit -am x"), "allow")
+        self.assertFalse(r.json("where")["on_default"])
+
+    def test_a_new_repositorys_first_commit_is_allowed(self):
+        r = Repo(os.path.join(self.tmp, "new"))
+        r.run("enable")
+        self.assertEqual(self.guard(r.path, "Write", file_path="app.py"), "allow")
+        self.assertEqual(self.guard(r.path, "Bash", command="git commit -m 'Initial commit'"), "allow")
+
+    def test_commits_on_the_default_branch_are_refused_however_they_are_written(self):
+        r = self.guarded_repo()
+        for command in ("git commit -m x", 'git status && git commit -am "a | b; c"',
+                        "GIT_AUTHOR_NAME=x git -c user.name=y commit -m z", "git log\ngit commit -m y",
+                        "env FOO=1 git commit --amend"):
+            self.assertEqual(self.guard(r.path, "Bash", command=command), "deny", command)
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(elsewhere)
+        self.assertEqual(self.guard(elsewhere, "Bash", command=f"git -C {r.path} commit -m x"), "deny")
+        for command in ('echo "git commit"', "git log --grep commit", "git status", 'git commit -m "unclosed',
+                        "git switch -c feat/x && echo ok"):
+            self.assertEqual(self.guard(r.path, "Bash", command=command), "allow", command)
+
+    def test_bad_payloads_fail_open(self):
+        for text in ("", "not json", "[]", '{"tool_name": "Edit", "tool_input": {"file_path": 3}}'):
+            r = subprocess.run([sys.executable, LEDGER, "guard"], cwd=self.tmp, input=text, capture_output=True,
+                               text=True, env=GIT_ENV)
+            self.assertEqual((r.returncode, r.stdout), (0, ""), text)
+
+    def test_unpushed_commits_on_main_belong_to_the_branch_made_from_it(self):
+        repo, _ = self.with_origin()
+        repo.write("app.py", "def f(xs):\n    return xs[-1]\n")
+        repo.commit("work done on main by hand")
+        self.assertEqual(repo.json("where")["unpushed"], 1)
+        repo.git("switch", "-q", "-c", "fix/last")  # main still holds the commit too
+        scope = repo.json("scope")
+        self.assertEqual((scope["label"], scope["files"]), ("branch vs main", ["app.py"]))
+
+
 if __name__ == "__main__":
     unittest.main()
