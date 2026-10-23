@@ -8,7 +8,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py\" branch-guard",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py", "branch-guard"],
             "timeout": 10
           }
         ]
@@ -18,7 +19,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py\" gate",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py", "gate"],
             "timeout": 10
           }
         ]
@@ -30,7 +32,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py\" session-context",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py", "session-context"],
             "timeout": 10
           }
         ]
