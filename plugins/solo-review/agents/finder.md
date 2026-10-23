@@ -34,7 +34,7 @@ real defects this change introduces, through the lens you are given, and to prov
   unsafe defaults, and trust placed in input that the user or network controls. Report only issues with a concrete
   attacker-controlled path.
 - `all`: `change` and `system` together, plus the `security` lens when the SCOPE says security is on. Used for
-  quick reviews: report Important findings only.
+  quick reviews.
 
 ## Method
 1. Read REVIEW.md if SCOPE says it exists. Its sections override the defaults below. Hold the change to the CLAUDE.md

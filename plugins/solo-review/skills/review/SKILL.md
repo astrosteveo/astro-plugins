@@ -85,10 +85,9 @@ or the cap stops you. Each round:
    - In CANDIDATES, give each candidate only `n`, file, line, severity, category, and title. Leave out `evidence`
      and `fix`: a verifier that reads the finder's argument checks the argument, not the code, and repeats its
      misreadings. Keep the full fields for recording in step 4.
-   - quick: keep only `important` candidates. If any are left or RECHECK has items, launch one verifier. A
-     candidate survives if voted real and still `important`, since quick rounds report Important findings only. A
-     small change can still bring a false alarm, and the fixer would act on it. A quick round with no candidates
-     and nothing to recheck launches no verifier.
+   - quick: one verifier, as at standard depth. Send it every candidate, nits included: no candidate is dropped
+     without a vote. A small change can still bring a false alarm, and the fixer would act on it. A quick round
+     with no candidates and nothing to recheck launches no verifier.
    - standard: one verifier. A candidate survives if voted real; use the verifier's severity.
    - deep: three verifiers in parallel with the same prompt and `model: "sonnet"`. A candidate survives with 2 or 3
      real votes; use the most common severity, and record `votes` as `"2/3"` or `"3/3"`.

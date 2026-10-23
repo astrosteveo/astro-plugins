@@ -161,13 +161,13 @@ Claude's own context stays small, because the agents read the diff and Claude on
 
 | Depth | Picked when | Agents |
 |---|---|---|
-| quick | Docs only, or 20 changed lines or fewer (typical for a fix round) | 1 finder (Sonnet), Important only; 1 Haiku verifier only when the finder reports something or open findings need re-checking |
+| quick | Docs only, or 20 changed lines or fewer (typical for a fix round) | 1 finder (Sonnet); 1 Haiku verifier only when the finder reports something or open findings need re-checking |
 | standard | Default | 2 finders, plus a security finder if the added code lines (not docs) touch a real sink (command execution, SQL, deserialization, HTML injection, auth, crypto, secrets), plus 1 verifier (Haiku) |
 | deep | Any High-risk path (always-High or a `high` glob) is touched, whatever `depth` says | 3 finders (`change`, `system`, `security`; `security: never` drops the security finder only when no High-risk path is touched), plus 3 verifiers (Sonnet), 2-of-3 vote |
 
 Other cost controls:
-- Nits are capped at `max_nits` per round, so fixing them adds little, and quick fix rounds report Important findings
-  only.
+- Nits are capped at `max_nits` per round, so fixing them adds little. Every candidate a finder reports, at any
+  depth, goes to a verifier before it is kept or dropped.
 - Rounds after the first review only what changed since the last reviewed snapshot, and the round cap is 3 per
   cycle (`max_rounds`), unless you pass `--until-clean`.
 - `review-learn` can't be invoked by the model, so its description doesn't use context in every session. `review`,
