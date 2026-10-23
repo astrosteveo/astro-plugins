@@ -1407,14 +1407,14 @@ STAGING_FIRST = "; `.review/` only in the first setup commit, never after"
 
 START_BRANCH = "Work on a branch. Before the first edit on {default}, {how}"
 # A branch switched to before the first commit takes that commit, so the default branch would never exist
-# Nothing reviews the setup commit but the user's read, so it is the one rule that waits for the user (init step 5)
-START_FIRST_COMMIT = ("This repo has no commits yet. The first commit on {default} holds only the setup "
-                      "(REVIEW.md, CLAUDE.md, the pull request template, and the three files in .review/ that "
-                      "`ledger.py init` made), so branches have a base to be reviewed against and merge into. This "
-                      "step waits for the user: nothing reviews that commit but their read, so ask them to read "
-                      "REVIEW.md and CLAUDE.md, and make it only once they say they're ready (`/solo-review:setup`, "
-                      "step 5). Then work on a branch: before the next edit, start one the way the branch "
-                      "guard says.")
+# Claude makes the setup commit itself without waiting; nothing reviews it but the user's read afterward (setup step 5)
+START_FIRST_COMMIT = ("This repo has no commits yet. Make the first commit on {default} yourself, before other work, "
+                      "without waiting for the user. It holds only the setup (REVIEW.md, CLAUDE.md, the pull request "
+                      "template, and the three files in .review/ that `ledger.py init` made), so branches have a base "
+                      "to be reviewed against and merge into. Nothing reviews that commit but the user's read of "
+                      "REVIEW.md and CLAUDE.md afterward, so tell them that, and that corrections go on a branch "
+                      "(`/solo-review:setup`, step 5). Then work on a branch: before the next edit, start one the "
+                      "way the branch guard says.")
 
 FINISH_AUTO = ("When a task is complete: run `{ledger} check` for the check command, run it yourself and show its output, "
                "rather than saying it works, then run /solo-review:review (it finds, fixes, and re-reviews by itself), "
