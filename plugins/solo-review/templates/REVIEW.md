@@ -28,24 +28,29 @@ skip:                  # never reviewed, except files on the always-High list (s
 
 # Review guide
 
-Keep this short. The reviewer reads all of it on every run, and short guides get followed.
+<!-- Read on every review by solo-review's agents, and by GitHub's Code Review if you turn it on. Short guides get
+followed: keep this body under 40 lines, and delete these comments as you fill it in. -->
 
-## What failure looks like here
-<!-- One line per failure that would actually hurt this project. Examples:
-- The CLI exits 0 when a command fails.
-- A save path can lose user data without an error.
-- Docs describe a flag or behavior the code no longer has. -->
+## What Important means here
+<!-- What failure looks like in this project, one line each. Every change is checked against each line, so write
+them the way you'd describe the bug report you dread. For example:
+- A save can drop the user's data without an error.
+- The CLI exits 0 when a command failed.
+- The docs describe a flag or behavior the code doesn't have.
+- A config change points the app at the wrong environment. -->
 
 ## Always check
-<!-- Bug classes this project has shipped before. /solo-review:review-learn adds to this list. -->
+<!-- Bug classes that have shipped here before, one line each. /solo-review:review-learn adds to this list. -->
 
-## Don't flag
-- Style, formatting, naming, or cleanup. Linters and /simplify handle those.
+## Do not report
+- Style, naming, formatting or refactoring ideas: linters and /simplify own those.
 - Missing tests or docs, unless a line above asks for them.
+- Anything a compiler, type checker or linter would catch.
+- Generated and vendored files.
 
-## Intentional patterns
-<!-- Deliberate choices the reviewer keeps flagging as bugs, each with the reason. -->
+## Intentional
+<!-- Choices that look like bugs but aren't, each with its reason, so the reviewer stops flagging them. -->
 
 ## Evidence
-- Cite file:line and the input or path that triggers each finding. Do not guess from a name.
-- Flag a bug class once and list every instance, rather than one finding per instance.
+- Cite file:line and the input or path that triggers each finding. Never guess from a name.
+- Report a bug class once, listing every place it occurs.

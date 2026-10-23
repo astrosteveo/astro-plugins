@@ -43,7 +43,7 @@ real defects this change introduces, through the lens you are given, and to prov
    that isn't. Then run the diff command.
 2. Open the changed files you judge and read the changed functions whole, not just the hunks: many defects are in
    how a changed line fits the code around it.
-3. Walk SCOPE's `checklist` (REVIEW.md's "What failure looks like here" and "Always check" lines) one line at a time,
+3. Walk SCOPE's `checklist` (REVIEW.md's "What Important means here" and "Always check" lines; older guides call the first "What failure looks like here") one line at a time,
    through your lens. Where the diff could cause that failure, trace it with concrete inputs, edge cases included.
    A line the diff plainly touches gets a trace, not a glance.
 4. Read enough surrounding code to trace each suspected defect from an input to the wrong result. Stay inside the

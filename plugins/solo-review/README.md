@@ -64,8 +64,8 @@ after step 1 until you ask for the review and the PR):
    findings or nits. At standard and deep depth, a finder that comes back empty without showing what it checked runs
    once more, and if the second pass does the same, the round is marked thin and the PR says so.
 4. It runs `/solo-review:ship`, which rebases onto the latest default branch, reruns the check, opens the PR from
-   the template (summary, commits, every finding and its outcome, testing, risk and rollback, and what the checks
-   don't cover), and waits for CI. A Low-risk change it then lands by itself.
+   the template (what and why, testing, the risk tier and what the checks don't cover, how to revert, every finding
+   and its outcome, and a sign-off box only you tick), and waits for CI. A Low-risk change it then lands by itself.
 
 You are asked about only these things:
 - a finding (Important or nit) the fixer could not fix without a design decision
@@ -217,8 +217,9 @@ says so. `python3 scripts/ledger.py config` shows which case applies in `source`
 
 ## Per-project files
 
-- `REVIEW.md`: your review guide. Short sections cover what failure looks like, what to always check, what not to
-  flag, and intentional patterns. The frontmatter holds the settings:
+- `REVIEW.md`: your review guide, under GitHub Code Review's headings: what Important means here, what to always
+  check, what not to report, and what is intentional. Guides with the older headings still work. The frontmatter
+  holds the settings:
   - `check`: the one command that builds and tests the project; `init` infers it from the manifest
   - `depth`, `security`, `max_nits`, `max_rounds`
   - `gate`, `branch`, `merge`

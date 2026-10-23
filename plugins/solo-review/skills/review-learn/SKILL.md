@@ -19,6 +19,10 @@ Edits to REVIEW.md or CLAUDE.md go on a branch, since the branch guard blocks ed
 first edit, if the session is on the default branch, run `git switch -c chore/review-tuning` (another name if that
 branch exists). A kept edit then goes through the session's usual workflow: commit, review, and ship.
 
+REVIEW.md's sections are "What Important means here", "Always check", "Do not report" and "Intentional". Older
+guides call three of them "What failure looks like here", "Don't flag" and "Intentional patterns": edit the heading
+the file has.
+
 Arguments: `$ARGUMENTS`
 
 ## `escape <fix-commit> [summary]`: a bug got past review
@@ -71,22 +75,22 @@ few spot-checks keep the agent honest, and keep the user from drifting into rubb
    useful% dropped or noise% rose, or an eval caught fewer escapes, propose reverting that edit. Keep a change only
    if the score went up.
 4. Weigh the labels by who decided them. Decisions recorded `by user` are evidence. `auto` (a re-review found the
-   finding gone) is good evidence the finding was real. `by agent` is weak evidence, so never base a "Don't flag"
+   finding gone) is good evidence the finding was real. `by agent` is weak evidence, so never base a "Do not report"
    line on it. If spot-check agreement is below about 80%, the agents are fixing findings that weren't worth
-   it. Propose "Don't flag" or "Always check" lines that would have changed those findings, and say which
+   it. Propose "Do not report" or "Always check" lines that would have changed those findings, and say which
    spot-checks disagreed.
    Then propose edits, each one backed by the finding ids that justify it:
    - **Noisy category or pattern** (most of its resolved findings are wrong or wontfix, and there are at least 4 of
-     them): add a "Don't flag" line that names the pattern precisely. Quote from the reasons. Never mute a whole
+     them): add a "Do not report" line that names the pattern precisely. Quote from the reasons. Never mute a whole
      category that has fixed findings.
-   - **Repeated `intentional`**: add an "Intentional patterns" line with the reason. If it is a project convention,
+   - **Repeated `intentional`**: add an "Intentional" line with the reason. If it is a project convention,
      it belongs in CLAUDE.md instead. Propose that.
    - **Repeated `fixed` in one category** (3 or more): the same bug keeps getting written. First propose preventing
      it at the source (a test, a type, a lint rule, or a CLAUDE.md convention). Add an "Always check" line only if
      nothing can enforce it.
    - **Escapes**: make sure each one has an "Always check" line that covers its class.
    - **Dismissed but real** (an escape linked to a finding resolved as wrong, wontfix, or merged-past): a reviewer finding was
-     right and got waved off. Tell the user this directly. Do not add a "Don't flag" rule that would hide it.
+     right and got waved off. Tell the user this directly. Do not add a "Do not report" rule that would hide it.
    - **Compliance**: findings in skip paths, or runs over the nit cap, mean the guide is being ignored. Make the
      wording more concrete, or report it as a problem with the reviewer prompts.
    - **Convergence**: if many changes hit the round cap, look at what the late rounds flagged. Pre-existing or

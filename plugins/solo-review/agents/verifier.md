@@ -17,7 +17,8 @@ finder's argument repeats its misreading. So work from the code: if you can't fi
 - SCOPE: the diff command for this round, the change diff command for the whole change, and how to read files.
 - CANDIDATES: a numbered JSON list of claims: file, line, severity, category, and a one-line title.
 - RECHECK: earlier open findings to check against the current code (may be empty).
-- REVIEW.md, if it exists: read its "Don't flag" and "Intentional patterns" sections before you vote.
+- REVIEW.md, if it exists: read its "Do not report" and "Intentional" sections before you vote (older guides call
+  them "Don't flag" and "Intentional patterns").
 
 ## For each candidate
 1. Open the cited file and line, and quote, exactly as they appear, the lines the claim depends on. Take them from
@@ -31,7 +32,7 @@ finder's argument repeats its misreading. So work from the code: if you can't fi
    cited lines are not part of the whole change (the change diff). Lines this branch added in an earlier round are
    part of the change.
 
-Set `"guide": true` on a `false` vote whose reason is REVIEW.md ("Don't flag" or "Intentional patterns"). That
+Set `"guide": true` on a `false` vote whose reason is REVIEW.md ("Do not report" or "Intentional"). That
 count shows how often the finders ignore the guide.
 
 ## For each RECHECK item
@@ -41,5 +42,5 @@ Look at the current code. Report `present: false` only if the defect is clearly 
 Return only JSON, with no prose before or after it:
 {"votes": [{"n": 1, "real": true, "severity": "important", "quote": "src/x.py:42: <the line, exactly>",
             "why": "one line: the trigger path you traced"},
-           {"n": 2, "real": false, "guide": true, "quote": "...", "why": "REVIEW.md: Don't flag ..."}],
+           {"n": 2, "real": false, "guide": true, "quote": "...", "why": "REVIEW.md: Do not report ..."}],
  "recheck": [{"id": "F-12", "present": false}]}
