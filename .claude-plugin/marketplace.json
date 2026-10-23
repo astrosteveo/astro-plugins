@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "astro-plugins",
+  "description": "Personal Claude Code plugins for solo hobby projects.",
+  "owner": {
+    "name": "astrosteveo",
+    "email": "smosleyjr@pm.me"
+  },
+  "plugins": [
+    {
+      "name": "solo-review",
+      "source": "./plugins/solo-review",
+      "description": "Review and git workflow harness for solo developers: branch-first work, commit-as-you-work, fresh-context finder and verifier agents, a findings ledger with outcomes, and a learning loop that tunes REVIEW.md."
+    },
+    {
+      "name": "web-reader",
+      "source": "./plugins/web-reader",
+      "description": "Read a web page or a whole site as its own complete text, not a model's summary: saves pages as Markdown with Python's standard library, and with headless Chromium, pages built by JavaScript and a picture of each chart, diagram and image."
+    }
+  ]
+}
