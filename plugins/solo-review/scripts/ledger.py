@@ -681,11 +681,12 @@ def claude_md_files(files):
     return [p for p in paths if os.path.isfile(p)]
 
 
-CHECKLIST_SECTIONS = ("what failure looks like here", "always check")
+# "what failure looks like here" is the older name of "what important means here"; guides set up before keep it
+CHECKLIST_SECTIONS = ("what important means here", "what failure looks like here", "always check")
 
 
 def review_checklist(text):
-    """The list items (bulleted or numbered) of the "What failure looks like here" and "Always check" sections of
+    """The list items (bulleted or numbered) of the "What Important means here" and "Always check" sections of
     REVIEW.md's `text`, without the frontmatter or HTML comments (the template's examples). Finders walk each one
     against the diff and report what they found, so an empty result shows what it covered."""
     if text is None:

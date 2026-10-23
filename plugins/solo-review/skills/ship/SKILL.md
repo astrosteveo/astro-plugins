@@ -73,19 +73,20 @@ Arguments: `$ARGUMENTS`
    - Build the PR body from the repo's pull request template, which ship-check names in `pr_template`. Read it, and
      keep its headings, order, and checklist exactly. Replace each section's HTML comment with real content and
      leave nothing as a placeholder:
-     - **Summary**: what the branch does and why, in two or three sentences.
-     - **Changes**: one line per commit, oldest first, as `` `sha` subject ``.
+     - **What and why**: what the branch does and the problem it solves, in two or three sentences.
+     - **Testing**: the check you ran in step 4 and what it printed, trimmed, not "tests pass". For a UI change, a
+       screenshot of the changed screen. Say that CI's results are on the PR.
+     - **Risk**: first line, the risk tier, from ship-check's `tier` and `waits_for_user`: for `high`, "Risk: High.
+       Needs a person: this change touches High-risk paths", followed by `high_files`; for `medium`, "Risk: Medium.
+       It merges when you say so."; for `low` with `waits_for_user` null, "Risk: Low. It merges on a clean review
+       and passing checks, without waiting for you."; for `low` otherwise, "Risk: Low, but it waits for you:"
+       followed by `waits_for_user`. Then what could break, and what the checks and the review would not catch in
+       this change, so the user knows what to read themselves.
+     - **How to revert**: which commit to revert for each risk, and anything a revert won't undo.
      - **Review**: the output of `L pr-summary`, unchanged.
-     - **Testing**: the checks you ran in step 4 and their results.
-     - **Risk and rollback**: what could break, and which commit to revert for each risk. Then what the checks and
-       the review would not catch in this change, so the user knows what to read themselves.
-     - **Checklist**: tick each box that is true. Leave a box unticked if it isn't true, and say why under it.
-     Put the risk tier above the first heading, from ship-check's `tier` and `waits_for_user`: for `high`,
-     "Risk: High. Needs a person: this change touches High-risk paths", followed by `high_files`; for `medium`,
-     "Risk: Medium. It merges when you say so."; for `low` with `waits_for_user` null, "Risk: Low. It merges on a
-     clean review and passing checks, without waiting for you."; for `low` otherwise, "Risk: Low, but it waits for
-     you:" followed by `waits_for_user`. If the repo uses its own template with different sections,
-     fill those sections in the same spirit. If
+     - **The sign-off box** ("I read the evidence above, and I own this change") is the user's: leave it unticked.
+     If the repo uses its own template with different sections, fill those sections in the same spirit, put the risk
+     tier line above the first heading, and tick each checklist box that is true (never a sign-off box). If
      `pr_template` is null, run `L init` to install the plugin's template, commit it, and use it. End the body
      with the attribution your instructions specify for pull requests. Write it to `.review/.pr-body.md` with the
      Write tool.
@@ -116,6 +117,9 @@ Arguments: `$ARGUMENTS`
      report the PR URL, the new `tier` and `waits_for_user`, and stop as in step 6.
    - If ship-check lists `high_files`, a merge the user authorized before seeing the PR is not enough. "Some
      paths always need a person." Name the files and wait for the user to say they have read them.
+   - If the user said to merge and the PR body has an unticked sign-off box, tick it, with " (signed off in chat)"
+     after it, and update the body with `gh pr edit <branch> --body-file .review/.pr-body.md`. A Low-risk change
+     that lands without the user keeps its box unticked.
    - Land only when ship-check reports no problems.
 
    A review round here appends to the tracked ledger, so if `git status --short .review` shows changes, commit them

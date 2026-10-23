@@ -24,7 +24,7 @@ Ask the user in plain sentences, never with a question or menu tool.
    - If it says this is not a git repository, the project is new: run `git init`, then `L init` again. If the
      working directory doesn't look like the project's own folder (your home directory, say), ask the user first.
    - If it says there are no commits yet, stay on the current branch: the setup becomes the first commit (step 5).
-2. If REVIEW.md was just created, fill in "What failure looks like here" with 3 to 5 lines inferred from CLAUDE.md
+2. If REVIEW.md was just created, fill in "What Important means here" with 3 to 5 lines inferred from CLAUDE.md
    and README (read only those two). In a new project that has neither, use what the user has said they are
    building, or leave the section for later and say so.
 3. If `L config` shows an empty `check`, find the one command that builds and tests the project and set `check:` in
