@@ -18,7 +18,7 @@ jobs:
           node-version: 22
       # Pinned, so a new release's validator can't fail a PR that changed nothing. Raise it on purpose.
       - name: Install Claude Code
-        run: npm install -g --ignore-scripts @anthropic-ai/claude-code@2.1.309
+        run: npm install -g @anthropic-ai/claude-code@2.1.309
       - name: Validate the marketplace and both manifests
         run: claude plugin validate --strict .
       - name: Validate solo-review's skills, agents and hooks
