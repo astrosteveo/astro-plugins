@@ -3,7 +3,7 @@ name: review
 description: Review the current change in fresh-context agents (find bugs, verify each one, fix the Important ones, re-review only what the fixes changed) for up to three rounds, and record every finding and how it was answered. Run it only when the user asks for a review.
 argument-hint: "[quick|standard|deep] [--base REF | --range A..B] [--force] [--fresh] | open | backlog | resolve <ids> <outcome> <reason>"
 disallowed-tools: AskUserQuestion
-allowed-tools: Read, Grep, Glob, Write, Agent, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git rev-parse *)
+allowed-tools: Read, Grep, Glob, Write, Agent, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git rev-parse *), Bash(git switch *)
 ---
 
 # solo-review: review
@@ -27,9 +27,15 @@ Arguments: `$ARGUMENTS`
 - Anything else runs a review, passing on `quick|standard|deep` as `--depth`, and `--base`, `--range`, `--force` and
   `--fresh` as given.
 
-Before round 1, write a 1 to 3 sentence INTENT for the agents: what the change does, and anything deliberately
-unusual about it. Take it from this conversation, or from the commit subjects if the conversation doesn't say.
-Describe the change as done ("Adds X so that Y"), never as a plan.
+Before round 1:
+- **Be on a branch.** Run `L where`. If `on_default` is true and there is work to review (`uncommitted` or `unpushed`
+  above 0), start a branch named for the change first: `git switch -c '<type>/<short-name>'` (feat, fix, refactor,
+  docs or chore). Uncommitted changes come with you, and commits not yet on origin count as part of the branch's
+  change. The fixes get committed there, and the branch goes up as a PR: nothing reaches the default branch any other
+  way. Say so in one line in **Finish**.
+- **Intent.** Write a 1 to 3 sentence INTENT for the agents: what the change does, and anything deliberately unusual
+  about it. Take it from this conversation, or from the commit subjects if the conversation doesn't say. Describe the
+  change as done ("Adds X so that Y"), never as a plan.
 
 ## Each round
 1. **Scope.** Run `L scope` with the arguments (only in round 1). It prints JSON. If `stop` is true, go to **Finish**
