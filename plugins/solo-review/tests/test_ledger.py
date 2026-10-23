@@ -484,6 +484,27 @@ class GuardTest(TempDirCase):
         r.git("config", "init.defaultBranch", "trunk")
         self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "deny")
 
+    def test_enable_records_the_default_branch_across_the_setup_branch(self):
+        r = self.new_repo()
+        r.git("branch", "-m", "trunk")
+        r.run("enable")
+        r.run("enable")  # idempotent
+        r.git("switch", "-q", "-c", "chore/solo-review-setup")
+        self.assertFalse(r.json("where")["on_default"])
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "allow")
+        r.git("switch", "-q", "trunk")
+        self.assertTrue(r.json("where")["on_default"])
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "deny")
+
+    def test_enable_does_not_overwrite_the_recorded_default_with_nothing(self):
+        r = self.new_repo()
+        r.git("branch", "-m", "trunk")
+        r.run("enable")
+        r.git("switch", "-q", "-c", "feat/x")
+        r.run("enable")
+        r.git("switch", "-q", "trunk")
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "deny")
+
     def guard_default(self, r):
         cwd = os.getcwd()
         os.chdir(r.path)

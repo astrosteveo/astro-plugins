@@ -62,7 +62,9 @@ Then, in this order:
    - Unstage anything that shouldn't be committed (secrets, build output, very large files) with
      `git restore --staged`, and add it to `.gitignore`.
    - Commit it as `Initial commit`, on the default branch.
-3. **Branch.** Run `L where`.
+3. **Branch.** Run `L where`, then `L enable`: it records the default branch (so the guard still knows it once you
+   are on the setup branch), and from now on edits and commits on the default branch are refused here until a branch
+   is started. If it says the default branch is unclear, the guard stays off.
    - If `on_default` is true, start the setup's branch:
      - If `unpushed` is above 0, start it from origin's copy, so the commits on `<default>` that were never pushed
        stay out of the setup PR: `git switch -c 'chore/solo-review-setup' '<origin_default>'`. If git refuses because
@@ -70,8 +72,6 @@ Then, in this order:
        include those commits.
      - Otherwise, run `git switch -c 'chore/solo-review-setup'`.
    - On another branch, stay there: the setup rides along with that branch's PR.
-   - Then run `L enable`. From now on, edits and commits on the default branch are refused here until a branch is
-     started.
 4. **Ignore**, if the repository already had commits: add each `ignore_gaps` pattern to `.gitignore`.
 5. **Moving from v1** (`v1` is not null). This project used solo-review v1.
    - If `ledger_events` is above 0, run `L import-v1` to keep the review history.
