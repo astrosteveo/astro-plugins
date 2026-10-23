@@ -35,10 +35,28 @@ answers feed back into the reviewer. A solo developer has no team, so this plugi
 
 Requires `git` and `python3`. No other dependencies. Landing through pull requests also needs the GitHub CLI, `gh`.
 
+Then turn it off everywhere, and on only in the projects you set up, so it never acts in a repo you didn't opt in:
+
+```
+claude plugin disable solo-review@astro-plugins --scope user
+```
+
+In each project you want it in:
+
+```
+claude plugin enable solo-review@astro-plugins --scope local
+/reload-plugins
+/solo-review:setup
+```
+
+Elsewhere it isn't loaded at all: no skills, hooks or agents. `--scope local` keeps the switch out of the repo, in
+`.claude/settings.local.json`. Use `--scope project` instead to commit it in `.claude/settings.json`, so every clone
+has it on.
+
 ## The workflow
 
 ```
-/solo-review:setup           # once per project: REVIEW.md, CLAUDE.md, .review/, the PR template (opts the project in)
+/solo-review:setup           # once per project, after turning the plugin on there: REVIEW.md, CLAUDE.md, .review/, the PR template
   (just work)                # Claude branches, commits as it works, then by itself: check, review loop, PR
   "merge it"                 # you read the PR and say when to merge; ship lands it (a Low-risk PR lands by itself)
 /solo-review:review-learn    # every couple of weeks: tune REVIEW.md from the ledger
