@@ -143,8 +143,8 @@ One short message.
    - **On `chore/solo-review-setup`, with no remote:** "This project isn't on GitHub yet, and changes land through
      PRs there. Want me to create a private repo, push `<default>` as it is, and open the setup PR?" If `gh` is
      false, say it needs the GitHub CLI (https://cli.github.com) instead of asking.
-   - **With an `origin` that isn't GitHub:** no question. Say ship opens GitHub PRs, and that the branch can be
-     landed locally with `git switch '<default>'` and then `git merge --ff-only 'chore/solo-review-setup'`.
+   - **With an `origin` that isn't GitHub:** no question. Say ship opens GitHub PRs only, so the setup branch waits
+     for a pull or merge request opened on that host. Never suggest merging it onto the default branch another way.
    - **On another branch:** no question. Say the setup commit rides along with that branch's PR.
 
 ## 4. When they say yes
