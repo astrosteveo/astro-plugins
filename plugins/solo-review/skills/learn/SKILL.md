@@ -3,6 +3,7 @@ name: learn
 description: Make the reviewer better from its own record. Log a bug that slipped past review as an eval case, replay the eval cases to score REVIEW.md, spot-check the agents' own decisions, or propose evidence-backed edits to REVIEW.md and CLAUDE.md.
 argument-hint: "[escape <fix-commit> [summary] | eval [N] [--clean M] | spotcheck [N]]"
 disable-model-invocation: true
+disallowed-tools: AskUserQuestion
 allowed-tools: Read, Grep, Edit, Agent, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git log *), Bash(git show *), Bash(git blame *), Bash(git rev-parse *)
 ---
 
