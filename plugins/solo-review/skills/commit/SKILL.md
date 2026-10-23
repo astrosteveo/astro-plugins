@@ -1,51 +1,41 @@
 ---
 name: commit
-description: Commit finished work on a feature branch, one commit per logical unit (one purpose, builds and passes tests). Use when a unit of work is complete, when a diff mixes several purposes and needs splitting, or when asked to commit.
+description: Commit finished work on the current branch as logical units (one purpose each, building and passing its checks). Use when a piece of work is complete, when a diff mixes several purposes and needs splitting, or when asked to commit.
 argument-hint: "[hint for the message]"
-allowed-tools: Read, Write, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git switch *), Bash(git branch *), Bash(git apply *), Bash(git rev-parse *)
+allowed-tools: Read, Write, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git apply *), Bash(git rev-parse *)
 ---
 
 # solo-review: commit
 
-The goal is a history where every commit can be reverted or bisected on its own. Each commit is one logical unit:
-it has one purpose, the project builds and its tests pass, and the message says why the change was made.
-Run each git command on its own, never chained with `;` or `&&`. A chained command needs approval for every
-part.
+The goal is a history where every commit can be reverted or bisected on its own. Each commit is one logical unit: it
+has one purpose, the project builds and its checks pass, and the message says why the change was made. Commit on the
+branch you're on; `/solo-review:ship` moves work off the default branch when it opens a PR.
+Run each git command as its own Bash call, never chained with `;` or `&&`.
 
 Arguments: `$ARGUMENTS`
 
-1. **Branch.** Run `git branch --show-current` and `git status --short`. If you are on the default branch, first
-   create a branch named for the task (type is feat, fix, refactor, docs, or chore) the way the session rules say:
-   in a linked worktree, `git switch -c <type>/<short-name>`, and uncommitted changes move with you. The main
-   checkout stays on the default branch, so there a branch gets its own worktree under `.claude/worktrees/`, and
-   uncommitted changes don't move: ask the user before moving them. Never commit directly to the default branch.
-
-2. **Read the change.** Run `git diff HEAD --stat`, then read the diff. For a large diff, read it one file at a time.
-   Read untracked files that will be committed. Run `git log --oneline -10` and match the project's subject style.
-
-3. **Split it into units.** Group the hunks by purpose:
-   - Keep refactors, renames, and formatting separate from behavior changes.
+1. **Read the change.**
+   - Run `git status --short` and `git diff HEAD --stat`, then read the diff, one file at a time if it is large.
+   - Read untracked files that will be committed.
+   - Run `git log --oneline -10` and match the project's subject style.
+2. **Split it into units.** Group the hunks by purpose:
+   - Keep refactors, renames and formatting apart from behavior changes.
    - Commit tests with the code they test.
-   - Commit review fixes on their own, and name the finding ids in the subject (`Fix review findings F-3, F-5`, or
-     `Fix review finding F-3` for one). Keep that prefix exactly: review reads it to tell fixes from new work.
-   - Leave work that isn't finished uncommitted, and say so.
-   If a single file holds hunks from two units, stage only the hunks for one unit: write that partial diff to a
-   patch and apply it with `git apply --cached <patch>`. If the hunks can't be cleanly separated, commit them
-   together and say so in the body.
+   - Commit review fixes on their own, subject `Fix review findings F-3, F-5` (`Fix review finding F-3` for one).
+   - Leave unfinished work uncommitted, and say so.
 
-4. **Check.** Run the project's check once, before you commit, with `python3
-   ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py check`, which only prints the `check` command from REVIEW.md. Run that
-   command yourself as its own Bash call; it asks permission unless the user has allowed it, by design, because the
-   command comes from the repo. If `ledger.py check` says no check is configured, say so instead of guessing a command. If it
-   fails, commit only the units that don't depend on the failure, and report the rest. Never commit a unit that you
-   know is broken.
-
-5. **Commit each unit.** Stage it with `git add -- <paths>`, never `git add -A` or `git add .`. Then `git commit`:
-   - Subject: imperative mood, 72 characters at most, and states the purpose.
-   - Body (when the why isn't obvious): what problem this solves and any decision a future reader would question.
-   - Add the attribution trailers your instructions specify.
-   Before each commit, check the staged file names. Never stage `.review/`: the ledger stays uncommitted while you
-   work, so it follows you across branch switches, and `/solo-review:ship` commits it. Do not commit secrets, `.env` files, build output, or large
-   generated files. Never use `--no-verify`, and never amend or rewrite a commit that has already been pushed.
-
-6. **Report.** Give one line per commit (short sha and subject), plus anything you left uncommitted and why.
+   If one file holds hunks from two units, write the hunks for one unit as a patch in `.solo-review/` (excluded
+   from git) and stage it with `git apply --cached <patch>`. If they can't be separated cleanly, commit them together
+   and say so in the body.
+3. **Check once.** Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py check`, which prints the project's check
+   command, then run that command as its own Bash call. It asks permission unless the user allowed it, by design. If
+   no check is configured, say so instead of guessing one. If it fails, commit only the units that don't depend on
+   the failure, and report the rest. Never commit a unit you know is broken.
+4. **Commit each unit.** Stage it with `git add -- <paths>`, never `git add -A` or `git add .`, and check the staged
+   names before committing.
+   - Subject: imperative mood, 72 characters at most, stating the purpose.
+   - Body, when the why isn't obvious: the problem it solves, and any decision a future reader would question.
+   - Add the attribution your instructions specify.
+   - Never commit secrets, `.env` files, build output or large generated files.
+   - Never use `--no-verify`, and never amend or rewrite a commit that has been pushed.
+5. **Report.** One line per commit (short sha and subject), plus anything left uncommitted and why.
