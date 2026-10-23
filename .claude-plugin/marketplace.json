@@ -10,7 +10,7 @@
     {
       "name": "solo-review",
       "source": "./plugins/solo-review",
-      "description": "Code review for a solo developer working with agents: fresh-context finders and a blind verifier review the change when you ask, fix what's Important and re-review the fix; ship opens a GitHub PR with the evidence and merges on your sign-off; explain and learn keep you and the reviewer improving."
+      "description": "Review and git workflow harness for solo developers: branch-first work, commit-as-you-work, fresh-context finder and verifier agents, a findings ledger with outcomes, and a learning loop that tunes REVIEW.md."
     },
     {
       "name": "web-reader",

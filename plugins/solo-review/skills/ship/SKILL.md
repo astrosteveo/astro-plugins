@@ -1,121 +1,203 @@
 ---
 name: ship
-description: Open a GitHub pull request for the reviewed change, the only way changes reach the default branch. Moves work off the default branch, commits what's left, puts the repo on GitHub if it isn't (asking first), rebases onto the latest default branch, reruns the check, opens the PR from the repo's template with the review results, and watches CI. Merges only when the user says to. Run it when the user asks to ship, open a PR, or merge.
-argument-hint: "[merge] [--skip-review] [--committed-only]"
-disallowed-tools: AskUserQuestion
-allowed-tools: Read, Grep, Write, Agent, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git fetch *), Bash(git rebase *), Bash(git switch *), Bash(git branch *), Bash(git push *), Bash(git pull *), Bash(git rev-parse *), Bash(git remote *), Bash(gh auth status), Bash(gh repo create *), Bash(gh pr *), Bash(gh run view *)
+description: Open the pull request for a reviewed feature branch. Checks that it is reviewed and committed, rebases onto the latest default branch, reruns checks, opens a PR from the repo's template with the review results, and waits for CI. Lands a Low-risk change by itself; merges, lands, and cleans up anything else only when the user says to merge. Run it after a clean review when a task is finished.
+argument-hint: "[merge] [--skip-review]"
+allowed-tools: Read, Grep, Write, Agent, ExitWorktree, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git *), Bash(gh pr *), Bash(gh run view *)
 ---
 
 # solo-review: ship
 
-This is the solo version of the article's merge path, and the only way a change reaches the default branch.
-- The change is re-checked on the latest default branch, so two changes that each passed can't combine into a
-  broken main.
-- It lands through a pull request, so CI runs on it and the review results stay with it.
-- Opening the PR is automatic. The merge is the user's call: they read the evidence and own what ships.
+This is the solo version of a merge queue. A branch lands only when every finding is answered and the
+latest review covers its final code. Checks run again on the latest default branch with the change applied, so two
+changes that each passed can't combine into a broken main. On GitHub, the branch lands through a pull request, so CI
+runs on it and the review results stay with the change. Opening the PR is automatic. Merging a Medium- or High-risk
+change is the user's call, because the user reads the evidence and owns what ships. A Low-risk change, one whose
+every file matches the `low` globs in the default branch's REVIEW.md, lands on a clean review and passing checks
+without them, like the article's Low tier: "None required once automated review and security checks are green".
 
-`L` means `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py`.
-- Run each command as its own Bash call, never chained with `;`, `&&` or a pipe.
-- Single-quote every branch name you put in a command.
-- Ask in plain sentences, never with a question or menu tool.
+`L` below means `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py`. Run each command on its own, never chained with
+`;`, `&&`, or pipes. A chained command needs approval for every part, and gets blocked. Use Read and Grep to look
+at files, not `cat` or `grep`. Single-quote every value you substitute for `<branch>` or `<default>` in a command
+(ship-check flags branch names with unusual characters, but quote anyway).
 
 Arguments: `$ARGUMENTS`
 
-## Open the PR
-1. **Ready?** Run `L ship-check`, which prints JSON.
-   - If `gh` is false, stop: ship needs the GitHub CLI. Point to https://cli.github.com, then `! gh auth login`.
-   - If `origin` is set but `github` is false, stop: ship opens GitHub PRs, and this `origin` is somewhere else. Name
-     it.
-   - Stop on any other problem except the review ones, which step 5 handles.
-2. **Get off the default branch.** If `on_default` is true:
-   - Name a branch for the change, `<type>/<short-name>` (feat, fix, refactor, docs or chore), and run
-     `git switch -c '<branch>'`. Uncommitted changes come with you.
-   - If `origin_default` is set, run `git branch -f '<default>' '<origin_default>'`. Commits made on the default
-     branch and never pushed stay on the new branch, and the local default branch goes back to origin's, so it
-     can't diverge from what the PR merges.
-3. **Commit what's left.** If anything is uncommitted, commit it as logical units following `/solo-review:commit`.
-   With `--committed-only` (setup passes it), commit nothing: the uncommitted files are the user's other work, and
-   they stay out of this PR. Then run `L ship-check` again. A review done before the branch existed still counts: it
-   is matched by content.
-4. **Put it on GitHub, if it isn't.** If `origin` is null, or `origin_default` is null (GitHub has no copy of the
-   default branch yet), ask once, in a plain sentence:
-   - With no `origin`: "This repo isn't on GitHub yet, and changes land through PRs there. Want me to create a private
-     GitHub repo for it, push `<default>` as it is now, and open this PR?"
-   - With an `origin` but no `origin_default`: "GitHub has no `<default>` branch yet. Want me to push `<default>` as
-     it is now, as the base for this PR?"
+1. **Readiness.** Run `L ship-check`, which prints JSON. Handle each entry in `problems`:
+   - Uncommitted changes: run `/solo-review:commit` first.
+   - Open findings (Important findings and nits alike: "a PR can't merge while any finding is still open"): resolve
+     them through `/solo-review:review`. Do not ship around them.
+   - `duplicate_ids` is not a problem, and there is nothing to fix: reviews in two clones each gave those ids to a
+     different finding before either could see the other's ledger. `L pr-summary` names them in the PR; tell the
+     user too.
+   - "Never reviewed" or "changes since the last review round": run `/solo-review:review`. A later round reviews
+     only the new changes, so it is cheap. If the user passed `--skip-review`, tell them once what is unreviewed,
+     then continue.
+     If review stops at the round cap instead of finishing, do not loop: tell the user, and offer three choices, one
+     final `/solo-review:review --force` round over the unreviewed fixes, `/solo-review:review --until-clean` to run
+     rounds until one is clean, or `/solo-review:ship --skip-review`.
+   - `ledger_only: true` (on the default branch, and the only changes are review ledger entries): commit them and
+     stop. Stage only the paths in `ledger_files` and commit with a pathspec so nothing else is swept in:
+     `git commit -m 'Update review ledger' -- <ledger_files>`; if `ledger_files` is
+     empty, an earlier ledger commit only needs pushing. If `upstream` is set, `git push`. If the push is rejected
+     because the remote moved, run `git pull --rebase` (the ledger merges with `merge=union`) and push again; if it
+     is rejected because the branch is protected, follow step 9's fallback. Then run `git status --short` and
+     report that the tree is clean, or what is left.
+   - Not on a feature branch, no default branch to land on, no commits, or git status failing: stop and say so.
+   - An unsafe branch name (the branch or the default branch has characters outside `[A-Za-z0-9._/-]`): stop and
+     say so.
 
-   On yes:
-   1. Run `gh auth status`. If they aren't logged in, ask them to run `! gh auth login`, and wait.
-   2. Run `L publish-scan`. If it isn't `clean`, or it lists personal `emails` or `commit_emails`, tell them what a
-      push would publish: the kind of secret and the file (never the value), and the addresses. Recommend a fix, do
-      what they choose, and scan again. Removing something from history means rewriting commits before the first
-      push, which changes their hashes; say so.
-   3. With no `origin`, run `gh repo create '<name>' --private --source=. --remote=origin`, public only if they asked.
-      Leave out `--push`: it would push this branch, and GitHub would make it the default.
-   4. Run `git push -u origin '<default>'`, then `git remote set-head origin -a`. The default branch goes up as it
-      is, as the base. Everything after it arrives through PRs.
-   5. Run `L ship-check` again.
+2. **Commit the ledger.** If `git status --short .review` shows changes, commit them on the branch as their own
+   commit (rebasing needs a clean tree), `Update review ledger`. Stage only `.review/ledger.jsonl`, plus
+   `.review/.gitignore` and `.review/.gitattributes` if they changed. Never `git add .review`, which would commit
+   the stale `.pr-body.md`. Run `L init` first so `.pr-body.md` is ignored in older projects. The ledger has `merge=union` set, so ledgers that
+   diverged on two branches merge by keeping both sides' lines.
 
-   On no, stop. Say the work waits on `<branch>`: without GitHub there is no PR to land it through, and running ship
-   again offers the same step. Never suggest merging it onto the default branch another way; the PR is the gate.
-5. **Review state.**
-   - `reviewed` is `never` or `stale`: stop, say what is unreviewed (`changed_since_review`), and suggest
-     `/solo-review:review`. With `--skip-review`, go on, and say "Not reviewed" in the PR's Review section.
-   - `open_important` is not empty: stop, list them, and point to `/solo-review:review open` to fix or answer them.
-   - `open_nits` is not empty: ask once whether to fix them first (as `/solo-review:review` does) or ship as-is. As-is
-     means running `L resolve <ids> --as merged-past --by user --reason "shipped as is"`.
-6. **Catch up.** Run `git fetch origin`, then `git rebase --autostash '<origin_default>'`. `--autostash` sets any
-   uncommitted changes aside for the rebase and puts them back after; if they don't go back cleanly, git keeps them in
-   the stash, so tell the user `git stash pop` brings them back.
-   - Resolve a conflict about text so that both sides' intent survives, then `git add -- <files>` and
-     `git rebase --continue`.
-   - If a conflict is about intent, stop and ask the user (`git rebase --abort` backs out).
-   - Run `L ship-check` again. `reviewed` should be `current` or `rebased`. If it says `stale`, the conflict fixes
-     changed the code: say so, and offer one `/solo-review:review quick` round over them before going on.
-7. **Check on top of the latest default branch.** Run `L check`, then run the command it prints as its own Bash call.
-   - If it fails, stop, show the failing output, and offer a `solo-review:fixer`. Commit its fix and check again.
-     Never open a PR on a red check.
-   - Keep the command and a trimmed copy of its real output for the Testing section.
-8. **Push and open the PR.**
-   - Run `git push -u origin '<branch>'`, or `git push --force-with-lease origin '<branch>'` if the branch was
-     pushed before the rebase.
-   - Build the body from `pr_template`. If that is null, use `${CLAUDE_PLUGIN_ROOT}/templates/pull_request_template.md`
-     and suggest `/solo-review:setup` to add it to the repo.
-   - Keep the template's headings and order, and replace each comment with real content:
-     - **What and why**: two or three sentences.
-     - **Testing**: the check command and its trimmed output from step 7. Say that CI results are on the PR.
-     - **Risk**: first line `Risk: <High|Medium|Low>.`, from `tier`, plus what set it: the `high_files`, "docs only",
-       or "code, no High-risk paths". Then what could break, and specifically what the review and the check would
-       not catch in this change (a path no test covers, behavior only a person can judge). Mention `security_hint`
-       if it is true.
-     - **How to revert**: `git revert` of the merge or of each commit, and anything a revert won't undo.
-     - **Review**: the output of `L pr-summary --run <review_run>`, unchanged. Use "Not reviewed (shipped with
-       --skip-review)" if that applies.
-   - Leave the sign-off box unticked. Only the user ticks it.
-   - Fill a repo's own template's sections in the same spirit.
-   - Write the body to `.solo-review/pr-body.md` with the Write tool.
-   - Run `gh pr view '<branch>' --json url`. If a PR exists, run
-     `gh pr edit '<branch>' --body-file .solo-review/pr-body.md`. Otherwise run
-     `gh pr create --base '<default>' --head '<branch>' --title '<one-line summary>' --body-file .solo-review/pr-body.md`.
-     Keep the title single-quoted, writing any `'` inside it as `'\''`.
-9. **Watch CI.** Run `gh pr checks '<branch>' --watch` with the Bash tool's `run_in_background`, and wait until you
-   are told it finished. No checks is fine. If a check fails, read its log
-   (`gh run view <id> --log-failed`), summarize it, and offer a `solo-review:fixer`. Never merge a red PR.
-10. **Hand over.** Report:
-    - the PR URL, the risk tier, CI's result, and the head commit (`head`, short)
-    - for High risk, the `high_files` to read themselves before merging
-    - any open nits
+3. **Catch up.** If `local_default` is false (the default branch exists only as `origin/<default>`), run
+   `git branch '<default>' 'origin/<default>'` to create it with tracking, then treat `upstream` as `origin/<default>`.
+   If `upstream` is set, run `git fetch origin '<default>:<default>'`, which fetches and fast-forwards the local
+   default branch; if git refuses because that isn't a fast-forward, stop and tell the user. When `default_worktree`
+   is set, git won't update a branch checked out in another worktree: run `git fetch` instead, and rebase onto
+   `'origin/<default>'` instead of `'<default>'` below. Then run
+   `git rebase '<default>'` on the branch, even if it looks up to date: the default branch may have just moved, and
+   the rebase does nothing when there is nothing to catch up on. On conflicts, resolve them so that both sides' intent
+   survives, then `git rebase --continue`. If a conflict is about intent rather than text, stop and ask the user.
 
-    Then say: tick the sign-off box in the PR, or tell me you've read it, and say merge. Stop here.
+4. **Check on top of the latest default branch.** Run `L check`, which only prints REVIEW.md's `check` command. Run that command
+   yourself as its own Bash call; it asks permission unless the user has allowed it, by design, because the command
+   comes from the repo. If `L check` says no check is configured, say so in the PR's Testing section. If it
+   fails, have a `solo-review:fixer` fix it (give it `CHECK: python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py check`),
+   commit, and run the check again. Never land a red branch.
 
-## Merge (only on `merge`, or when the user says to merge)
-1. Run `L ship-check`. If `head` differs from the commit you reported, show `git log --oneline <reported>..<head>` and
-   ask the user to confirm: an approval covers one specific commit.
-2. Run `gh pr view '<branch>' --json body`. If the sign-off box is unticked, ask the user to confirm they read the
-   evidence. Once they confirm, tick it in the body, with " (signed off in chat)" after it, and update the PR as in
-   step 8. For High risk, the user must also say they read the `high_files`.
-3. Run `gh pr merge '<branch>' --<merge> --delete-branch --match-head-commit <head>`, with `merge` from ship-check
-   (rebase, squash or merge).
-4. Run `git switch '<default>'`, then `git pull --ff-only`. If `git branch --list '<branch>'` still shows the branch,
-   run `git branch -D '<branch>'`; it is merged on GitHub.
-5. Report what landed, and that the local default branch is up to date.
+5. **Open the pull request** (when ship-check says `github` is true; otherwise skip to step 7, then go on through step 9).
+   - `git push -u origin <branch>`.
+   - Build the PR body from the repo's pull request template, which ship-check names in `pr_template`. Read it, and
+     keep its headings, order, and checklist exactly. Replace each section's HTML comment with real content and
+     leave nothing as a placeholder:
+     - **Summary**: what the branch does and why, in two or three sentences.
+     - **Changes**: one line per commit, oldest first, as `` `sha` subject ``.
+     - **Review**: the output of `L pr-summary`, unchanged.
+     - **Testing**: the checks you ran in step 4 and their results.
+     - **Risk and rollback**: what could break, and which commit to revert for each risk. Then what the checks and
+       the review would not catch in this change, so the user knows what to read themselves.
+     - **Checklist**: tick each box that is true. Leave a box unticked if it isn't true, and say why under it.
+     Put the risk tier above the first heading, from ship-check's `tier` and `waits_for_user`: for `high`,
+     "Risk: High. Needs a person: this change touches High-risk paths", followed by `high_files`; for `medium`,
+     "Risk: Medium. It merges when you say so."; for `low` with `waits_for_user` null, "Risk: Low. It merges on a
+     clean review and passing checks, without waiting for you."; for `low` otherwise, "Risk: Low, but it waits for
+     you:" followed by `waits_for_user`. If the repo uses its own template with different sections,
+     fill those sections in the same spirit. If
+     `pr_template` is null, run `L init` to install the plugin's template, commit it, and use it. End the body
+     with the attribution your instructions specify for pull requests. Write it to `.review/.pr-body.md` with the
+     Write tool.
+   - `gh pr create --base <default> --head <branch> --title '<one-line summary>' --body-file .review/.pr-body.md`.
+     Pass the title single-quoted, with any single quote inside it written as `'\''`, so `$()` and backticks
+     copied from commit subjects don't expand.
+     If a PR already exists for the branch, `gh pr edit <branch> --body-file .review/.pr-body.md` instead.
+   - Go on to step 6, but stop after it unless the user said to merge (the `merge` argument, or asking for it in
+     the conversation) or ship-check's `waits_for_user` is null, which marks a Low-risk change that lands without
+     them. Otherwise the user reads the PR and owns the merge.
+
+6. **Wait for CI.** Run `gh pr checks <branch> --watch` in the background (the Bash tool's `run_in_background`),
+   so it doesn't hold a foreground call until the timeout, and do nothing else until it exits: you are told when it
+   does. Then read its output and exit status as you would a foreground run. Where background runs aren't available,
+   run it in the foreground. If it reports no checks, continue. If a check fails, read its log (`gh pr checks <branch>` shows the link; `gh run view <id> --log-failed`), have a `solo-review:fixer` fix
+   it, commit, push, and wait again. Never land a red PR. If the user hasn't said to merge and `waits_for_user` is
+   set, report the PR URL, the check results, anything open, and `waits_for_user`, then stop.
+
+7. **Re-check the exact commit you will land.** "An approval covers one specific commit." Steps 4 and 6 can add
+   commits after the review and after the user said to merge. Run `L ship-check` again.
+   - If it reports "changes since the last review round", run `/solo-review:review` over them (a round over only
+     those commits, usually quick), push any fixes it commits, and wait for CI again (step 6). If review stops at
+     the round cap, ask the user as in step 1.
+   - If any commit was added after the user said to merge, tell them the new head SHA (`git rev-parse --short HEAD`)
+     and what changed, and wait for them to confirm before landing.
+   - If you are landing a Low-risk change without the user, land it only if this ship-check still reports
+     `waits_for_user` null. A commit added since (a fix for CI, say) can raise the tier, and then the change waits:
+     report the PR URL, the new `tier` and `waits_for_user`, and stop as in step 6.
+   - If ship-check lists `high_files`, a merge the user authorized before seeing the PR is not enough. "Some
+     paths always need a person." Name the files and wait for the user to say they have read them.
+   - Land only when ship-check reports no problems.
+
+   A review round here appends to the tracked ledger, so if `git status --short .review` shows changes, commit them
+   as their own `Update review ledger` commit, staging only the ledger files as in step 2, push it (`git push` if
+   the branch was pushed), and wait for CI again (step 6). A ledger-only commit is bookkeeping: ship-check ignores
+   `.review/` changes when it decides whether there are changes since the review, so the approved code is
+   unchanged.
+
+8. **Land it**, using `merge` from the ship-check output. Run each command separately.
+   - `rebase` (the default): `git switch <default>`, then `git merge --ff-only <branch>`, then `git push`. On GitHub
+     this marks the PR as merged and keeps the exact commits, so the fix commits recorded in the ledger stay valid.
+     Before `git switch <default>`, run `git status --short` (it must be empty, with no exceptions) and `git rev-parse <default>`, and
+     note the commit. If the push is rejected for any reason other than branch protection, stop and report. If it
+     is rejected because the branch is protected, put local `<default>` back without `reset --hard`: `git switch
+     <branch>`, then `git branch -f <default> <noted commit>`, then `gh pr merge <branch> --rebase`, then `git switch
+     <default>`, then `git pull --ff-only`. This fallback rewrites the SHAs on GitHub, so the ledger's fix-commit
+     SHAs refer to the branch's commits, not the landed ones.
+   - `squash`: on GitHub, `gh pr merge <branch> --squash`, then `git switch <default>`, then `git pull --ff-only`.
+     Without GitHub: `git switch <default>`, then `git merge --squash <branch>`, then `git commit` with one message
+     that summarizes the units.
+   - `merge`: on GitHub, `gh pr merge <branch> --merge`, then `git switch <default>`, then `git pull --ff-only`.
+     Without GitHub: `git switch <default>`, then `git merge --no-ff <branch>`.
+   Without GitHub, push the default branch afterwards if it has an upstream.
+
+   **From a worktree.** If ship-check's `default_worktree` is set or `linked_worktree` is true, never check
+   `<default>` out here. Another worktree holds it, so `git switch` fails, or this worktree would hold it and keep
+   the main checkout from switching to it. Land without it instead:
+   - `rebase`: run `git status --short` (it must be empty), then, if `upstream` is set,
+     `git push origin '<branch>:<default>'`. The remote takes only a fast-forward, so this keeps the exact commits
+     like the push above. If it is rejected because the branch is protected, run `gh pr merge <branch> --rebase`
+     (with the same SHA caveat); if it is rejected for any other reason, stop and report.
+   - `squash` or `merge` on GitHub: the `gh pr merge` command above, without the `git switch` and `git pull`.
+   - `squash` or `merge` without GitHub needs a checkout of `<default>` to commit in: stop, and tell the user to
+     run ship from the checkout at `default_worktree` (or from the main checkout).
+
+   Then catch the local `<default>` up to what landed, which is `origin/<default>`, or `<branch>` with no upstream:
+   - If `default_worktree` is null, run `git fetch origin '<default>:<default>'`, or `git fetch . '<branch>:<default>'`
+     with no upstream. Git takes only a fast-forward.
+   - If `default_worktree` is set, that is the user's checkout. With an upstream, run `git fetch` first. Then run
+     `git -C '<default_worktree>' status --short`. If it is empty, run
+     `git -C '<default_worktree>' merge --ff-only '<landed>'`. If it isn't empty, don't touch that checkout: give the
+     user the command to run there, and say why. If the command is refused (a worktree-isolated session can't run
+     git in another checkout), step 9 runs it after leaving the worktree.
+
+9. **Clean up.** If you landed from a worktree (step 8), the branch is still checked out here, so first run
+   `git switch --detach '<landed>'` (what landed, as in step 8, since the local `<default>` may not have been caught
+   up). Delete the local branch with `git branch -d <branch>`. After a squash landing the branch tip is not
+   an ancestor of the squash commit, so `-d` refuses. Once you have confirmed the squash commit is on the default
+   branch, use `git branch -D <branch>` instead. If the branch was pushed, run `git push origin --delete <branch>`
+   (it may already be gone if GitHub deleted it).
+
+   Then leave the tree clean: the user should see nothing uncommitted after a ship. Run `git status --short`. If
+   only `.review/` ledger files show changes (written after the branch's last ledger commit), commit them on
+   `<default>` as their own `Update review ledger` commit, staging only the ledger files as in step 2, and push it if
+   `<default>` has an upstream. A ledger-only commit is bookkeeping, so it needs no review round. If you landed
+   from a worktree, you can't commit on `<default>` here: on GitHub, take the `chore/review-ledger` route below from
+   the detached HEAD, skipping `git branch -f`. Once its PR has merged, in place of its `git switch <default>` and
+   `git pull --ff-only`, catch `<default>` up as in step 8, run `git fetch`, and run `git switch --detach 'origin/<default>'` (the local
+   `<default>` may be stale), then delete the branch as the route says. Without GitHub, tell the user. If the push is
+   rejected because the branch is protected, move the commit to a branch instead: `git switch -c chore/review-ledger`,
+   then `git branch -f <default> origin/<default>`, then `git push -u origin chore/review-ledger`, then
+   `gh pr create --base <default> --head chore/review-ledger --title 'Update review ledger' --body 'Ledger-only bookkeeping.'`,
+   then `gh pr checks chore/review-ledger --watch`, in the background as in step 6 (continue if it reports no
+   checks), then
+   `gh pr merge chore/review-ledger --rebase --delete-branch`. If a check fails or the merge is refused, stop, keep
+   the branch, and give the user the PR URL. Once the PR has merged, run `git switch <default>`, then
+   `git pull --ff-only`, then `git branch -D chore/review-ledger` only if the branch still exists
+   (`--delete-branch` may already have switched to `<default>` and deleted it, which is not a failure). If anything outside `.review/` is uncommitted,
+   don't touch it: tell the user.
+
+   Last, if you landed from a worktree under `.claude/worktrees/`, remove it, so a finished branch leaves nothing
+   behind:
+   - If this session entered it with EnterWorktree, run ExitWorktree with `keep`. That returns the session to the
+     checkout it started in and doesn't delete a worktree entered by path. Then run
+     `git worktree remove '<worktree path>'`. Git refuses while anything uncommitted is left in it: then keep it and
+     tell the user what is there.
+   - If step 8 couldn't catch up the checkout at `default_worktree` because the command was refused, and the session
+     is now in that checkout, run `git status --short`. If it is empty, run `git merge --ff-only 'origin/<default>'`
+     (`'<landed>'` with no upstream).
+   - If this session started inside the worktree (ExitWorktree says no worktree session is active), leave it detached
+     and give the user the `git worktree remove` command.
+
+   Report the PR URL, the commits that landed, the check results, and the new HEAD, confirm the tree is clean, and
+   say which branch each remaining checkout is on. If it landed without the user, say so first: it was Low risk, and
+   which files made it so.
