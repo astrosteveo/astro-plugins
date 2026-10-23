@@ -512,6 +512,10 @@ class GuardTest(TempDirCase):
         repo.write("app.py", "def f(xs):\n    return None\n")
         scope = repo.json("scope")
         self.assertEqual((scope["round"], scope["incremental"]), (1, True))  # new work: a new cycle, diff-only
+        self.assertIn("F-2 [open]", " ".join(scope["open_to_recheck"]))
+        out = repo.record([], resolved_by_change=["F-2"])  # the recheck finds it gone: it closes here too
+        self.assertNotIn("Still open", out)
+        self.assertIn("0 open finding", repo.run("open").stdout)
 
     def test_an_unrelated_review_on_main_is_not_carried_over(self):
         repo, _ = self.with_origin()
