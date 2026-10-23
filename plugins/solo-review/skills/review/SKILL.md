@@ -1,187 +1,128 @@
 ---
 name: review
-description: Review the current change and fix what the review finds, by itself, in rounds of fresh-context agents (find, verify, fix, re-review) until a round is clean or three rounds have run. Records every finding and outcome in the project's review ledger. Run it whenever a task is finished, before opening a PR.
-argument-hint: "[quick|standard|deep] [--base REF | --range A..B] [--force | --until-clean] [--fresh] | resolve <ids> <outcome> [reason] | open | backlog | init"
-allowed-tools: Read, Grep, Write, Agent, mcp__solo-review__record, mcp__solo-review__check_record, mcp__solo-review__resolve, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git init), Bash(git switch *), Bash(git worktree add *), Bash(git branch *), Bash(git rev-parse *), EnterWorktree, Bash(git log *), Bash(git status *), Bash(git diff *), Bash(git add *), Bash(git commit *)
+description: Review the current change in fresh-context agents (find bugs, verify each one, fix the Important ones, re-review only what the fixes changed) for up to three rounds, and record every finding and how it was answered. Run it only when the user asks for a review.
+argument-hint: "[quick|standard|deep] [--base REF | --range A..B] [--force] [--fresh] | open | backlog | resolve <ids> <outcome> <reason>"
+allowed-tools: Read, Grep, Glob, Write, Agent, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git rev-parse *)
 ---
 
 # solo-review: review
 
-A solo developer has no second reviewer, so fresh-context agents review and fix. This skill runs the whole loop by
-itself: finders look for defects, verifiers try to refute them, a fixer fixes what survives, and the next round
-re-reviews what changed. The developer comes in only when the loop can't finish, and reads the evidence in the PR.
-Every finding and outcome goes into the ledger, which `/solo-review:review-learn` uses to tune REVIEW.md.
+You have no second engineer, so fresh-context agents play that part. Finders look for defects. A verifier tries to
+refute each one from the code alone. A fixer fixes the Important ones that survive, and the next round re-reviews
+only what the fix changed. You come in when the loop can't finish, and to answer nits.
 
-`L` means `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py`, run from the project (it finds the repo root).
-- Run each command on its own, never chained with `;`, `&&`, or pipes: a chained command needs approval for every
-  part, and gets blocked.
-- Look at files with Read and Grep, not `cat` or `grep`.
-
-The ledger tools `mcp__solo-review__record`, `mcp__solo-review__check_record` and `mcp__solo-review__resolve` (from the
-plugin's hooks module) record a round, a check result and an outcome from typed input, with no temp file and nothing on
-a command line. If they aren't in your tool list (the module didn't load), use the `L` command each step gives instead.
+`L` means `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py`. It finds the repo root itself.
+- Run each command as its own Bash call, never chained with `;`, `&&` or a pipe: chained commands lose the skill's
+  permission.
+- Read files with Read and Grep, not `cat` or `grep`.
 
 Arguments: `$ARGUMENTS`
 
 ## Subcommands
 - `open`: run `L open` and show the output. Stop.
 - `backlog`: run `L backlog` and show the deferred pre-existing findings. Stop.
-- `resolve <ids> <outcome> [reason]`: call `resolve` with those `ids`, `outcome` and `reason`, and `by: "user"`
-  (without the tool: `L resolve <ids> --as <outcome> --reason "<reason>"`). Stop.
-- `init`: set the project up, then stop.
-  1. Run `git log -1 --format=%h`. If it fails, the project is not a git repository or has no commits yet: run
-     `L init` and go on below. If it works, there is history, so start the setup branch before `L init` writes
-     anything, because uncommitted files don't move into a new worktree. Run `git branch --show-current`; if you are
-     on the default branch, the branch guard blocks edits there from now on, so the setup lands on a branch like
-     any other change:
-     - In a linked worktree (`git rev-parse --git-dir` differs from `git rev-parse --git-common-dir`), run
-       `git switch -c chore/review-setup`.
-     - In the main checkout, which stays on the default branch, run `git worktree add
-       <main checkout>/.claude/worktrees/chore-review-setup -b chore/review-setup <default branch>`, then move the
-       session into that path with EnterWorktree. Never run `git switch -c` in the main checkout.
-     Then run `L init`.
-     - If it says this is not a git repository, the project is new: run `git init`, then `L init` again. If the
-       working directory doesn't look like the project's own folder (your home directory, say), ask the user first.
-     - If it says there are no commits yet, stay on the current branch: the setup becomes the first commit (step 5).
-  2. If REVIEW.md was just created, fill in "What failure looks like here" with 3 to 5 lines inferred from CLAUDE.md
-     and README (read only those two). In a new project that has neither, use what the user has said they are
-     building, or leave the section for later and say so.
-  3. If `L config` shows an empty `check`, find the one command that builds and tests the project and set `check:` in
-     REVIEW.md. If there is none, say so.
-  4. CLAUDE.md steers every session and every review, so check it as carefully as REVIEW.md.
-     - If `L init` created it from the template, fill it in from the README, the manifest, and the code. Keep a line
-       only if you checked it against a file, command, or pattern. In a new project with no code yet, keep only
-       what the user has told you about it, and delete the placeholder lines.
-     - If it already existed, launch a fresh `general-purpose` agent with its path and this task: check each line
-       against the code, and report false, stale, and unverifiable lines with evidence, plus conventions the code
-       depends on that the file lacks. Propose the edits, and apply them only with the user's approval.
-  5. If `L init` said there are no commits yet, show REVIEW.md and CLAUDE.md, and ask the user to edit them or say
-     they are ready. They become the first commit, which has nothing before it to be reviewed against, so the user's
-     read is its only review. When the user is ready, run `git add` with every setup file `L init` listed (its
-     `.review/` files included, so clones and worktrees have opted in too), then `git commit -m 'Set up
-     solo-review'`. Leave everything else uncommitted. Otherwise, show REVIEW.md to the user to edit.
-  6. Tell the user that the workflow rules apply from now on, in this session too (`L init` prints them when it opts
-     the project in), and the hooks give them to every new session. Follow them yourself from here.
-- Anything else runs a review.
+- `resolve <ids> <outcome> <reason>`: run `L resolve <ids> --as <outcome> --by user --reason "<reason>"`. Outcomes:
+  fixed, wrong, intentional, wontfix, deferred, merged-past. Stop.
+- Anything else runs a review, passing on `quick|standard|deep` as `--depth`, and `--base`, `--range`, `--force` and
+  `--fresh` as given.
 
-## Review
-First work out a 1 to 3 sentence INTENT for the agents' prompts: what the change does, and anything deliberately
-unusual about it. Take it from this conversation, or from `git log --format=%s <base>..` if the conversation doesn't
-say. The change is already made, so describe it in the present tense, drafts included ("Adds X so that Y"), never as
-a plan ("I'll add X"): the user may see your reasoning, and a plan there reads as work still to come.
+## Before round 1
+1. **Intent.** Write a 1 to 3 sentence INTENT for the agents: what the change does, and anything deliberately unusual
+   about it. Take it from this conversation, or from the commit subjects if the conversation doesn't say. Describe
+   the change as done ("Adds X so that Y"), never as a plan.
+2. **Check first.** Run `L check`. If it prints a command, run that command as its own Bash call, which asks the
+   user's permission unless they allowed it (by design: the command comes from the repo).
+   - If it fails, stop before any agent runs: a review of code that doesn't build or pass its tests is wasted.
+     Show the failing part of the output, and offer to send it to a `solo-review:fixer`. Go on only if the user says
+     to, and say in **Finish** that the check was red.
+   - If `L check` says none is configured, go on, and say so in **Finish**.
+   - Keep a one-line result for the record: `passed: <summary>` or `failed (exit N): <summary>`.
 
-A cycle is one review-and-fix loop. It ends on a clean round, and new work other than fix commits starts a new cycle
-at round 1, so the round cap applies to fixes that don't converge, not to new features. Run rounds until one is clean
-or the cap stops you. Each round:
+## Each round
+1. **Scope.** Run `L scope` with the arguments (only in round 1). It prints JSON. If `stop` is true, go to **Finish**
+   with its `message`, and its `summary` in a code block if there is one. Don't read the diff yourself; the agents
+   do.
 
-1. **Scope.** Run `L scope`. In the first round only, pass on what the user gave: `--depth <d>`, `--base`, `--range`,
-   `--force` (one round past the cap), `--until-clean` (no cap for the rest of the cycle; scope remembers it), or
-   `--fresh` (review the whole change again, not only what changed since the last round). It prints JSON. If `stop`
-   is true, go to **Finish** with its `message`. Don't read the diff yourself; the agents do. After the first round,
-   the scope is only what changed since the last reviewed snapshot.
+2. **Find.** Launch the finders (`subagent_type: "solo-review:finder"`) in parallel, in one message. Each prompt has:
+   - `LENS: <lens>` and `INTENT: <intent>`
+   - `SCOPE:` the scope JSON's diff_cmd, change_diff_cmd, read_files, files, review_md, checklist, claude_md and
+     security_hint
+   - `PRIOR:` prior_findings, one per line
+   - `MAX_NITS: <max_nits>`
 
-2. **Find.** Launch the finders (`subagent_type: "solo-review:finder"`) in parallel, in one message. Each prompt has
-   `LENS: <lens>`, `INTENT`, `SCOPE:` (the scope JSON's diff_cmd, change_diff_cmd, read_files, files, review_md,
-   checklist, claude_md, the lens's entry in min_tool_uses as `min_tool_uses`, security flag, and security_hint),
-   `PRIOR:` (prior_findings, one per line), and
-   `MAX_NITS: <max_nits>`.
-   Each finder returns `checked` (what it found for each checklist line), `read` (the files it read beyond the
-   diff), and `findings`.
+   Lenses by depth:
    - quick: one finder, lens `all`.
-   - standard and deep: lenses `change` and `system`, plus `security` if the scope's security flag is true. Scope
-     sets it whenever a High-risk path is touched, whatever REVIEW.md's `security` says.
+   - standard: `change` and `system`, plus `security` when the scope's `security` is true.
+   - deep: `change`, `system` and `security`, each with `model: "opus"`.
 
-   At standard and deep depth, an empty `findings` is suspect when `checked` has fewer entries than `checklist`,
-   `read` names no file the finder read (a grep or a diff hunk doesn't count), or the Agent result shows fewer tool
-   uses than the lens's entry in the scope's `min_tool_uses` (the diff, REVIEW.md, and one changed file; subagents
-   already have the root CLAUDE.md). The `security` lens when `security_hint` is false is the exception: with no sink
-   in the added lines it has nothing to read, so its floor is the diff and REVIEW.md, and an empty `read` is not
-   suspect. Launch a suspect lens once more, at most once per round, with the same prompt plus a `RETRY:` line that
-   names each gap in numbers and paths, never just "be thorough":
-   - the checklist numbers missing from `checked`;
-   - the tool uses the first pass made, and the lens's `min_tool_uses`;
-   - the changed files (from `files`) that `read` doesn't name, to read whole (not for that `security` exception).
-   Use the second result, judged by the same test. If it is suspect too, list the lens in `thin` in step 4.
+   Each finder returns `checked` (what it found for each checklist line), `read` and `findings`. At standard and
+   deep, a finder that returns no findings while `checked` has fewer entries than `checklist` skipped part of the
+   guide. Launch it once more with the same prompt plus `RETRY: checklist lines <numbers> have no entry in checked`.
+   If the second pass skips them too, list the lens under `thin` in step 4.
 
-3. **Verify.** Merge the finders' `findings` into one numbered candidate list and drop exact duplicates. Each verifier
-   (`subagent_type: "solo-review:verifier"`) prompt has `SCOPE:` (the finders' block), `CANDIDATES:` (the list), and
-   `RECHECK:` (the scope's open_to_recheck).
-   - In CANDIDATES, give each candidate only `n`, file, line, severity, category, and title. Leave out `evidence`
-     and `fix`: a verifier that reads the finder's argument checks the argument, not the code, and repeats its
-     misreadings. Keep the full fields for recording in step 4.
-   - quick: keep only `important` candidates. If any are left or RECHECK has items, launch one verifier. A
-     candidate survives if voted real and still `important`, since quick rounds report Important findings only. A
-     small change can still bring a false alarm, and the fixer would act on it. A quick round with no candidates
-     and nothing to recheck launches no verifier.
+3. **Verify.** Merge the findings into one numbered candidate list and drop exact duplicates. Each verifier
+   (`subagent_type: "solo-review:verifier"`) gets `SCOPE:` (as for the finders), `CANDIDATES:` and `RECHECK:` (the
+   scope's open_to_recheck).
+   - In CANDIDATES give each candidate only `n`, file, line, severity, category and title. Leave out `evidence` and
+     `fix`: a verifier that reads the finder's argument checks the argument, not the code, and repeats its misreading.
+     Keep the full fields for step 4.
+   - quick: keep only `important` candidates. Launch one verifier if any are left or RECHECK has items.
    - standard: one verifier. A candidate survives if voted real; use the verifier's severity.
-   - deep: three verifiers in parallel with the same prompt and `model: "sonnet"`. A candidate survives with 2 or 3
-     real votes; use the most common severity, and record `votes` as `"2/3"` or `"3/3"`.
-   - No candidates and no RECHECK items: skip verification.
+   - deep: three verifiers in parallel with the same prompt. A candidate survives with 2 or 3 real votes; use the most
+     common severity, and record `votes` as `"2/3"` or `"3/3"`.
+   - No candidates and nothing to recheck: skip this step.
 
-   Then keep at most max_nits nits and 2 pre-existing findings.
+   Keep at most max_nits nits and 2 pre-existing findings.
 
-4. **Check, then record.**
-   - Run `L check`. It only prints REVIEW.md's `check` command. If it says none is configured, skip to recording.
-   - Run that command yourself, as its own Bash call. It asks the user's permission unless they allowed it, by
-     design: the command comes from the repo.
-   - Call `check_record` with its exit `status` and a one-line `summary` of its output. A failing check is not a
-     finding; report it in **Finish**. Without the tool: write the summary to `.review/.check.txt` with the Write
-     tool, then run `L check --record --status <exit code> --file .review/.check.txt`. Never put the summary on a
-     command line, because the repo controls that output.
-   - Call `record` with this input:
-     ```
-     {"candidates": <count before verification>, "findings": [<surviving findings, same fields as the finders'>],
-      "resolved_by_change": [<RECHECK ids voted present:false>],
-      "nits_found": <nits among the survivors before the nit cap>, "rejected": <candidates voted false>,
-      "rejected_guide": <false votes marked "guide": true>, "thin": [<lenses still suspect after their retry>]}
-     ```
-     Give each surviving finding a `verified` field: the `why` of a vote that called it real, so the PR shows the
-     path the verifier traced as well as the finder's evidence. Without the tool: write that JSON to
-     `.review/.record.json` with the Write tool, then run `L record --file .review/.record.json` (it deletes the
-     file after reading it).
-   - `record` prints the round's summary. If it recorded no Important findings and no nits, the round is clean: defer
-     any pre-existing findings as in step 5, without a fixer, and go to **Finish**.
+4. **Record.** Write this JSON to `.solo-review/record.json` with the Write tool, then run
+   `L record --file .solo-review/record.json`. The script reads and deletes it, and `.solo-review/` is excluded from
+   git.
+   ```
+   {"candidates": <count before verification>,
+    "findings": [<surviving findings with the finders' fields, plus "verified": the why of a real vote, and "votes" at deep>],
+    "resolved_by_change": [<RECHECK ids voted present:false>],
+    "nits_found": <nits among the survivors before the cap>, "rejected": <candidates voted false>,
+    "rejected_guide": <false votes marked "guide": true>, "thin": [<lenses still thin after their retry>],
+    "check": "<the check's one-line result from round 1, or the fixer's from the last round>"}
+   ```
+   `record` prints the round. When it says the round is clean (no Important findings), go to **Finish**.
 
-5. **Fix.** Never fix anything yourself: your context holds the assumptions that produced these bugs.
-   - Pre-existing findings are not fixed in this loop; old code is what kept review from converging. Call `resolve`
-     with their `ids`, `outcome: "deferred"`, `by: "agent"` and `reason: "pre-existing; outside this change"` (without
-     the tool: `L resolve <ids> --as deferred --by agent --reason "pre-existing; outside this change"`). They stay in
-     `L backlog`.
-   - Launch one `solo-review:fixer` with:
-     - `INTENT`.
-     - `FINDINGS`: every Important finding and nit from this round, plus the "Still open from earlier rounds" that
-       `record` printed (each with id, file, line, severity and fix). Nits are fixed too: an open nit blocks the
-       merge like any other finding.
-     - `CHECK`: exactly `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py check`. The fixer runs the command it
-       prints. Don't record its result: `record` already closed this round, and the next round's step 4 runs and
-       records the check again.
-   - Commit its changes as one commit, following `/solo-review:commit`, with the subject `Fix review findings F-1, F-4`
-     (`Fix review finding F-1` for one).
-     Leave `.review/` out; ship commits the ledger. Then call `resolve` with the `ids` it fixed, `outcome: "fixed"`,
-     `by: "agent"` and `commit: "<sha>"` (without the tool: `L resolve <ids> --as fixed --by agent --commit <sha>`).
-   - Findings it returns as `not_fixed` stay open and block ship. If it fixed nothing, go to **Finish**; otherwise
-     start the next round.
+5. **Fix the Important findings.** Never fix anything yourself: your context holds the assumptions that produced
+   these bugs.
+   - Defer the pre-existing findings: `L resolve <ids> --as deferred --by agent --reason "pre-existing; outside this
+     change"`. Old code is what kept review from converging, so they wait in `L backlog`.
+   - Run `git status --short`, then launch one `solo-review:fixer` with INTENT, `FINDINGS:` (every open Important
+     finding, from this round and from "Still open from earlier rounds", each with id, file, line, evidence and fix),
+     and `CHECK:` (the command `L check` printed, or `none`). Nits are not sent: they wait for the user.
+   - If `git status` showed a clean tree before the fixer ran, the change under review is committed, so commit the
+     fix the same way. Stage the files the fixer lists with `git add -- <files>`, then commit with the subject
+     `Fix review findings F-1, F-4` (`Fix review finding F-1` for one). If the tree wasn't clean, leave the fix
+     uncommitted with the rest of the change.
+   - Run `L resolve <ids it fixed> --as fixed --by agent`, adding `--commit <sha>` if you committed. Do this before
+     the next scope: it records the tree the fix left, which is how the next round tells fixes from new work.
+   - Findings the fixer returns as `not_fixed` stay open. If it fixed nothing, go to **Finish**; otherwise start the
+     next round.
 
 ## Finish
-Send the user one message:
-- The rounds run, the findings fixed (one line per id), and the last check result.
-- Every Important finding and nit still open on this branch (run `L open`), each with the fixer's reason if it gave
-  one, and a recommended answer: a fix to send to a fixer, or an outcome with a reason. These are the only decisions
-  the loop leaves to the user.
-- If the round cap stopped the loop: the scope JSON's `summary` unchanged, in a code block, then one line naming the
-  problem that kept coming back, and one recommendation (rethink the approach if the same problem keeps returning,
-  or else the shortcut that fits best). Then wait for the user; don't ship.
-- If `record` reported thin lenses, name them and say the round covered less than its result shows.
-- If the last round was clean and nothing is open, say so. When this review finishes a task, run `L config`: with
-  `workflow: auto`, go on to `/solo-review:ship`; with `manual`, say the branch is ready for `/solo-review:ship` and
-  stop, since the user asks for ship themselves.
+Send one message:
+1. A count line first: `2 Important fixed · 1 nit open · 1 pre-existing deferred`, or `Nothing to fix.`
+2. The check result, or that no check is configured.
+3. Every Important finding still open (`L open --important`), each with the fixer's reason if it gave one, and a
+   recommended answer: a fix to send to a fixer, or an outcome with a reason.
+4. Each open nit with its one-line fix. Say the user can have them fixed ("fix the nits") or answer them with
+   `/solo-review:review resolve`, and that open nits don't block shipping.
+5. If the round cap stopped the loop: the summary, then one line naming the problem that kept coming back, and one
+   recommendation (usually: rethink the approach rather than patch again).
+6. If any lens was thin, name it, and say the round covered less than its result shows.
+7. If nothing Important is open, say the change is ready for `/solo-review:ship`. Never run ship yourself.
 
-When the user answers an open finding, call `resolve` with its `ids`, the `outcome`, their `reason` and `by: "user"`
-(without the tool: `L resolve <ids> --as <outcome> --reason "..." --by user`), and send any fix they want to a fixer
-as in step 5.
+When the user answers a finding, run `L resolve <ids> --as <outcome> --by user --reason "<their reason>"`.
+When they ask to fix the nits:
+1. Send the nits to a fixer as in step 5, then commit and resolve them the same way.
+2. Run one round with `L scope --depth quick`. It reviews only the fix, for Important findings only.
+3. Finish as above.
 
 ## Rules
-- Never record `wrong`, `intentional`, `wontfix`, or `merged-past` on your own judgment. Apart from the pre-existing
-  rule in step 5, a finding closes only by a fix, by a later round finding it gone, or by the user.
-- Style and cleanup are dropped on purpose; `/simplify` handles them separately.
-- With `gate: push` in REVIEW.md, pushing is blocked while any finding is open, nits included.
+- Never record `wrong`, `intentional`, `wontfix` or `merged-past` on your own judgment. Apart from deferring
+  pre-existing findings, a finding closes only by a fix, by a later round finding it gone, or by the user.
+- Style and cleanup are left out on purpose; `/simplify` handles them.
