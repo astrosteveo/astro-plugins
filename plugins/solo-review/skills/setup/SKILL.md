@@ -35,7 +35,9 @@ The user ran this to have solo-review set up, so set it up. Respecting their tim
   3. `inferred_check`
   4. the best that exists: a build, a type check, a compile, or a smoke run like `--help`
 
-  Run it once, as its own Bash call. A failing check doesn't stop setup: note what failed, and report it. A slow
+  Run it once, as its own Bash call. It asks the user's permission unless they allowed it, by design: the command
+  comes from the repo. That prompt is the one expected pause. If the user declines, the check is unverified, not
+  failing: report `Check: <command>, not run (permission declined).` and carry on. A failing check doesn't stop setup: note what failed, and report it. A slow
   check can run in the background while you do step 2, but the report waits for it: never send one that says the
   check is still running.
 
