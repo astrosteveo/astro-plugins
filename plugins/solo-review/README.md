@@ -13,7 +13,7 @@ answers feed back into the reviewer. A solo developer has no team, so this plugi
 | A subagent reviews the diff with fresh context | `finder` agents in a fresh context, each with one lens (`change`, `system`, `security`), reading CLAUDE.md and REVIEW.md, and reporting what they found for each line of REVIEW.md's "What Important means here" and "Always check" |
 | Verifiers vote on each finding | `verifier` agent(s) trying to refute each candidate from the code alone (they see the claim, not the finder's reasoning, and quote the lines it depends on): 1 vote at standard depth, 2-of-3 at deep |
 | An agent picks up the fix and runs another round | A fresh-context `fixer` agent fixes every verified Important finding and nit, and the next round re-reviews what changed. No human approves rounds |
-| "A person can wave off a nit in seconds. An agent fixes it, which means another commit and another round" | Nits are capped (`max_nits`) and must name a real defect; style and cleanup are dropped. The round cap bounds the extra rounds |
+| "A person can wave off a nit in seconds. An agent fixes it, which means another commit and another round" | Nits are capped (`max_nits` fixed per round; verified nits past it go to the backlog) and must name a real defect; style and cleanup are dropped. The round cap bounds the extra rounds |
 | Pre-existing bugs don't look like the author's fault | Bugs on lines the whole change didn't touch are deferred to a backlog, not fixed in the loop |
 | Every finding answered (fix, or resolve with a reason) | `fixed` / `wrong` / `intentional` / `wontfix` / `deferred` / `merged-past`, recorded in the ledger with who decided |
 | Open findings block merge; security review also blocks | `ship` refuses while any finding is open, nits included, and a hook blocks Claude's `git push` while any finding is open too |
@@ -99,7 +99,7 @@ You can run any step by hand:
 - `review --fresh` reviews the whole change from its base again, rather than only what changed since the last round,
   so you can re-check a round that came back clean when nothing has changed since.
 - `review open` lists open findings.
-- `review backlog` lists deferred pre-existing findings.
+- `review backlog` lists deferred findings: pre-existing ones, and verified nits past a round's `max_nits`.
 - `review resolve <ids> <outcome> <reason>` answers a finding.
 - `/solo-review:commit` splits a diff that mixes several purposes.
 - `review-learn escape <fix-commit>` logs a bug that got past review.
@@ -148,8 +148,10 @@ You can run any step by hand:
 - **Agents** find, verify, and fix. The session that wrote the code never fixes review findings itself, because
   its context holds the assumptions that produced the bugs. A fresh `fixer` agent does it.
 - **Nobody dismisses a finding on an agent's judgment.** A finding closes when it is fixed, when a later round finds
-  it gone, or when you answer it. The one standing rule: a pre-existing finding (on lines the whole change didn't
+  it gone, or when you answer it. The standing rules: a pre-existing finding (on lines the whole change didn't
   touch) is recorded as `deferred` with the reason "pre-existing; outside this change", and stays in the backlog.
+  So is a verified nit past the round's `max_nits`: the ledger defers it by itself, so the fixer gets only
+  `max_nits` nits a round, and the rest wait in the backlog rather than being dropped.
 - **You** decide what to build, read the PR (and any High-risk files it touches), answer anything the loop leaves
   open, and say when to merge a Medium- or High-risk change.
 - **`review-learn spotcheck`** samples the agents' decisions. Agent-decided outcomes count as unlabeled in `stats`
@@ -166,8 +168,9 @@ Claude's own context stays small, because the agents read the diff and Claude on
 | deep | Any High-risk path (always-High or a `high` glob) is touched, whatever `depth` says | 3 finders (`change`, `system`, `security`; `security: never` drops the security finder only when no High-risk path is touched), plus 3 verifiers (Sonnet), 2-of-3 vote |
 
 Other cost controls:
-- Nits are capped at `max_nits` per round, so fixing them adds little. Every candidate a finder reports, at any
-  depth, goes to a verifier before it is kept or dropped.
+- At most `max_nits` nits per round go to the fixer, so fixing them adds little; verified nits past that go to the
+  backlog. Finders report every nit and pre-existing finding they can trigger, and every candidate, at any depth,
+  goes to a verifier before it is kept or dropped.
 - Rounds after the first review only what changed since the last reviewed snapshot, and the round cap is 3 per
   cycle (`max_rounds`), unless you pass `--until-clean`.
 - `review-learn` can't be invoked by the model, so its description doesn't use context in every session. `review`,

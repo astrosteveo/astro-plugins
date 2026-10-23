@@ -74,7 +74,7 @@ export function summary(s: ReviewStatus | null): string {
   const head = s.open.length ? `${plural(s.open.length, 'open finding')} on ${where}:` : `No open findings on ${where}.`
   const lines = [head, ...s.open.map(findingLine)]
   if (s.last_run) lines.push(runLine(s.last_run, s.max_rounds))
-  if (s.backlog) lines.push(`Backlog: ${s.backlog} deferred pre-existing (/solo-review:review backlog).`)
+  if (s.backlog) lines.push(`Backlog: ${s.backlog} deferred (/solo-review:review backlog).`)
   return lines.join('\n')
 }
 

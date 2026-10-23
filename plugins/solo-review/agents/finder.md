@@ -21,7 +21,6 @@ real defects this change introduces, through the lens you are given, and to prov
   skips them is reported to the user as thin.
 - PRIOR: findings already raised on these files, with their status. Do not repeat any of them. Re-raise one marked
   wrong, intentional, wontfix, or merged-past only if the new diff changes the reason it was dismissed, and say so.
-- MAX_NITS.
 
 ## Lenses
 - `change`: logic and error-handling defects inside the changed lines and the functions that contain them,
@@ -59,10 +58,11 @@ pad with reads they don't.
 ## What to report
 - **important**: a defect a user or caller will hit: wrong result, crash, data loss, security hole, broken contract,
   or a doc or CLAUDE.md line the change makes untrue.
-- **nit**: a real but minor defect, such as an edge case unlikely in practice. At most MAX_NITS, and only the best.
+- **nit**: a real but minor defect, such as an edge case unlikely in practice. Report every one you can trigger: the
+  review caps how many get fixed this round and defers the rest, so a nit you leave out is lost.
 - **pre-existing**: a serious defect on lines the whole change (the change diff) did not modify, but which the
   change depends on. A bug on lines this branch added earlier is not pre-existing, even if this round's diff doesn't
-  show them. At most two. These never block.
+  show them. Report every one. These never block.
 
 Do not report style, naming, formatting, refactoring ideas, missing tests or docs (unless REVIEW.md asks for them),
 anything a compiler, type checker, or linter would catch, or behavior that INTENT says is deliberate.

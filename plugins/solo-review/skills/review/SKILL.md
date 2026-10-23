@@ -34,7 +34,8 @@ Arguments: `$ARGUMENTS`
 
 ## Subcommands
 - `open`: run `L open` and show the output. Stop.
-- `backlog`: run `L backlog` and show the deferred pre-existing findings. Stop.
+- `backlog`: run `L backlog` and show the deferred findings (pre-existing ones, and nits past a round's
+  `max_nits`). Stop.
 - `resolve <ids> <outcome> [reason]`: call `resolve` with those `ids`, `outcome` and `reason`, and `by: "user"`
   (without the tool: `L resolve <ids> --as <outcome> --reason "<reason>"`). Stop.
 - `init`: setup is `/solo-review:setup` now. Tell the user to run it, and stop.
@@ -59,8 +60,7 @@ or the cap stops you. Each round:
 2. **Find.** Launch the finders (`subagent_type: "solo-review:finder"`) in parallel, in one message. Each prompt has
    `LENS: <lens>`, `INTENT`, `SCOPE:` (the scope JSON's diff_cmd, change_diff_cmd, read_files, files, review_md,
    checklist, claude_md, the lens's entry in min_tool_uses as `min_tool_uses`, security flag, and security_hint),
-   `PRIOR:` (prior_findings, one per line), and
-   `MAX_NITS: <max_nits>`.
+   and `PRIOR:` (prior_findings, one per line).
    Each finder returns `checked` (what it found for each checklist line), `read` (the files it read beyond the
    diff), and `findings`.
    - quick: one finder, lens `all`.
@@ -93,7 +93,9 @@ or the cap stops you. Each round:
      real votes; use the most common severity, and record `votes` as `"2/3"` or `"3/3"`.
    - No candidates and no RECHECK items: skip verification.
 
-   Then keep at most max_nits nits and 2 pre-existing findings.
+   Keep every survivor, and list the nits most serious first: `record` keeps the first max_nits nits open for the
+   fixer and defers the rest to the backlog, and step 5 defers the pre-existing ones. Nothing a verifier voted real
+   is dropped.
 
 4. **Check, then record.**
    - Run `L check`. It only prints REVIEW.md's `check` command. If it says none is configured, skip to recording.
@@ -106,16 +108,16 @@ or the cap stops you. Each round:
    - Call `record` with this input:
      ```
      {"candidates": <count before verification>, "findings": [<surviving findings, same fields as the finders'>],
-      "resolved_by_change": [<RECHECK ids voted present:false>],
-      "nits_found": <nits among the survivors before the nit cap>, "rejected": <candidates voted false>,
+      "resolved_by_change": [<RECHECK ids voted present:false>], "rejected": <candidates voted false>,
       "rejected_guide": <false votes marked "guide": true>, "thin": [<lenses still suspect after their retry>]}
      ```
      Give each surviving finding a `verified` field: the `why` of a vote that called it real, so the PR shows the
      path the verifier traced as well as the finder's evidence. Without the tool: write that JSON to
      `.review/.record.json` with the Write tool, then run `L record --file .review/.record.json` (it deletes the
      file after reading it).
-   - `record` prints the round's summary. If it recorded no Important findings and no nits, the round is clean: defer
-     any pre-existing findings as in step 5, without a fixer, and go to **Finish**.
+   - `record` prints the round's summary, including any nits it deferred past max_nits. If it recorded no Important
+     findings and no nits left open, the round is clean: defer any pre-existing findings as in step 5, without a
+     fixer, and go to **Finish**.
 
 5. **Fix.** Never fix anything yourself: your context holds the assumptions that produced these bugs.
    - Pre-existing findings are not fixed in this loop; old code is what kept review from converging. Call `resolve`
@@ -124,9 +126,9 @@ or the cap stops you. Each round:
      `L backlog`.
    - Launch one `solo-review:fixer` with:
      - `INTENT`.
-     - `FINDINGS`: every Important finding and nit from this round, plus the "Still open from earlier rounds" that
-       `record` printed (each with id, file, line, severity and fix). Nits are fixed too: an open nit blocks the
-       merge like any other finding.
+     - `FINDINGS`: every Important finding and nit this round left open (not the nits `record` deferred), plus the
+       "Still open from earlier rounds" that `record` printed (each with id, file, line, severity and fix). Nits are
+       fixed too: an open nit blocks the merge like any other finding.
      - `CHECK`: exactly `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py check`. The fixer runs the command it
        prints. Don't record its result: `record` already closed this round, and the next round's step 4 runs and
        records the check again.
@@ -139,7 +141,8 @@ or the cap stops you. Each round:
 
 ## Finish
 Send the user one message:
-- The rounds run, the findings fixed (one line per id), and the last check result.
+- The rounds run, the findings fixed (one line per id), any nits `record` deferred past max_nits (one line per id,
+  now in `L backlog`), and the last check result.
 - Every Important finding and nit still open on this branch (run `L open`), each with the fixer's reason if it gave
   one, and a recommended answer: a fix to send to a fixer, or an outcome with a reason. These are the only decisions
   the loop leaves to the user.
@@ -156,7 +159,8 @@ When the user answers an open finding, call `resolve` with its `ids`, the `outco
 as in step 5.
 
 ## Rules
-- Never record `wrong`, `intentional`, `wontfix`, or `merged-past` on your own judgment. Apart from the pre-existing
-  rule in step 5, a finding closes only by a fix, by a later round finding it gone, or by the user.
+- Never record `wrong`, `intentional`, `wontfix`, or `merged-past` on your own judgment. Apart from the deferrals
+  (pre-existing findings in step 5, and the nits `record` defers past max_nits), a finding closes only by a fix, by
+  a later round finding it gone, or by the user.
 - Style and cleanup are dropped on purpose; `/simplify` handles them separately.
 - With `gate: push` in REVIEW.md, pushing is blocked while any finding is open, nits included.

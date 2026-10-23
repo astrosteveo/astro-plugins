@@ -46,9 +46,9 @@ SEVERITIES = ("important", "nit", "pre-existing")
 FIXED_IN_LOOP = ("important", "nit")  # "every finding has to be answered"; pre-existing ones are deferred instead
 CATEGORIES = ("logic", "error-handling", "concurrency", "resource", "data-integrity",
               "api-contract", "security", "performance", "test", "docs-drift", "convention")
-# deferred: pre-existing, outside the change. merged-past: a nit merged without fixing (ship recorded this before nits
-# were fixed in the loop), which answers it but says nothing about whether it was right, so it is neither useful nor
-# noise.
+# deferred: pre-existing, outside the change, or a nit past the round's max_nits. merged-past: a nit merged without
+# fixing (ship recorded this before nits were fixed in the loop), which answers it but says nothing about whether it
+# was right, so it is neither useful nor noise.
 OUTCOMES = ("fixed", "wrong", "intentional", "wontfix", "deferred", "merged-past")
 JUDGED = ("fixed", "wrong", "intentional", "wontfix")  # the article's four author responses
 DISMISSED = ("wrong", "intentional", "wontfix", "merged-past")  # answered without a fix: finders don't repeat these
@@ -861,7 +861,7 @@ def cmd_scope(args):
     run = {"type": "run", "run": run_id, "ts": now(), "cycle": cycle_id or run_id, "new_work": new_work,
            "branch": branch, "base": base, "target": target, "from": diff_from, "label": label,
            "round": round_no, "incremental": incremental, "depth": depth, "security": security,
-           "files": len(files), "lines": added + removed, "rev": rev}
+           "files": len(files), "lines": added + removed, "rev": rev, "max_nits": cfg["max_nits"]}
     if until_clean:
         run["until_clean"] = True
     if args.fresh:
@@ -976,6 +976,12 @@ def cmd_record(args):
                     "title": f["title"][:160], "evidence": f.get("evidence", "")[:500],
                     "fix": f.get("fix", "")[:300], "votes": f.get("votes"),
                     "verified": str(f.get("verified", ""))[:300]})
+    # every verified nit is recorded; past this round's max_nits (most serious first) it goes to the backlog, not lost
+    max_nits = run.get("max_nits", DEFAULTS["max_nits"])
+    nits = [f for f in new if f["severity"] == "nit"]
+    over = [{"type": "outcome", "id": f["id"], "ts": now(), "outcome": "deferred", "by": "auto",
+             "reason": f"over this round's max_nits ({max_nits}); fix it in its own change"} for f in nits[max_nits:]]
+    over_ids = {e["id"] for e in over}
     autofixed = []
     for fid in data.get("resolved_by_change", []):
         fid = norm_id(fid)
@@ -983,11 +989,12 @@ def cmd_record(args):
             autofixed.append({"type": "outcome", "id": fid, "ts": now(), "outcome": "fixed",
                               "by": "auto", "reason": "no longer present on re-review"})
     # Important findings and nits send the loop round again; pre-existing ones are deferred, not fixed
-    actionable = sum(1 for f in new if f["severity"] in FIXED_IN_LOOP)
+    actionable = sum(1 for f in new if f["severity"] in FIXED_IN_LOOP and f["id"] not in over_ids)
     if data.get("check") and "check" not in run:  # `ledger.py check --record` already stored the real result
         run["check"] = str(data["check"])[:200]
-    # compliance with REVIEW.md, measured before the orchestrator trims anything
-    for key in ("nits_found", "rejected", "rejected_guide"):
+    # compliance with REVIEW.md: every verified nit, including those deferred past the cap
+    run["nits_found"] = len(nits)
+    for key in ("rejected", "rejected_guide"):
         if isinstance(data.get(key), int):
             run[key] = data[key]
     # lenses that came back empty twice without showing what they checked: the round looks cleaner than it was
@@ -1000,7 +1007,7 @@ def cmd_record(args):
         candidates = len(new)
     run.update(candidates=candidates, reported=len(new), actionable=actionable,
                important=sum(1 for f in new if f["severity"] == "important"))
-    append(run, *new, *autofixed)
+    append(run, *new, *over, *autofixed)
     os.remove(pending)
 
     counts = Counter(f["severity"] for f in new)
@@ -1008,6 +1015,8 @@ def cmd_record(args):
     head = f"{len(new)} finding{'s' if len(new) != 1 else ''}" + (f" ({detail})" if detail else "")
     print(f"{head}. Round {run['round']}, {run['depth']}, {run['candidates']} candidates -> "
           f"{len(new)} verified." + (f" {len(autofixed)} earlier finding(s) cleared by the change." if autofixed else ""))
+    if over:
+        print(f"Deferred to the backlog, past max_nits ({max_nits}): {', '.join(e['id'] for e in over)}.")
     if not actionable:
         print("Round is clean: no Important findings or nits." + (" Pre-existing findings are deferred, not fixed."
                                                                    if new else ""))
@@ -1179,7 +1188,7 @@ def cmd_stats(args):
         candidates = sum(r["candidates"] for r in measured if isinstance(r.get("candidates"), int))
         guide = sum(r["rejected_guide"] for r in measured)
         rejected = sum(r.get("rejected", 0) for r in measured)
-        over = sum(1 for r in measured if r.get("nits_found", 0) > cfg["max_nits"])
+        over = sum(1 for r in measured if r.get("nits_found", 0) > r.get("max_nits", cfg["max_nits"]))
         print(f"REVIEW.md compliance ({len(measured)} runs): finders raised {candidates} candidates; the verifier "
               f"rejected {rejected} ({pct(rejected, candidates)}), {guide} of them ({pct(guide, candidates)} of all "
               f"candidates) because REVIEW.md says not to flag them or calls them intentional; {over} run(s) found "
@@ -1213,9 +1222,9 @@ def cmd_stats(args):
 
 
 def cmd_backlog(args):
-    """Pre-existing findings deferred by review: old bugs worth fixing in their own change."""
+    """Findings deferred by review: pre-existing bugs, and nits past a round's max_nits, worth their own change."""
     rows = [f for f in findings_state(load_events()).values() if f["outcome"] == "deferred"]
-    print(f"{len(rows)} deferred pre-existing finding(s).")
+    print(f"{len(rows)} deferred finding(s).")
     for f in rows:
         print(fmt_finding(f))
 

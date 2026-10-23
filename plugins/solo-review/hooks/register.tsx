@@ -201,7 +201,7 @@ export const register: Register = on => {
             <Text dimColor>{runLine(s.last_run, s.max_rounds)}</Text>
           </Box>
         )}
-        {s.backlog > 0 && <Text dimColor>Backlog: {s.backlog} deferred pre-existing (/solo-review:review backlog)</Text>}
+        {s.backlog > 0 && <Text dimColor>Backlog: {s.backlog} deferred (/solo-review:review backlog)</Text>}
       </Box>
     )
   })

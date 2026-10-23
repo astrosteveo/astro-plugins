@@ -35,9 +35,12 @@ export const TOOLS = {
       type: 'object',
       properties: {
         candidates: { ...COUNT, description: 'candidates before verification' },
-        findings: { type: 'array', items: FINDING },
+        findings: {
+          type: 'array',
+          items: FINDING,
+          description: "every surviving finding, nits most serious first: nits past the round's max_nits are deferred",
+        },
         resolved_by_change: { type: 'array', items: { type: 'string' }, description: 'RECHECK ids voted gone' },
-        nits_found: { ...COUNT, description: 'nits among the survivors before the nit cap' },
         rejected: { ...COUNT, description: 'candidates voted false' },
         rejected_guide: { ...COUNT, description: 'false votes marked "guide": true' },
         thin: { type: 'array', items: { type: 'string' }, description: 'lenses still suspect after their retry' },
@@ -85,7 +88,7 @@ export function toolName(full: string): LedgerTool | undefined {
   return name in TOOLS && full !== name ? (name as LedgerTool) : undefined
 }
 
-const RECORD_KEYS = ['candidates', 'findings', 'resolved_by_change', 'nits_found', 'rejected', 'rejected_guide', 'thin']
+const RECORD_KEYS = ['candidates', 'findings', 'resolved_by_change', 'rejected', 'rejected_guide', 'thin']
 
 /**
  * The `ledger.py` run for a tool call, or an error the model reads. Only the schema's own fields are passed on: the
