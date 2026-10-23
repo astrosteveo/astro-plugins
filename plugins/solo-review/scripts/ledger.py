@@ -824,10 +824,14 @@ def cmd_record(args):
                     "title": f["title"][:160], "evidence": text_field(f.get("evidence"), 500),
                     "fix": text_field(f.get("fix"), 300), "votes": text_field(f.get("votes"), 10) or None,
                     "verified": text_field(f.get("verified"), 300)})
+    db = default_branch()
+    # the change's own findings, including those from rounds it had on the default branch before it moved here
+    mine = change_findings(events, change_runs(events, run["branch"], run["base"], db))
+    mine_ids = {f["id"] for f in mine}
     autofixed = []
     for raw in data.get("resolved_by_change", []):
         fid = norm_id(raw)
-        if fid and fid in state and state[fid]["outcome"] is None and state[fid].get("branch") == run["branch"]:
+        if fid and fid in mine_ids and state[fid]["outcome"] is None:
             autofixed.append({"type": "outcome", "id": fid, "ts": now(), "outcome": "fixed",
                               "by": "auto", "reason": "no longer present on re-review"})
     if data.get("check"):
@@ -856,8 +860,6 @@ def cmd_record(args):
         print(f"Thin: the {', '.join(run['thin'])} finder(s) came back empty twice without showing what they checked, "
               "so this round covered less than its result shows.")
     cleared = {a["id"] for a in autofixed}
-    db = default_branch()
-    mine = change_findings(events, change_runs(events, run["branch"], run["base"], db))
     still = [f for f in mine if f["outcome"] is None and f["severity"] != "pre-existing" and f["id"] not in cleared]
     if still:
         print(f"Still open from earlier rounds: {', '.join(f['id'] for f in still)}.")
