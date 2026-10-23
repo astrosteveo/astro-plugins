@@ -2,6 +2,7 @@
 name: commit
 description: Commit finished work on a feature branch, one commit per logical unit (one purpose, builds and passes tests). Use when a unit of work is complete, when a diff mixes several purposes and needs splitting, or when asked to commit.
 argument-hint: "[hint for the message]"
+disallowed-tools: AskUserQuestion
 allowed-tools: Read, Write, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git switch *), Bash(git branch *), Bash(git apply *), Bash(git rev-parse *)
 ---
 

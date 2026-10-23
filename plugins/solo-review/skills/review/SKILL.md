@@ -2,6 +2,7 @@
 name: review
 description: Review the current change and fix what the review finds, by itself, in rounds of fresh-context agents (find, verify, fix, re-review) until a round is clean or three rounds have run. Records every finding and outcome in the project's review ledger. Run it whenever a task is finished, before opening a PR.
 argument-hint: "[quick|standard|deep] [--base REF | --range A..B] [--force | --until-clean] [--fresh] | resolve <ids> <outcome> [reason] | open | backlog"
+disallowed-tools: AskUserQuestion
 allowed-tools: Read, Grep, Write, Agent, mcp__solo-review__record, mcp__solo-review__check_record, mcp__solo-review__resolve, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git switch *), Bash(git branch *), Bash(git rev-parse *), Bash(git log *), Bash(git status *), Bash(git diff *), Bash(git add *), Bash(git commit *)
 ---
 

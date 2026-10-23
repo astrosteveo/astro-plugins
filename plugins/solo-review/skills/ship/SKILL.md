@@ -2,6 +2,7 @@
 name: ship
 description: Open the pull request for a reviewed feature branch. Checks that it is reviewed and committed, rebases onto the latest default branch, reruns checks, opens a PR from the repo's template with the review results, and waits for CI. Lands a Low-risk change by itself; merges, lands, and cleans up anything else only when the user says to merge. Run it after a clean review when a task is finished.
 argument-hint: "[merge] [--skip-review]"
+disallowed-tools: AskUserQuestion
 allowed-tools: Read, Grep, Write, Agent, ExitWorktree, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git *), Bash(gh pr *), Bash(gh run view *)
 ---
 
