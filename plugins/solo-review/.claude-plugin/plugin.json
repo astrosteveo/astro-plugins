@@ -7,5 +7,8 @@
     "name": "astrosteveo",
     "email": "smosleyjr@pm.me"
   },
-  "license": "MIT"
+  "homepage": "https://github.com/astrosteveo/astro-plugins/tree/main/plugins/solo-review",
+  "repository": "https://github.com/astrosteveo/astro-plugins",
+  "license": "MIT",
+  "keywords": ["code-review", "pull-requests", "git", "workflow", "solo"]
 }
