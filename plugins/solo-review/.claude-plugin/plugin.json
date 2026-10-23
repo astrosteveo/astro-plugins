@@ -1,6 +1,6 @@
 {
   "name": "solo-review",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Code review for a solo developer working with agents: fresh-context finders and a blind verifier review the change when you ask, fix what's Important and re-review the fix; ship opens a GitHub PR with the evidence and merges on your sign-off; explain and learn keep you and the reviewer improving.",
   "author": {
     "name": "astrosteveo",

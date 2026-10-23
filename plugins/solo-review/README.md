@@ -9,8 +9,10 @@ The article's answer to "who reviews the code?" is layers:
 - risky paths get a person
 - the reviewer learns from what it missed
 
-solo-review gives you those layers without a team, and nothing runs until you ask for it. It has no hooks, doesn't
-block edits on main, doesn't force worktrees, and doesn't commit on its own.
+solo-review gives you those layers without a team, and nothing runs until you ask for it. The pull request is the
+gate: every change gets a branch, and reaches the default branch only through a reviewed PR that you merge. One hook
+holds that line: in a set-up repo, Claude's file edits and `git commit`s on the default branch are refused until it
+starts a branch. Branches are plain branches in your checkout, never forced worktrees.
 
 ## Install
 
@@ -24,10 +26,10 @@ Requires `git` and `python3` (standard library only). Shipping needs the GitHub 
 
 | Skill | What it does |
 |---|---|
-| `/solo-review:setup` | Sets the project up in one pass, and makes whatever is missing: the git repo and a first commit, CLAUDE.md or its Verify section, REVIEW.md, the settings, a PR template. Commits only its own files, then offers to put the project on GitHub. Works in a new folder, an existing repo, or one that used v1. Run it again to check for drift. |
-| `/solo-review:review` | Reviews the current change, fixes the Important findings, and re-reviews the fixes, for up to 3 rounds. |
-| `/solo-review:ship` | Opens a PR: commits, moves work off main, rebases, re-checks, fills the template, watches CI. Merges when you say so. |
-| `/solo-review:commit` | Commits finished work as logical units, each revertable on its own. |
+| `/solo-review:setup` | Sets the project up in one pass, and makes whatever is missing: the git repo and a first commit, CLAUDE.md with its Verify and Git sections, REVIEW.md, the settings, a PR template. Commits only its own files, on a `chore/solo-review-setup` branch, turns the branch guard on, and offers to open the setup's PR. Works in a new folder, an existing repo, or one that used v1. Run it again to check for drift. |
+| `/solo-review:review` | Reviews the current change on its branch, fixes the Important findings, and re-reviews the fixes, for up to 3 rounds. |
+| `/solo-review:ship` | Opens the PR: moves work off the default branch, commits what's left, puts the repo on GitHub if it isn't (asking first), rebases, re-checks, fills the template, watches CI. Merges when you say so. |
+| `/solo-review:commit` | Commits finished work on a branch, as logical units, each revertable on its own. |
 | `/solo-review:explain <topic>` | Explains one slice of the code as it is today, cited to file:line. |
 | `/solo-review:learn` | Logs bugs that slipped past review, replays them as evals, and tunes REVIEW.md from the record. |
 
@@ -40,10 +42,24 @@ Run `/solo-review:setup` in the project, and it does the rest:
   Important means here" from what the README promises, and "Always check" from bug fixes that recur in the history.
   It never commits your work in progress.
 - **A repo that used v1:** it moves the settings out of REVIEW.md, keeps the review history, and removes `.review/`.
-  v2 has no push gate, branch rule or auto-run.
+  v2 has no push gate or auto-run, and branches are plain branches, never worktrees.
 
-It asks only before publishing anything: creating a GitHub repo, or pushing. Before a first push, it scans the files
-and the history for secrets and personal emails.
+The setup itself goes on a branch and lands through a PR like any change. Only a brand-new repository's first commit
+goes straight onto the default branch, since there is nothing yet to open a PR against. Setup asks only before
+publishing anything: creating a GitHub repo, pushing, or opening the PR. Before a first push, ship scans the files and
+the history for secrets and personal emails.
+
+## The branch guard
+
+In a repository set up for solo-review, a hook refuses Claude's file edits and `git commit`s on the default branch,
+with the command to start a branch. It lets through:
+- ignored files, which never reach a commit
+- the `.solo-review/` handoff folder
+- a new repository's first commit
+- the edits and commits that finish a rebase or merge
+
+It guards against slips, not against intent: an edit made through the shell gets past it, and anything it can't make
+sense of is allowed.
 
 ## How a review runs
 
