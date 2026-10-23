@@ -35,28 +35,21 @@ answers feed back into the reviewer. A solo developer has no team, so this plugi
 
 Requires `git` and `python3`. No other dependencies. Landing through pull requests also needs the GitHub CLI, `gh`.
 
-Then turn it off everywhere, and on only in the projects you set up, so it never acts in a repo you didn't opt in:
+Leave it enabled everywhere. It stays out of the way in a repo until you run `/solo-review:setup` there. Setup
+creates `.review/`, and that folder is the opt-in:
+- **Without it**, the hooks do nothing and the status line stays blank. If Claude picks the commit, review or ship
+  skill on its own (when you say "commit it", say), the skill checks first and steps aside, and Claude does what you
+  asked as if solo-review weren't installed, without mentioning it. If you type one of them there, it tells you the
+  repo isn't set up, and does nothing else.
+- **With it**, everything below applies, in that repo only.
 
-```
-claude plugin disable solo-review@astro-plugins --scope user
-```
-
-In each project you want it in:
-
-```
-claude plugin enable solo-review@astro-plugins --scope local
-/reload-plugins
-/solo-review:setup
-```
-
-Elsewhere it isn't loaded at all: no skills, hooks or agents. `--scope local` keeps the switch out of the repo, in
-`.claude/settings.local.json`. Use `--scope project` instead to commit it in `.claude/settings.json`, so every clone
-has it on.
+Claude Code's own instructions still have Claude start a branch before committing on the default branch; that
+isn't solo-review.
 
 ## The workflow
 
 ```
-/solo-review:setup           # once per project, after turning the plugin on there: REVIEW.md, CLAUDE.md, .review/, the PR template
+/solo-review:setup           # once per project, to opt it in: REVIEW.md, CLAUDE.md, .review/, the PR template
   (just work)                # Claude branches, commits as it works, then by itself: check, review loop, PR
   "merge it"                 # you read the PR and say when to merge; ship lands it (a Low-risk PR lands by itself)
 /solo-review:review-learn    # every couple of weeks: tune REVIEW.md from the ledger
@@ -173,7 +166,8 @@ Other cost controls:
 - Rounds after the first review only what changed since the last reviewed snapshot, and the round cap is 3 per
   cycle (`max_rounds`), unless you pass `--until-clean`.
 - `review-learn` can't be invoked by the model, so its description doesn't use context in every session. `review`,
-  `commit`, and `ship` are model-invocable, because Claude runs them on its own when a task is done.
+  `commit`, and `ship` are model-invocable, because Claude runs them on its own when a task is done. In a repo that
+  isn't set up, one Claude picks costs its first step, `ledger.py status`, and then steps aside.
 - The hooks are plain Python, and the module only runs `ledger.py`: neither makes model calls.
 
 ## Risk tiers
