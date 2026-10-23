@@ -344,5 +344,85 @@ class SetupInfoTest(TempDirCase):
         self.assertTrue(os.path.isfile(info["templates"]["REVIEW.md"]))
 
 
+class BrownfieldTest(TempDirCase):
+    def test_setup_info_before_there_is_a_repo(self):
+        path = os.path.join(self.tmp, "fresh")
+        os.makedirs(os.path.join(path, "node_modules", "x"))
+        with open(os.path.join(path, "package.json"), "w") as f:
+            f.write(json.dumps({"scripts": {"test": "vitest run"}}))
+        with open(os.path.join(path, ".env"), "w") as f:
+            f.write("TOKEN=1\n")
+        r = subprocess.run([sys.executable, LEDGER, "setup-info"], cwd=path, capture_output=True, text=True,
+                           env=GIT_ENV)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        info = json.loads(r.stdout)
+        self.assertEqual((info["is_repo"], info["has_commits"], info["inferred_check"]), (False, False, "npm test"))
+        self.assertEqual({g["pattern"] for g in info["ignore_gaps"]}, {"node_modules/", ".env"})
+        self.assertFalse(os.path.exists(os.path.join(path, ".git")))  # it only looks
+
+    def test_setup_info_in_an_established_repo(self):
+        r = self.new_repo()
+        r.write(".github/workflows/check.yml", "on: push\n")
+        r.write("CLAUDE.md", "# x\n\n## Commands\n- `make test`\n")
+        r.commit("ci")
+        r.write("app.py", "x = 2\n")  # the user's work in progress: an edit, listed first as ` M app.py`
+        r.write("wip.py", "x = 1\n")  # and a new file
+        info = r.json("setup-info")
+        self.assertEqual(info["ci_files"], [".github/workflows/check.yml"])
+        self.assertTrue(info["claude_md_has_verify"])  # a Commands section counts
+        self.assertEqual(info["uncommitted"], ["app.py", "wip.py"])  # v2.0 cut this to "pp.py"
+        self.assertIsNone(info["v1"])
+
+    def test_publish_scan(self):
+        r = self.new_repo()
+        token = "ghp_" + "a1B2" * 9
+        r.write("config.py", f'TOKEN = "{token}"\n')
+        r.commit("add token")
+        r.write("config.py", "TOKEN = None\n")
+        r.write("README.md", "Mail me@private.dev or 1+x@users.noreply.github.com\n")
+        r.write(".env", "X=1\n")
+        r.commit("remove token")
+        scan = r.json("publish-scan")
+        self.assertEqual(scan["secrets"], [])  # gone from the files...
+        self.assertIn("GitHub token", scan["secrets_in_history"])  # ...but still in what a push publishes
+        self.assertEqual(scan["secret_files"], [".env"])
+        self.assertEqual(scan["emails"], ["me@private.dev"])
+        self.assertFalse(scan["clean"])
+        self.assertNotIn(token, json.dumps(scan))  # values are never printed
+
+    def test_v1_migration(self):
+        r = self.new_repo()
+        r.write("REVIEW.md", (
+            "---\n# solo-review settings\ndepth: auto            # auto | quick\n"
+            'check: "make test # all"  # the one command\nmax_nits: 2\ngate: push\nworkflow: auto\n'
+            "sensitive:             # reviewed deep\n  - \"**/install.sh\"\n  - \"src/billing/**\"\n"
+            'skip: ["dist/**"]\n---\n\n# Review guide\n\n## What failure looks like here\n- Data loss\n\n'
+            "## Always check\n<!-- /solo-review:review-learn adds to this list. -->\n\n## Don't flag\n- Style\n\n"
+            "## Intentional patterns\n\n## Evidence\n- Cite file:line\n"))
+        r.write(".review/ledger.jsonl", json.dumps({"type": "finding", "id": "F-7", "ts": "2026-10-01T00:00:00Z",
+                                                    "run": "R-1", "branch": "main", "file": "a.py",
+                                                    "severity": "important", "title": "t"}) + "\n")
+        r.write(".github/pull_request_template.md", "## Summary\n## Changes\n## Review\n## Testing\n"
+                                                    "## Risk and rollback\n## Checklist\n")
+        r.write("src/billing/charge.py", "x = 1\n")
+        r.commit("v1 setup")
+        v1 = r.json("setup-info")["v1"]
+        self.assertEqual(v1["settings"], {"check": "make test # all", "max_nits": 2, "high": ["src/billing/**"],
+                                          "skip": ["dist/**"]})
+        self.assertEqual(sorted(v1["dropped_keys"]), ["gate", "workflow"])
+        self.assertEqual(v1["dropped_globs"], ["**/install.sh"])  # a v1 template glob that matches nothing here
+        self.assertEqual(v1["pr_template_v1"], ".github/pull_request_template.md")
+        md = v1["review_md"]
+        self.assertFalse(md.startswith("---"))
+        for heading in ("## What Important means here", "## Do not report", "## Intentional", "/solo-review:learn",
+                        "## Cap the nits\nReport at most 2 nits"):
+            self.assertIn(heading, md)
+        self.assertLess(md.index("## Cap the nits"), md.index("## Evidence"))
+        self.assertEqual(ledger.review_checklist(md), ["Data loss"])
+        self.assertIn("Imported 1 of 1", r.run("import-v1").stdout)
+        self.assertIn("Imported 0 of 1", r.run("import-v1").stdout)  # running it again adds nothing
+        self.assertEqual(r.run("open", "--all").stdout.count("F-7"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -349,6 +349,22 @@ def changed_raw(a, b, *pathspec):
     return rows
 
 
+def uncommitted_paths():
+    """Every path with uncommitted changes, staged or not, untracked included. Read raw with -z: the git() helper
+    strips its output, and with it the leading space of a ` M path` status line."""
+    out = subprocess.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], capture_output=True,
+                         text=True, errors="replace").stdout.split("\0")
+    paths, i = [], 0
+    while i < len(out):
+        entry = out[i]
+        if len(entry) > 3:
+            paths.append(entry[3:])
+            if entry[0] in "RC":  # a rename or copy is followed by its old path
+                i += 1
+        i += 1
+    return paths
+
+
 def symlinks_in(rows):
     """Added or changed symlinks (mode 120000): they can point anywhere, so each one needs a person's eyes."""
     return {p for p, mode in rows if mode == "120000"}
@@ -1127,8 +1143,7 @@ def cmd_ship_check(args):
     out["base"] = base
     out["head"] = git("rev-parse", "HEAD")
     out["commits"] = git("log", "--format=%h %s", "--reverse", f"{base}..HEAD").splitlines()
-    out["uncommitted"] = [l[3:] for l in git("status", "--porcelain", "--untracked-files=all", check=False)
-                          .splitlines() if l[3:] and not l[3:].startswith(f"{SCRATCH}/")]
+    out["uncommitted"] = [p for p in uncommitted_paths() if not p.startswith(f"{SCRATCH}/")]
     tree = snapshot_tree()  # git diff takes trees as well as commits
     rows = changed_raw(base, tree)
     files, links = [p for p, _ in rows], symlinks_in(rows)
@@ -1216,10 +1231,171 @@ HIGH_HINTS = re.compile(r"(?:^|/)(?:auth\w*|login|sessions?|billing|payments?|st
                         r"crypto|secrets?|permissions?|admin|install\w*\.sh|release\w*\.sh|deploy\w*)(?:/|$)", re.I)
 
 
+# Things that exist in many projects and almost never belong in git: setup ignores them before a first commit
+IGNORE_SUGGESTIONS = (
+    ("node_modules/", "installed packages"), ("dist/", "build output"), ("build/", "build output"),
+    ("target/", "build output"), (".venv/", "a virtualenv"), ("venv/", "a virtualenv"),
+    ("__pycache__/", "Python caches"), (".pytest_cache/", "test caches"), (".godot/", "Godot's editor cache"),
+    (".DS_Store", "macOS folder data"), (".env", "secrets"), (".env.local", "secrets"),
+)
+WALK_SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", "target", ".godot"}
+
+
+def project_files(is_repo):
+    """The project's files, relative: git's tracked and untracked-but-not-ignored files in a repo, else a walk that
+    skips the usual dependency and build folders."""
+    if is_repo:
+        out = git("ls-files", "-z", "--cached", "--others", "--exclude-standard", check=False)
+        return [p for p in out.split("\0") if p]
+    files = []
+    for d, dirs, names in os.walk("."):
+        dirs[:] = [x for x in dirs if x not in WALK_SKIP]
+        files += [os.path.relpath(os.path.join(d, n)) for n in names]
+        if len(files) > 20000:
+            break
+    return files
+
+
+def ignore_gaps(is_repo):
+    """IGNORE_SUGGESTIONS entries that exist here and that nothing ignores yet."""
+    listed = set()
+    if not is_repo:
+        listed = {l.strip().strip("/") for l in (read_capped(".gitignore", "replace") or "").splitlines()}
+    gaps = []
+    for pattern, why in IGNORE_SUGGESTIONS:
+        path = pattern.rstrip("/")
+        if not os.path.lexists(path):
+            continue
+        ignored = (subprocess.run(["git", "check-ignore", "-q", path], capture_output=True).returncode == 0
+                   if is_repo else path in listed)
+        if not ignored:
+            gaps.append({"pattern": pattern, "why": why})
+    return gaps
+
+
+# ---------------------------------------------------------------- v1 projects
+
+V1_LEDGER = os.path.join(".review", "ledger.jsonl")
+V1_DROPPED = ("gate", "branch", "workflow", "low", "trusted")  # v1 settings v2 has no use for
+V1_TEMPLATE_GLOBS = ("**/install.sh", "**/release.sh", "**/auth/**", "**/*.min.js", "**/*.snap")
+V1_HEADINGS = {"what failure looks like here": "What Important means here", "don't flag": "Do not report",
+               "intentional patterns": "Intentional"}
+V1_PR_HEADINGS = ("## summary", "## changes", "## review", "## testing", "## risk and rollback", "## checklist")
+
+
+def v1_value(raw):
+    """A v1 frontmatter value: quoted (kept whole, # included) or bare (a ` #` starts a comment)."""
+    v = raw.strip()
+    if v[:1] and v[0] in "'\"":
+        end = v.find(v[0], 1)
+        return v[1:end] if end > 0 else v[1:]
+    return re.sub(r"(?:^|\s+)#.*$", "", v).strip()  # `key:   # comment` is an empty value: a list follows
+
+
+def v1_frontmatter(text):
+    """(settings, body) from a v1 REVIEW.md: flat keys and string lists between --- lines. None when there is none."""
+    m = re.match(r"﻿?---\r?\n(.*?)\r?\n---\r?\n", text, re.S)
+    if not m:
+        return None, text
+    cfg, key = {}, None
+    for raw in m.group(1).splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        item = re.match(r"\s*-\s+(.*)", raw)
+        if item:
+            if key and isinstance(cfg.get(key), list):
+                cfg[key].append(v1_value(item.group(1)))
+            continue
+        key, _, value = raw.partition(":")
+        key, value = key.strip(), v1_value(value)
+        if value.startswith("[") and value.endswith("]"):  # an inline list: `skip: ["a", "b"]` or `skip: []`
+            cfg[key] = [v1_value(x) for x in value[1:-1].split(",") if x.strip()]
+        else:
+            cfg[key] = [] if not value else int(value) if value.isdigit() else value
+    return cfg, text[m.end():]
+
+
+def v1_migration(files):
+    """What a v1 setup left here and what v2 makes of it, or None if there is no sign of v1. Reads only."""
+    text = read_capped("REVIEW.md", "replace")
+    front, body = v1_frontmatter(text) if text else (None, None)
+    pr = find_pr_template()
+    pr_text = (read_capped(pr, "replace") or "").lower() if pr else ""
+    v1_pr = bool(pr) and all(h in pr_text for h in V1_PR_HEADINGS)
+    claude_md = read_capped("CLAUDE.md", "replace") or ""
+    worktree_lines = [l for l in claude_md.splitlines() if "worktree" in l.lower() and "solo-review" in l.lower()]
+    if front is None and not os.path.isdir(".review") and not v1_pr and not worktree_lines:
+        return None
+    settings, dropped_keys, dropped_globs = {}, [], []
+    for k, v in (front or {}).items():
+        if k == "sensitive":  # v1's older name for `high`
+            k = "high"
+        if k in V1_DROPPED:
+            dropped_keys.append(k)
+        elif k in ("high", "skip") and isinstance(v, list):
+            for g in v:
+                # v1's template globs, kept only where they match something here
+                if g in V1_TEMPLATE_GLOBS and not any(matches(p, [g]) for p in files):
+                    dropped_globs.append(g)
+                elif g not in settings.get(k, []):
+                    settings.setdefault(k, []).append(g)
+        elif k in DEFAULTS and v != DEFAULTS[k] and v != "":
+            settings[k] = v
+    review_md = None
+    if body is not None:
+        lines = []
+        for line in body.splitlines():
+            h = re.match(r"(#+)\s*(.*?)\s*:?\s*$", line)
+            if h and h.group(2).lower() in V1_HEADINGS:
+                line = f"{h.group(1)} {V1_HEADINGS[h.group(2).lower()]}"
+            lines.append(line.replace("/solo-review:review-learn", "/solo-review:learn"))
+        review_md = "\n".join(lines).lstrip("\n") + "\n"
+        if not re.search(r"^#+\s*cap the nits", review_md, re.I | re.M):
+            nits = settings.get("max_nits", DEFAULTS["max_nits"])
+            cap = (f"## Cap the nits\nReport at most {nits} nits, and only ones worth a commit. Nits never block a "
+                   "merge.\n")
+            ev = re.search(r"^#+\s*evidence", review_md, re.I | re.M)
+            review_md = review_md[:ev.start()] + cap + "\n" + review_md[ev.start():] if ev else review_md + "\n" + cap
+    ledger_events = 0
+    try:
+        with open(V1_LEDGER, errors="replace") as f:
+            ledger_events = sum(1 for l in f if l.strip())
+    except OSError:
+        pass
+    return {"review_dir": os.path.isdir(".review"),
+            "review_dir_tracked": git("ls-files", ".review", check=False).split(),
+            "ledger_events": ledger_events, "settings": settings, "dropped_keys": dropped_keys,
+            "dropped_globs": dropped_globs, "review_md": review_md, "pr_template_v1": pr if v1_pr else None,
+            "claude_md_worktree_lines": worktree_lines}
+
+
+def cmd_import_v1(args):
+    """Copy a v1 ledger's events (.review/ledger.jsonl) into the v2 ledger, skipping any already there. Writes only
+    the v2 ledger."""
+    try:
+        with open(V1_LEDGER, errors="replace") as f:
+            lines = [l.strip() for l in f if l.strip()]
+    except OSError:
+        sys.exit(f"No {V1_LEDGER} here.")
+    have = {json.dumps(e, sort_keys=True) for e in load_events()}
+    new = []
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict) and "type" in e and json.dumps(e, sort_keys=True) not in have:
+            new.append(e)
+    if new:
+        append(*new)
+    print(f"Imported {len(new)} of {len(lines)} v1 event(s) into {ledger_path()}.")
+
+
 def cmd_setup_info(args):
-    """What /solo-review:setup needs to draft a project's files, as JSON. Reads only."""
-    db = default_branch()
-    tracked = git("ls-files", "-z", check=False).split("\0")
+    """What /solo-review:setup needs, as JSON. Reads only, and works before the folder is a git repository."""
+    is_repo = repo_root() is not None
+    db = default_branch() if is_repo else None
+    tracked = project_files(is_repo)
     candidates = []
     for p in tracked:
         m = HIGH_HINTS.search(p)
@@ -1232,19 +1408,93 @@ def cmd_setup_info(args):
     text = read_capped(claude_md, "replace") if claude_md else None
     manifests = [p for p in ("package.json", "Cargo.toml", "go.mod", "pyproject.toml", "setup.cfg", "Makefile",
                              "project.godot", "Gemfile", "composer.json", "build.gradle", "pom.xml") if os.path.exists(p)]
+    home = os.path.realpath(os.path.expanduser("~"))
     print(json.dumps({
-        "root": os.getcwd(), "default_branch": db, "branch": current_branch(), "has_commits": has_commits(),
-        "origin": git("remote", "get-url", "origin", check=False) or None, "github": github_remote(),
-        "gh": shutil.which("gh") is not None,
+        "root": os.getcwd(), "name": os.path.basename(os.getcwd()), "is_repo": is_repo,
+        # a git repository of the home folder or / would sweep in everything: setup asks first there
+        "unsafe_root": os.path.realpath(os.getcwd()) in (home, "/"),
+        "default_branch": db, "branch": current_branch() if is_repo else None,
+        "has_commits": is_repo and has_commits(), "files": len(tracked),
+        "origin": (git("remote", "get-url", "origin", check=False) or None) if is_repo else None,
+        "github": is_repo and github_remote(), "gh": shutil.which("gh") is not None,
+        "gitignore": os.path.isfile(".gitignore"), "ignore_gaps": ignore_gaps(is_repo),
+        "uncommitted": uncommitted_paths()[:40] if is_repo else [],
+        "unpushed": (git("rev-list", "--count", f"{origin_default(db)}..HEAD", check=False) or None)
+                    if is_repo and origin_default(db) else None,
+        "ci_files": [p for p in tracked if matches(p, [".github/workflows/**", "**/.gitlab-ci*.yml", "**/.circleci/**"])],
         "review_md": os.path.isfile("REVIEW.md"), "config": os.path.isfile(CONFIG_PATH),
         "config_now": {k: v for k, v in load_config().items() if k in DEFAULTS},
+        "ledger_runs": sum(1 for e in load_events() if e["type"] == "run") if is_repo else 0,
+        "v1": v1_migration(tracked),
         "claude_md": claude_md,
-        "claude_md_has_verify": bool(text and re.search(r"^#+\s*(verify|verification|checks?|testing)\b", text,
-                                                        re.I | re.M)),
+        # a section that lists the commands to run counts, whatever its name
+        "claude_md_has_verify": bool(text and re.search(
+            r"^#+\s*(verify|verification|checks?|testing|tests|commands|development)\b", text, re.I | re.M)),
         "pr_template": find_pr_template(), "readme": next((p for p in ("README.md", "README") if os.path.isfile(p)),
                                                           None),
         "manifests": manifests, "inferred_check": infer_check(), "candidate_high": candidates[:15],
         "templates": TEMPLATES}, indent=1))
+
+
+SECRET_PATTERNS = (
+    ("GitHub token", r"\bgh[pousr]_[A-Za-z0-9]{36,}"),
+    ("AWS access key", r"\bAKIA[0-9A-Z]{16}\b"),
+    ("private key", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    ("Slack token", r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
+    ("API key", r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}"),
+    ("Google API key", r"\bAIza[0-9A-Za-z_-]{35}"),
+)
+SECRET_FILES = ("**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*", "**/id_ed25519*", "**/credentials*",
+                "**/.netrc", "**/.pypirc", "**/.npmrc")
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+PUBLIC_EMAIL = re.compile(r"(?:noreply\.github\.com|users\.noreply\.|@example\.(?:com|org|net)|@localhost|"
+                          r"@test\b|@email\.com|@domain\.com|solo-review@)", re.I)
+
+
+def cmd_publish_scan(args):
+    """What would be published by pushing every commit: secrets and sensitive files in the tracked files or anywhere
+    in the history, and the email addresses the files and the commits carry. Secret values are never printed."""
+    secret_re = [(kind, re.compile(rx)) for kind, rx in SECRET_PATTERNS]
+    found, history, emails = [], {}, set()
+    for path in git("ls-files", "-z", check=False).split("\0"):
+        text = read_capped(path, "replace") if path else None
+        if text is None or "\0" in text[:8000]:
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            for kind, rx in secret_re:
+                if rx.search(line):
+                    found.append({"file": path, "line": n, "kind": kind})
+            for e in EMAIL.findall(line):
+                if not PUBLIC_EMAIL.search(e):
+                    emails.add(e.lower())
+    # added lines anywhere in history: a secret deleted later is still published by the push
+    log = subprocess.run(["git", "log", "--all", "-p", "--no-ext-diff", "--format=\x01%h", "-n", "5000"],
+                         capture_output=True, text=True, errors="replace").stdout
+    commit = None
+    for line in log.splitlines():
+        if line.startswith("\x01"):
+            commit = line[1:]
+        elif line.startswith("+") and not line.startswith("+++"):
+            for kind, rx in secret_re:
+                if rx.search(line):
+                    history.setdefault(kind, set()).add(commit)
+            for e in EMAIL.findall(line):
+                if not PUBLIC_EMAIL.search(e):
+                    emails.add(e.lower())  # in history, even if gone from the files now
+    tracked_secret_files = [p for p in git("ls-files", "-z", check=False).split("\0") if p and matches(p, SECRET_FILES)]
+    ever = {p for p in git("log", "--all", "--name-only", "--format=", check=False).splitlines()
+            if p and matches(p, SECRET_FILES)}
+    identities = sorted({e for e in git("log", "--all", "--format=%ae%n%ce", check=False).splitlines() if e})
+    print(json.dumps({
+        "secrets": found[:50],
+        "secrets_in_history": {k: sorted(v)[:20] for k, v in history.items()},
+        "secret_files": tracked_secret_files,
+        "secret_files_in_history": sorted(ever - set(tracked_secret_files)),
+        "emails": sorted(emails),
+        "commit_emails": [e for e in identities if not PUBLIC_EMAIL.search(e)],
+        "commit_emails_public": [e for e in identities if PUBLIC_EMAIL.search(e)],
+        "clean": not (found or history or tracked_secret_files or ever),
+    }, indent=1))
 
 
 def main():
@@ -1295,11 +1545,16 @@ def main():
     s = sub.add_parser("pr-summary")
     s.add_argument("--run", required=True, help="the review_run ship-check reported")
     sub.add_parser("setup-info")
+    sub.add_parser("publish-scan")
+    sub.add_parser("import-v1")
     args = p.parse_args()
 
     root = repo_root()
+    if not root and args.cmd == "setup-info":  # setup runs before the folder is a repository, to make it one
+        cmd_setup_info(args)
+        return
     if not root:
-        sys.exit("Not inside a git repository. For a new project, run `git init` in its folder first.")
+        sys.exit("Not inside a git repository. Run /solo-review:setup, which makes one.")
     os.chdir(root)
     ensure_excluded()
     globals()[f"cmd_{args.cmd.replace('-', '_')}"](args)
