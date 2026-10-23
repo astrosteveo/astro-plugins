@@ -24,12 +24,26 @@ Requires `git` and `python3` (standard library only). Shipping needs the GitHub 
 
 | Skill | What it does |
 |---|---|
-| `/solo-review:setup` | Drafts REVIEW.md, `.claude/solo-review.json`, a Verify section for CLAUDE.md and a PR template from your project. Shows them, writes what you approve. Run once per project. |
+| `/solo-review:setup` | Sets the project up in one pass, and makes whatever is missing: the git repo and a first commit, CLAUDE.md or its Verify section, REVIEW.md, the settings, a PR template. Commits only its own files, then offers to put the project on GitHub. Works in a new folder, an existing repo, or one that used v1. Run it again to check for drift. |
 | `/solo-review:review` | Reviews the current change, fixes the Important findings, and re-reviews the fixes, for up to 3 rounds. |
 | `/solo-review:ship` | Opens a PR: commits, moves work off main, rebases, re-checks, fills the template, watches CI. Merges when you say so. |
 | `/solo-review:commit` | Commits finished work as logical units, each revertable on its own. |
 | `/solo-review:explain <topic>` | Explains one slice of the code as it is today, cited to file:line. |
 | `/solo-review:learn` | Logs bugs that slipped past review, replays them as evals, and tunes REVIEW.md from the record. |
+
+## Setting up a project
+
+Run `/solo-review:setup` in the project, and it does the rest:
+- **A new folder:** it creates the git repo, ignores what shouldn't be committed (`node_modules/`, `.env`, caches),
+  and commits the code as it is, so reviews start from there.
+- **An existing repo:** it takes the check from CI, CLAUDE.md or the manifest and runs it once. It writes "What
+  Important means here" from what the README promises, and "Always check" from bug fixes that recur in the history.
+  It never commits your work in progress.
+- **A repo that used v1:** it moves the settings out of REVIEW.md, keeps the review history, and removes `.review/`.
+  v2 has no push gate, branch rule or auto-run.
+
+It asks only before publishing anything: creating a GitHub repo, or pushing. Before a first push, it scans the files
+and the history for secrets and personal emails.
 
 ## How a review runs
 
@@ -59,10 +73,10 @@ Depth is picked from the change:
 
 | Where | What | Committed? |
 |---|---|---|
-| `REVIEW.md` | The review guide: what Important means here, what to always check, what not to report. Plain Markdown, also read by GitHub's Code Review. | yes, by you |
-| `.claude/solo-review.json` | Settings (below). | yes, by you |
-| `CLAUDE.md` | A short Verify section: the commands to run, and "show the output". | yes, by you |
-| `.github/pull_request_template.md` | What and why, Testing, Risk, How to revert, Review, and a sign-off box only you tick. | yes, by you |
+| `REVIEW.md` | The review guide: what Important means here, what to always check, what not to report. Plain Markdown, also read by GitHub's Code Review. | yes, by setup |
+| `.claude/solo-review.json` | Settings (below). | yes, by setup |
+| `CLAUDE.md` | Created if missing (short, every line checkable). Gets a Verify section: the commands to run, and "show the output". | yes, by setup |
+| `.github/pull_request_template.md` | What and why, Testing, Risk, How to revert, Review, and a sign-off box only you tick. | yes, by setup |
 | `.git/solo-review/ledger.jsonl` | Every round, finding and outcome. Never committed; shared by all worktrees of the clone. | no |
 | `.solo-review/` | Handoff files the skills write and the script reads and deletes. Excluded from git automatically. | no |
 
