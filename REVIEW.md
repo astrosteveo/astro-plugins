@@ -4,7 +4,8 @@
 followed: keep this under 40 lines, and delete these comments as you fill it in. -->
 
 ## What Important means here
-- A skill acts without the user where it promises to wait: ship merges without sign-off, setup writes a file the user didn't approve, review runs ship.
+- A change can reach the default branch without a PR: a skill edits or commits on it, or the branch guard lets an edit or `git commit` there through outside its listed exceptions.
+- A skill acts without the user where it promises to wait: ship merges without sign-off, setup or ship publishes (creates a repo, pushes, opens a PR) without asking, review runs ship.
 - A skill and its script disagree: a step uses a `ledger.py` subcommand, flag or JSON field that doesn't exist (or was renamed), or `allowed-tools` doesn't cover a command the step runs.
 - `ledger.py` changes the user's index, worktree or refs, or a skill puts repo-controlled text (check output, finding text) on a command line.
 - `webread.py` fetches a private or local address without `--allow-local`, or writes outside its `--out` folder.
@@ -21,7 +22,8 @@ followed: keep this under 40 lines, and delete these comments as you fill it in.
 - Generated and vendored files.
 
 ## Intentional
-<!-- Choices that look like bugs but aren't, each with its reason, so the reviewer stops flagging them. -->
+- Setup writes and commits its own files on a branch without asking: the user ran it to have exactly that done.
+- The branch guard lets through ignored files, `.solo-review/`, a new repository's first commit, an unfinished rebase or merge, and anything it can't parse, and an edit made through the shell gets past it: it guards against slips, and it fails open rather than block work.
 
 ## Cap the nits
 Report at most 3 nits, and only ones worth a commit. Nits never block a merge.
