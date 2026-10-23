@@ -56,8 +56,8 @@ Arguments: `$ARGUMENTS`
       is, as the base. Everything after it arrives through PRs.
    5. Run `L ship-check` again.
 
-   On no, stop. Say the work stays on `<branch>`, and that without GitHub they can land it locally with
-   `git switch '<default>'` and then `git merge --ff-only '<branch>'`.
+   On no, stop. Say the work waits on `<branch>`: without GitHub there is no PR to land it through, and running ship
+   again offers the same step. Never suggest merging it onto the default branch another way; the PR is the gate.
 5. **Review state.**
    - `reviewed` is `never` or `stale`: stop, say what is unreviewed (`changed_since_review`), and suggest
      `/solo-review:review`. With `--skip-review`, go on, and say "Not reviewed" in the PR's Review section.

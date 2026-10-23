@@ -45,4 +45,6 @@ Arguments: `$ARGUMENTS`
    - Add the attribution your instructions specify.
    - Never commit secrets, `.env` files, build output or large generated files.
    - Never use `--no-verify`, and never amend or rewrite a commit that has been pushed.
-5. **Report.** The branch, one line per commit (short sha and subject), and anything left uncommitted and why.
+5. **Report.** The branch, one line per commit (short sha and subject), and anything left uncommitted and why. Say it
+   reaches the default branch through `/solo-review:review` and `/solo-review:ship`. Never suggest merging or pushing
+   it onto the default branch any other way: that would skip the PR, which is the review gate.
