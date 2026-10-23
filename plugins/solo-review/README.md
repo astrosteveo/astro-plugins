@@ -10,7 +10,7 @@ answers feed back into the reviewer. A solo developer has no team, so this plugi
 | Team role in the article | Solo stand-in here |
 |---|---|
 | Review runs before a PR exists; Claude shows the output of something checkable | With `workflow: auto`, when a task is done Claude runs REVIEW.md's `check` command, shows the output, and runs the review without being asked |
-| A subagent reviews the diff with fresh context | `finder` agents in a fresh context, each with one lens (`change`, `system`, `security`), reading CLAUDE.md and REVIEW.md, and reporting what they found for each line of REVIEW.md's "What failure looks like here" and "Always check" |
+| A subagent reviews the diff with fresh context | `finder` agents in a fresh context, each with one lens (`change`, `system`, `security`), reading CLAUDE.md and REVIEW.md, and reporting what they found for each line of REVIEW.md's "What Important means here" and "Always check" |
 | Verifiers vote on each finding | `verifier` agent(s) trying to refute each candidate from the code alone (they see the claim, not the finder's reasoning, and quote the lines it depends on): 1 vote at standard depth, 2-of-3 at deep |
 | An agent picks up the fix and runs another round | A fresh-context `fixer` agent fixes every verified Important finding and nit, and the next round re-reviews what changed. No human approves rounds |
 | "A person can wave off a nit in seconds. An agent fixes it, which means another commit and another round" | Nits are capped (`max_nits`) and must name a real defect; style and cleanup are dropped. The round cap bounds the extra rounds |
@@ -34,6 +34,7 @@ answers feed back into the reviewer. A solo developer has no team, so this plugi
 ```
 
 Requires `git` and `python3`. No other dependencies. Landing through pull requests also needs the GitHub CLI, `gh`.
+`claude plugin update solo-review@astro-plugins` gets a new release; each one raises the version in `plugin.json`.
 
 Leave it enabled everywhere. It stays out of the way in a repo until you run `/solo-review:setup` there. Setup
 creates `.review/`, and that folder is the opt-in:
@@ -244,8 +245,8 @@ says so. `python3 scripts/ledger.py config` shows which case applies in `source`
   - `trusted`: author emails, besides your git `user.email`, whose commits can take the Low path (matched ignoring
     case)
 - `CLAUDE.md`: the reviewer holds code to its conventions and flags lines a change makes untrue. `init` installs a
-  template (goals, non-goals, stack, conventions, check, pointers) if the project has none, and the review skill
-  fills it in from the README, the manifest and the code. If one exists, a fresh agent checks each line against the
+  template (goals, non-goals, layout, commands, verify, conventions, git, gotchas, pointers) if the project has
+  none, and setup fills it in from the README, the manifest and the code. If one exists, a fresh agent checks each line against the
   code and you approve any edits.
   The scope also hands the reviewers every CLAUDE.md in the changed files' directories and their parents.
 - `.github/pull_request_template.md`: installed by `init` if the repo has no PR template.

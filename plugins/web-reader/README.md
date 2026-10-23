@@ -14,7 +14,8 @@ converts its HTML to Markdown on your machine, and saves it to a file that Claud
 ```
 
 Requires `python3` (3.10 or later). No other dependencies. `--render` and `--figures` also need Chromium or Chrome on
-`PATH`, on Linux or macOS.
+`PATH`, on Linux or macOS. `claude plugin update web-reader@astro-plugins` gets a new release; each one raises the
+version in `plugin.json`.
 
 ## Use
 
