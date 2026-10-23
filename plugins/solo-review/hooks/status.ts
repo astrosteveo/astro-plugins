@@ -68,7 +68,7 @@ export function runLine(r: ReviewRun, maxRounds: number): string {
 /** The findings as plain text, for the command's output row (and surfaces where the pane isn't placed). */
 export function summary(s: ReviewStatus | null): string {
   if (!s) return 'solo-review: the review ledger could not be read.'
-  if (!s.opted_in) return "solo-review isn't set up in this repo (it has no .review/): run /solo-review:review init."
+  if (!s.opted_in) return "solo-review isn't set up in this repo (it has no .review/): run /solo-review:setup."
   const risk = riskLabel(s)
   const where = risk ? `${s.branch} (${risk})` : s.branch
   const head = s.open.length ? `${plural(s.open.length, 'open finding')} on ${where}:` : `No open findings on ${where}.`

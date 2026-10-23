@@ -135,7 +135,7 @@ def load_events():
 def require_review_dir():
     if not os.path.isdir(review_dir()):
         sys.exit("solo-review isn't set up in this checkout (it has no .review/ directory): run "
-                 "/solo-review:review init first.")
+                 "/solo-review:setup first.")
 
 
 def append(*events):
@@ -1411,8 +1411,8 @@ START_FIRST_COMMIT = ("This repo has no commits yet. The first commit on {defaul
                       "(REVIEW.md, CLAUDE.md, the pull request template, and the three files in .review/ that "
                       "`ledger.py init` made), so branches have a base to be reviewed against and merge into. This "
                       "step waits for the user: nothing reviews that commit but their read, so ask them to read "
-                      "REVIEW.md and CLAUDE.md, and make it only once they say they're ready (`/solo-review:review "
-                      "init`, step 5). Then work on a branch: before the next edit, start one the way the branch "
+                      "REVIEW.md and CLAUDE.md, and make it only once they say they're ready (`/solo-review:setup`, "
+                      "step 5). Then work on a branch: before the next edit, start one the way the branch "
                       "guard says.")
 
 FINISH_AUTO = ("When a task is complete: run `{ledger} check` for the check command, run it yourself and show its output, "
@@ -1573,7 +1573,7 @@ def cmd_ship_check(args):
     out = {"branch": branch, "default": db, "merge": cfg["merge"], "problems": []}
     # before the first commit there's no default branch yet, so the check below would say main doesn't exist
     if not has_commits():
-        out["problems"].append(f"no commits yet: make the setup commit on {branch} first (/solo-review:review init, "
+        out["problems"].append(f"no commits yet: make the setup commit on {branch} first (/solo-review:setup, "
                                "step 5); that branch becomes the default")
         print(json.dumps(out, indent=1))
         return
