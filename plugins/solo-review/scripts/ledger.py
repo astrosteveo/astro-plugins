@@ -250,13 +250,13 @@ def tree_of(rev):
 
 
 def default_branch():
-    """The default branch's name (origin/HEAD's target, else main or master), when a local branch or origin's copy of
-    it exists."""
+    """The default branch's name, when a local branch or origin's copy of it exists. In order: origin/HEAD's target,
+    the branch `L enable` recorded, main or master, init.defaultBranch, the only local branch. Never a guess."""
     ref = git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD", check=False)
     prefix = "refs/remotes/origin/"
     candidates = [ref[len(prefix):]] if ref.startswith(prefix) else []
-    for b in candidates + ["main", "master"]:
-        if default_refs(b):
+    for b in candidates + [recorded_default(), "main", "master"]:
+        if b and default_refs(b):
             return b
     # no origin and no main/master: init.defaultBranch if it exists, else the only local branch; never a guess
     configured = git("config", "--get", "init.defaultBranch", check=False)
@@ -264,6 +264,19 @@ def default_branch():
         return configured
     local = git("for-each-ref", "--format=%(refname:short)", "refs/heads", check=False).split()
     return local[0] if len(local) == 1 else None
+
+
+def recorded_default_path():
+    return os.path.join(state_dir(), "default_branch")
+
+
+def recorded_default():
+    """The default branch `L enable` recorded (never committed), or None."""
+    try:
+        with open(recorded_default_path()) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
 
 
 def default_refs(db):
@@ -1643,8 +1656,15 @@ def cmd_where(args):
 def cmd_enable(args):
     """Mark this repository as set up for solo-review, which turns the branch guard on here."""
     os.makedirs(state_dir(), exist_ok=True)
-    print(f"solo-review is on in {os.getcwd()}: edits and commits on {default_branch() or 'the default branch'} "
+    db = default_branch()
+    if db:
+        with open(recorded_default_path(), "w") as f:
+            f.write(db + "\n")
+    print(f"solo-review is on in {os.getcwd()}: edits and commits on {db or 'the default branch'} "
           "now need a branch first.")
+    if not db:
+        print("The default branch is unclear here (several local branches, no main, master or origin), so the guard "
+              "stays off until it is.")
 
 
 def main():
