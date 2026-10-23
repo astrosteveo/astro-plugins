@@ -40,6 +40,8 @@ Claude did.
 - With the marketplace added from a local clone, Claude Code loads the plugins straight from the working tree, so
   the branch checked out here is what runs in every session. `/reload-plugins` picks up a change.
 - solo-review isn't set up in this repo (there's no `.review/`), so its skills step aside here.
+- CI pins Claude Code's version in `.github/workflows/checks.yml`. A newer validator can add warnings, which
+  `--strict` fails on, so raise it on purpose and fix what it reports.
 
 ## More
 - `plugins/solo-review/README.md` and `plugins/web-reader/README.md`.
