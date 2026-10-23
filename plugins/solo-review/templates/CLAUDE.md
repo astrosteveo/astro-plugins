@@ -16,9 +16,7 @@ code can't meet. Keep it short, and point to other docs instead of copying them.
 
 ## Conventions
 - <A convention the code or tooling depends on, and the file or command that enforces it.>
-- Each branch lives in its own git worktree under `.claude/worktrees/`, and the main checkout stays on the default
-  branch: start one with the `git worktree add` command solo-review's branch guard gives, and enter it with
-  EnterWorktree.
+- Work on a branch in this checkout, never on the default branch: `git switch -c <type>/<short-name>`.
 
 ## Check
 `{{check}}`

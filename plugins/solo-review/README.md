@@ -97,13 +97,11 @@ You can run any step by hand:
 
 - **Branch from the first edit.** In an opted-in project (one with a `.review/` directory), editing a file on the
   default branch, or on a detached HEAD outside a rebase or merge, is blocked until Claude starts a branch.
-- **One worktree per branch.** The main checkout stays on the default branch. From there, the block message and
-  the session rules give the exact `git worktree add <main>/.claude/worktrees/<type>-<name> -b <type>/<name>
-  origin/<default>` command, and Claude works in that worktree. In a linked worktree, `git switch -c` is used as
-  before. Git won't check out a branch that another worktree holds, and a worktree-isolated session can't run git in
-  the main checkout, so a branch parked there is out of reach of every worktree session. The session note says when
-  the main checkout holds a feature branch, or is behind `origin/<default>`, and lists the other worktrees. `init`
-  adds `/.claude/worktrees/` to `.git/info/exclude`, and reviews never count those folders as changes.
+- **Plain branches.** The block message and the session rules say `git switch -c <type>/<name>`, in the checkout
+  you're in, and uncommitted changes come with you. Nothing makes you use worktrees. If you make one yourself, ship
+  still lands from it, and the session note lists the other worktrees. The note also says when the default branch
+  is behind `origin/<default>`. `init` adds `/.claude/worktrees/` to `.git/info/exclude`, and reviews never count
+  those folders as changes.
 - **Commit as you work.** At session start Claude is told to commit each piece of a task as soon as it is done,
   without asking. A task that changes the API, the UI, and shared code ends up as three commits, so any one of them
   can be reverted on its own.

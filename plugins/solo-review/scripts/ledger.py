@@ -585,7 +585,7 @@ def cmd_init(args):
               "new sessions):\n" + workflow_rules())
 
 
-# Each branch gets its own worktree in here, inside the main checkout. Git sees a nested worktree as an untracked
+# Claude Code puts the worktrees it makes in here, inside the main checkout. Git sees a nested worktree as an untracked
 # gitlink, so `add -A` would put it in the snapshot as a changed (and always High-risk) file
 WORKTREES_DIR = ".claude/worktrees"
 NOT_WORKTREES = f":(exclude){WORKTREES_DIR}"
@@ -1444,18 +1444,15 @@ def workflow_rules():
              f"{opened.count('important')} open Important finding(s) and {opened.count('nit')} open nit(s) on this branch.")
     if born and branch == db and ledger_changes():
         state += " The review ledger has uncommitted entries; /solo-review:ship commits them."
-    if born and not in_linked_worktree():
-        if branch not in (db, "HEAD"):
-            state += (f" This main checkout holds {branch}, which no worktree session can reach while it is here: "
-                      f"finish and ship it from here (ship puts this checkout back on {db}), and start the next "
-                      f"branch in its own worktree.")
-        elif branch == db and git("rev-parse", "--verify", "--quiet", f"origin/{db}", check=False):
-            # ship lands from worktrees and fetches, so this checkout (and a plugin loaded from it) falls behind
-            behind = git("rev-list", "--count", f"HEAD..origin/{db}", check=False)
-            # the remote picks db, so it is quoted, and a name ship-check refuses gets no command at all
-            if behind not in ("", "0") and dirty == [] and re.fullmatch(SAFE_BRANCH, db):
-                state += (f" This checkout is {behind} commit(s) behind origin/{db}: run "
-                          f"`git merge --ff-only {shlex.quote('origin/' + db)}`.")
+    if (born and not in_linked_worktree() and branch == db
+            and git("rev-parse", "--verify", "--quiet", f"origin/{db}", check=False)):
+        # a merge on GitHub, or a ship from another clone, moves origin, so this checkout (and a plugin loaded from
+        # it) can fall behind
+        behind = git("rev-list", "--count", f"HEAD..origin/{db}", check=False)
+        # the remote picks db, so it is quoted, and a name ship-check refuses gets no command at all
+        if behind not in ("", "0") and dirty == [] and re.fullmatch(SAFE_BRANCH, db):
+            state += (f" This checkout is {behind} commit(s) behind origin/{db}: run "
+                      f"`git merge --ff-only {shlex.quote('origin/' + db)}`.")
     here = os.path.realpath(os.getcwd())
     others = [f"{p} ({b or 'detached'})" for p, b in worktrees() if os.path.realpath(p) != here]
     if others:
@@ -1561,18 +1558,12 @@ def operation_in_progress():
 
 
 def branch_start(db):
-    """How to start a branch from here. Git won't check out a branch that another worktree holds, and a
-    worktree-isolated session can't run git in the main checkout, so a branch made in the main checkout is stuck
-    where every such session can't reach it. From the main checkout, a new branch gets its own worktree instead."""
+    """How to start a branch from here: a plain branch in this checkout, which takes uncommitted changes with it."""
+    how = ("run `git switch -c <type>/<short-name>` (feat, fix, refactor, docs, chore). Uncommitted changes come "
+           "with you.")
     if in_linked_worktree():
-        return ("run `git switch -c <type>/<short-name>` (feat, fix, refactor, docs, chore). On a branch named for "
-                "you (such as `worktree-<name>`), rename it first: `git branch -m <type>/<short-name>`.")
-    root = os.path.join(worktrees()[0][0] if worktrees() else os.getcwd(), WORKTREES_DIR)
-    return (f"give the branch its own worktree, because this main checkout stays on {db}: run `git worktree add "
-            f"{shlex.quote(root)}/<type>-<short-name> -b <type>/<short-name> {shlex.quote(default_ref() or db)}` (type = feat, fix, "
-            f"refactor, docs, chore), then move this session into that path with EnterWorktree (or `cd` there) and "
-            f"work only there. Never run `git switch -c` in the main checkout. Uncommitted changes here don't move "
-            f"with you: if there are any, ask the user first.")
+        how += " On a branch named for you (such as `worktree-<name>`), rename it first: `git branch -m <type>/<short-name>`."
+    return how
 
 
 def cmd_ship_check(args):
