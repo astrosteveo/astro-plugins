@@ -4,7 +4,7 @@ description: Make the reviewer better from its own record. Log a bug that slippe
 argument-hint: "[escape <fix-commit> [summary] | eval [N] [--clean M] | spotcheck [N]]"
 disable-model-invocation: true
 disallowed-tools: AskUserQuestion
-allowed-tools: Read, Grep, Edit, Agent, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git log *), Bash(git show *), Bash(git blame *), Bash(git rev-parse *)
+allowed-tools: Read, Grep, Edit, Agent, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git log *), Bash(git show *), Bash(git blame *), Bash(git rev-parse *), Bash(git switch *)
 ---
 
 # solo-review: learn
@@ -91,4 +91,6 @@ Fixes and deferrals recorded `--by agent` are Claude grading its own work, and s
 7. **Plugin-wide lessons.** If a lesson applies to any project, list it separately as a candidate change to
    solo-review's own finder or verifier prompts. Don't edit the plugin.
 
-Edits to REVIEW.md and CLAUDE.md are ordinary changes: they go through review and ship like any other.
+Edits to REVIEW.md and CLAUDE.md are ordinary changes: they go through review and ship like any other. Before the
+first edit, run `L where`; if `on_default` is true, start a branch with `git switch -c 'chore/review-tuning'` (another
+name if that one exists).

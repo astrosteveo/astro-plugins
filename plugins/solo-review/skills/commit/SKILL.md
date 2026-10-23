@@ -1,20 +1,26 @@
 ---
 name: commit
-description: Commit finished work on the current branch as logical units (one purpose each, building and passing its checks). Use when a piece of work is complete, when a diff mixes several purposes and needs splitting, or when asked to commit.
+description: Commit finished work as logical units (one purpose each, building and passing its checks), always on a branch, since changes reach the default branch only through a reviewed PR. Use when a piece of work is complete, when a diff mixes several purposes and needs splitting, or when asked to commit.
 argument-hint: "[hint for the message]"
 disallowed-tools: AskUserQuestion
-allowed-tools: Read, Write, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git apply *), Bash(git rev-parse *)
+allowed-tools: Read, Write, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git apply *), Bash(git rev-parse *), Bash(git switch *)
 ---
 
 # solo-review: commit
 
 The goal is a history where every commit can be reverted or bisected on its own. Each commit is one logical unit: it
-has one purpose, the project builds and its checks pass, and the message says why the change was made. Commit on the
-branch you're on; `/solo-review:ship` moves work off the default branch when it opens a PR.
+has one purpose, the project builds and its checks pass, and the message says why the change was made. Commits go on
+a branch, never on the default branch: changes reach it only through a reviewed PR (`/solo-review:ship`).
 Run each git command as its own Bash call, never chained with `;` or `&&`.
 
 Arguments: `$ARGUMENTS`
 
+0. **Be on a branch.** Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py where`.
+   - If `on_default` is true and `has_commits` is true, start a branch named for the work first:
+     `git switch -c '<type>/<short-name>'` (feat, fix, refactor, docs or chore). Uncommitted changes come with you.
+     Say so in the report.
+   - A new repository with no commits yet makes its first commit on the default branch: there is nothing yet to open
+     a PR against.
 1. **Read the change.**
    - Run `git status --short` and `git diff HEAD --stat`, then read the diff, one file at a time if it is large.
    - Read untracked files that will be committed.
@@ -39,4 +45,4 @@ Arguments: `$ARGUMENTS`
    - Add the attribution your instructions specify.
    - Never commit secrets, `.env` files, build output or large generated files.
    - Never use `--no-verify`, and never amend or rewrite a commit that has been pushed.
-5. **Report.** One line per commit (short sha and subject), plus anything left uncommitted and why.
+5. **Report.** The branch, one line per commit (short sha and subject), and anything left uncommitted and why.
