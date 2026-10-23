@@ -844,8 +844,18 @@ def cmd_scope(args):
 
     state = findings_state(events)
     in_scope = set(files)
-    prior = [f for f in state.values() if f["file"] in in_scope and (
-        ((f["outcome"] is None or capped(f)) and f.get("branch") == branch) or f["outcome"] in DISMISSED)][-30:]
+    scoped = [f for f in state.values() if f["file"] in in_scope]
+    # The 30-entry window fills in priority order, newest first within a tier: every open finding on this branch (even
+    # past 30, so a verifier can always clear it), then its capped nits, then dismissed findings from any branch.
+    tiers = [[f for f in scoped if f["outcome"] is None and f.get("branch") == branch],
+             [f for f in scoped if capped(f) and f.get("branch") == branch],
+             [f for f in scoped if f["outcome"] in DISMISSED]]
+    chosen = list(tiers[0])
+    for tier in tiers[1:]:
+        room = max(0, 30 - len(chosen))
+        chosen += tier[-room:] if room else []
+    keep = {f["id"] for f in chosen}
+    prior = [f for f in scoped if f["id"] in keep]  # back in ledger (finding id) order
 
     def prior_line(f):
         return (f"{f['id']} [{f['outcome'] or 'open'}] {f['file']}:{f.get('line', '?')} {f['title']}"
