@@ -492,6 +492,39 @@ class GuardTest(TempDirCase):
                                text=True, env=GIT_ENV)
             self.assertEqual((r.returncode, r.stdout), (0, ""), text)
 
+    def test_a_review_on_main_carries_over_when_the_change_moves_to_a_branch(self):
+        repo, _ = self.with_origin()
+        repo.write("app.py", "def f(xs):\n    return xs[1]\n")
+        repo.commit("change made on main")
+        repo.run("scope")
+        repo.record([IMPORTANT])
+        repo.write("app.py", "def f(xs):\n    return xs[0] if xs else None\n")
+        sha = repo.commit("Fix review finding F-1")
+        repo.run("resolve", "F-1", "--as", "fixed", "--by", "agent", "--commit", sha)
+        self.assertEqual(repo.json("scope")["round"], 2)
+        repo.record([{**IMPORTANT, "severity": "nit", "title": "name the None case"}])
+        repo.git("switch", "-q", "-c", "fix/empty")  # what ship and review do with work found on main
+        repo.git("branch", "-f", "main", "origin/main")
+        stop = repo.json("scope")
+        self.assertTrue(stop["stop"])
+        self.assertIn("since the last reviewed round", stop["message"])  # not a fresh full review
+        self.assertIn("F-2", repo.run("open").stdout)  # and the open nit came along
+        repo.write("app.py", "def f(xs):\n    return None\n")
+        scope = repo.json("scope")
+        self.assertEqual((scope["round"], scope["incremental"]), (1, True))  # new work: a new cycle, diff-only
+
+    def test_an_unrelated_review_on_main_is_not_carried_over(self):
+        repo, _ = self.with_origin()
+        repo.write("app.py", "x = 'reviewed, then thrown away'\n")
+        repo.run("scope")  # uncommitted work on main: its snapshot is in no branch's history
+        repo.record([IMPORTANT])
+        repo.git("checkout", "-q", "--", "app.py")
+        repo.git("switch", "-q", "-c", "feat/other")
+        repo.write("other.py", "y = 1\n")
+        repo.commit("other work")
+        scope = repo.json("scope")
+        self.assertEqual((scope["round"], scope["incremental"], scope["prior_findings"]), (1, False, []))
+
     def test_unpushed_commits_on_main_belong_to_the_branch_made_from_it(self):
         repo, _ = self.with_origin()
         repo.write("app.py", "def f(xs):\n    return xs[-1]\n")
