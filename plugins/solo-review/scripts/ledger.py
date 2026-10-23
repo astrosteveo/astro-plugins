@@ -251,11 +251,11 @@ def tree_of(rev):
 
 def default_branch():
     """The default branch's name, when a local branch or origin's copy of it exists. In order: origin/HEAD's target,
-    the branch `L enable` recorded, main or master, init.defaultBranch, the only local branch. Never a guess."""
+    main, master, the branch `L enable` recorded, init.defaultBranch, the only local branch. Never a guess."""
     ref = git("symbolic-ref", "--quiet", "refs/remotes/origin/HEAD", check=False)
     prefix = "refs/remotes/origin/"
     candidates = [ref[len(prefix):]] if ref.startswith(prefix) else []
-    for b in candidates + [recorded_default(), "main", "master"]:
+    for b in candidates + ["main", "master", recorded_default()]:
         if b and default_refs(b):
             return b
     # no origin and no main/master: init.defaultBranch if it exists, else the only local branch; never a guess

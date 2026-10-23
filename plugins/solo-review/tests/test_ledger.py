@@ -505,6 +505,16 @@ class GuardTest(TempDirCase):
         r.git("switch", "-q", "trunk")
         self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "deny")
 
+    def test_main_outranks_a_recorded_lone_branch_guess(self):
+        r = self.new_repo()
+        r.git("branch", "-m", "feat/x")
+        r.run("enable")  # no origin, no main/master: records the only local branch
+        r.git("switch", "-q", "-c", "main")
+        self.assertEqual(r.json("where")["default"], "main")
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "deny")
+        r.git("switch", "-q", "feat/x")
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "allow")
+
     def guard_default(self, r):
         cwd = os.getcwd()
         os.chdir(r.path)
