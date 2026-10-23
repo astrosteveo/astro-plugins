@@ -258,7 +258,12 @@ def default_branch():
     for b in candidates + ["main", "master"]:
         if default_refs(b):
             return b
-    return None
+    # no origin and no main/master: init.defaultBranch if it exists, else the only local branch; never a guess
+    configured = git("config", "--get", "init.defaultBranch", check=False)
+    if configured and default_refs(configured):
+        return configured
+    local = git("for-each-ref", "--format=%(refname:short)", "refs/heads", check=False).split()
+    return local[0] if len(local) == 1 else None
 
 
 def default_refs(db):

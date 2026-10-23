@@ -467,6 +467,31 @@ class GuardTest(TempDirCase):
         self.assertEqual(self.guard(r.path, "Bash", command="git commit -am x"), "allow")
         self.assertFalse(r.json("where")["on_default"])
 
+    def test_a_default_branch_not_named_main_or_master_is_guarded(self):
+        r = self.new_repo()
+        r.git("branch", "-m", "trunk")
+        r.run("enable")
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "deny")
+        self.assertTrue(r.json("where")["on_default"])
+
+    def test_no_guess_among_several_local_branches(self):
+        r = self.new_repo()
+        r.git("branch", "-m", "trunk")
+        r.git("branch", "other")
+        r.run("enable")
+        self.assertIsNone(self.guard_default(r))
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "allow")
+        r.git("config", "init.defaultBranch", "trunk")
+        self.assertEqual(self.guard(r.path, "Edit", file_path="app.py"), "deny")
+
+    def guard_default(self, r):
+        cwd = os.getcwd()
+        os.chdir(r.path)
+        try:
+            return ledger.default_branch()
+        finally:
+            os.chdir(cwd)
+
     def test_a_new_repositorys_first_commit_is_allowed(self):
         r = Repo(os.path.join(self.tmp, "new"))
         r.run("enable")
