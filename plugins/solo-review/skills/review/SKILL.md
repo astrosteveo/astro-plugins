@@ -2,6 +2,7 @@
 name: review
 description: Review the current change in fresh-context agents (find bugs, verify each one, fix the Important ones, re-review only what the fixes changed) for up to three rounds, and record every finding and how it was answered. Run it only when the user asks for a review.
 argument-hint: "[quick|standard|deep] [--base REF | --range A..B] [--force] [--fresh] | open | backlog | resolve <ids> <outcome> <reason>"
+disallowed-tools: AskUserQuestion
 allowed-tools: Read, Grep, Glob, Write, Agent, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git rev-parse *)
 ---
 

@@ -2,6 +2,7 @@
 name: ship
 description: Open a GitHub pull request for the reviewed change. Commits what's left, moves work off the default branch, rebases onto the latest default branch, reruns the check, opens the PR from the repo's template with the review results, and watches CI. Merges only when the user says to. Run it when the user asks to ship, open a PR, or merge.
 argument-hint: "[merge] [--skip-review]"
+disallowed-tools: AskUserQuestion
 allowed-tools: Read, Grep, Write, Agent, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git status *), Bash(git diff *), Bash(git log *), Bash(git add *), Bash(git commit *), Bash(git fetch *), Bash(git rebase *), Bash(git switch *), Bash(git branch *), Bash(git push *), Bash(git pull *), Bash(git rev-parse *), Bash(gh pr *), Bash(gh run view *)
 ---
 
