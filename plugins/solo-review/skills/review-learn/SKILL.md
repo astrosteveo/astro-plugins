@@ -3,7 +3,7 @@ name: review-learn
 description: Tune this project's REVIEW.md from the review ledger. Log a bug that slipped past review, replay past escapes as evals, or propose evidence-backed edits to the review guide.
 argument-hint: "[escape <fix-commit> [summary] | eval [N] [--clean M] | spotcheck [N]]"
 disable-model-invocation: true
-allowed-tools: Read, Grep, Edit, Agent, mcp__solo-review__resolve, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git log *), Bash(git show *), Bash(git blame *), Bash(git switch *), Bash(git worktree add *), Bash(git rev-parse *), EnterWorktree
+allowed-tools: Read, Grep, Edit, Agent, mcp__solo-review__resolve, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git log *), Bash(git show *), Bash(git blame *), Bash(git switch *), Bash(git rev-parse *)
 ---
 
 # solo-review: learn
@@ -16,11 +16,8 @@ then cut noise and review rounds.
 every part, and gets blocked. Use Read and Grep to look at files, not `cat` or `grep`.
 
 Edits to REVIEW.md or CLAUDE.md go on a branch, since the branch guard blocks edits on the default branch. Before the
-first edit, if the session is on the default branch, start `chore/review-tuning` (another name if that branch
-exists) the way the session rules say: in a linked worktree (`git rev-parse --git-dir` differs from
-`git rev-parse --git-common-dir`), `git switch -c chore/review-tuning`; in the main checkout, which stays on the default
-branch, `git worktree add <main checkout>/.claude/worktrees/chore-review-tuning -b chore/review-tuning <default branch>`,
-then EnterWorktree into that path, and never `git switch -c` there. A kept edit then goes through the session's usual workflow: commit, review, and ship.
+first edit, if the session is on the default branch, run `git switch -c chore/review-tuning` (another name if that
+branch exists). A kept edit then goes through the session's usual workflow: commit, review, and ship.
 
 Arguments: `$ARGUMENTS`
 

@@ -15,10 +15,8 @@ part.
 Arguments: `$ARGUMENTS`
 
 1. **Branch.** Run `git branch --show-current` and `git status --short`. If you are on the default branch, first
-   create a branch named for the task (type is feat, fix, refactor, docs, or chore) the way the session rules say:
-   in a linked worktree, `git switch -c <type>/<short-name>`, and uncommitted changes move with you. The main
-   checkout stays on the default branch, so there a branch gets its own worktree under `.claude/worktrees/`, and
-   uncommitted changes don't move: ask the user before moving them. Never commit directly to the default branch.
+   create a branch named for the task (type is feat, fix, refactor, docs, or chore): `git switch -c
+   <type>/<short-name>`. Uncommitted changes move with you. Never commit directly to the default branch.
 
 2. **Read the change.** Run `git diff HEAD --stat`, then read the diff. For a large diff, read it one file at a time.
    Read untracked files that will be committed. Run `git log --oneline -10` and match the project's subject style.

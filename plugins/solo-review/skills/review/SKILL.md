@@ -2,7 +2,7 @@
 name: review
 description: Review the current change and fix what the review finds, by itself, in rounds of fresh-context agents (find, verify, fix, re-review) until a round is clean or three rounds have run. Records every finding and outcome in the project's review ledger. Run it whenever a task is finished, before opening a PR.
 argument-hint: "[quick|standard|deep] [--base REF | --range A..B] [--force | --until-clean] [--fresh] | resolve <ids> <outcome> [reason] | open | backlog | init"
-allowed-tools: Read, Grep, Write, Agent, mcp__solo-review__record, mcp__solo-review__check_record, mcp__solo-review__resolve, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git init), Bash(git switch *), Bash(git worktree add *), Bash(git branch *), Bash(git rev-parse *), EnterWorktree, Bash(git log *), Bash(git status *), Bash(git diff *), Bash(git add *), Bash(git commit *)
+allowed-tools: Read, Grep, Write, Agent, mcp__solo-review__record, mcp__solo-review__check_record, mcp__solo-review__resolve, Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py *), Bash(git init), Bash(git switch *), Bash(git branch *), Bash(git rev-parse *), Bash(git log *), Bash(git status *), Bash(git diff *), Bash(git add *), Bash(git commit *)
 ---
 
 # solo-review: review
@@ -31,15 +31,9 @@ Arguments: `$ARGUMENTS`
 - `init`: set the project up, then stop.
   1. Run `git log -1 --format=%h`. If it fails, the project is not a git repository or has no commits yet: run
      `L init` and go on below. If it works, there is history, so start the setup branch before `L init` writes
-     anything, because uncommitted files don't move into a new worktree. Run `git branch --show-current`; if you are
-     on the default branch, the branch guard blocks edits there from now on, so the setup lands on a branch like
-     any other change:
-     - In a linked worktree (`git rev-parse --git-dir` differs from `git rev-parse --git-common-dir`), run
-       `git switch -c chore/review-setup`.
-     - In the main checkout, which stays on the default branch, run `git worktree add
-       <main checkout>/.claude/worktrees/chore-review-setup -b chore/review-setup <default branch>`, then move the
-       session into that path with EnterWorktree. Never run `git switch -c` in the main checkout.
-     Then run `L init`.
+     anything. Run `git branch --show-current`; if you are on the default branch, run `git switch -c
+     chore/review-setup`: the branch guard blocks edits there from now on, so the setup lands on a branch like any
+     other change. Then run `L init`.
      - If it says this is not a git repository, the project is new: run `git init`, then `L init` again. If the
        working directory doesn't look like the project's own folder (your home directory, say), ask the user first.
      - If it says there are no commits yet, stay on the current branch: the setup becomes the first commit (step 5).
