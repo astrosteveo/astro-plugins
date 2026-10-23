@@ -1,0 +1,5 @@
+{
+  "check": "",
+  "high": [],
+  "skip": ["**/*.min.js", "**/*.snap", "dist/**"]
+}
