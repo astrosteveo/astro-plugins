@@ -26,24 +26,24 @@ Arguments: `$ARGUMENTS`
 - Anything else runs a review, passing on `quick|standard|deep` as `--depth`, and `--base`, `--range`, `--force` and
   `--fresh` as given.
 
-## Before round 1
-1. **Intent.** Write a 1 to 3 sentence INTENT for the agents: what the change does, and anything deliberately unusual
-   about it. Take it from this conversation, or from the commit subjects if the conversation doesn't say. Describe
-   the change as done ("Adds X so that Y"), never as a plan.
-2. **Check first.** Run `L check`. If it prints a command, run that command as its own Bash call, which asks the
-   user's permission unless they allowed it (by design: the command comes from the repo).
-   - If it fails, stop before any agent runs: a review of code that doesn't build or pass its tests is wasted.
-     Show the failing part of the output, and offer to send it to a `solo-review:fixer`. Go on only if the user says
-     to, and say in **Finish** that the check was red.
-   - If `L check` says none is configured, go on, and say so in **Finish**.
-   - Keep a one-line result for the record: `passed: <summary>` or `failed (exit N): <summary>`.
+Before round 1, write a 1 to 3 sentence INTENT for the agents: what the change does, and anything deliberately
+unusual about it. Take it from this conversation, or from the commit subjects if the conversation doesn't say.
+Describe the change as done ("Adds X so that Y"), never as a plan.
 
 ## Each round
 1. **Scope.** Run `L scope` with the arguments (only in round 1). It prints JSON. If `stop` is true, go to **Finish**
    with its `message`, and its `summary` in a code block if there is one. Don't read the diff yourself; the agents
    do.
 
-2. **Find.** Launch the finders (`subagent_type: "solo-review:finder"`) in parallel, in one message. Each prompt has:
+2. **Check first** (round 1 only). Run `L check`. If it prints a command, run that command as its own Bash call,
+   which asks the user's permission unless they allowed it (by design: the command comes from the repo).
+   - If it fails, stop before any agent runs: a review of code that doesn't build or pass its tests is wasted.
+     Show the failing part of the output, and offer to send it to a `solo-review:fixer`. Go on only if the user says
+     to, and say in **Finish** that the check was red.
+   - If `L check` says none is configured, go on, and say so in **Finish**.
+   - Keep a one-line result for the record: `passed: <summary>` or `failed (exit N): <summary>`.
+
+3. **Find.** Launch the finders (`subagent_type: "solo-review:finder"`) in parallel, in one message. Each prompt has:
    - `LENS: <lens>` and `INTENT: <intent>`
    - `SCOPE:` the scope JSON's diff_cmd, change_diff_cmd, read_files, files, review_md, checklist, claude_md and
      security_hint
@@ -58,14 +58,14 @@ Arguments: `$ARGUMENTS`
    Each finder returns `checked` (what it found for each checklist line), `read` and `findings`. At standard and
    deep, a finder that returns no findings while `checked` has fewer entries than `checklist` skipped part of the
    guide. Launch it once more with the same prompt plus `RETRY: checklist lines <numbers> have no entry in checked`.
-   If the second pass skips them too, list the lens under `thin` in step 4.
+   If the second pass skips them too, list the lens under `thin` in step 5.
 
-3. **Verify.** Merge the findings into one numbered candidate list and drop exact duplicates. Each verifier
+4. **Verify.** Merge the findings into one numbered candidate list and drop exact duplicates. Each verifier
    (`subagent_type: "solo-review:verifier"`) gets `SCOPE:` (as for the finders), `CANDIDATES:` and `RECHECK:` (the
    scope's open_to_recheck).
    - In CANDIDATES give each candidate only `n`, file, line, severity, category and title. Leave out `evidence` and
      `fix`: a verifier that reads the finder's argument checks the argument, not the code, and repeats its misreading.
-     Keep the full fields for step 4.
+     Keep the full fields for step 5.
    - quick: keep only `important` candidates. Launch one verifier if any are left or RECHECK has items.
    - standard: one verifier. A candidate survives if voted real; use the verifier's severity.
    - deep: three verifiers in parallel with the same prompt. A candidate survives with 2 or 3 real votes; use the most
@@ -74,7 +74,7 @@ Arguments: `$ARGUMENTS`
 
    Keep at most max_nits nits and 2 pre-existing findings.
 
-4. **Record.** Write this JSON to `.solo-review/record.json` with the Write tool, then run
+5. **Record.** Write this JSON to `.solo-review/record.json` with the Write tool, then run
    `L record --file .solo-review/record.json`. The script reads and deletes it, and `.solo-review/` is excluded from
    git.
    ```
@@ -87,7 +87,7 @@ Arguments: `$ARGUMENTS`
    ```
    `record` prints the round. When it says the round is clean (no Important findings), go to **Finish**.
 
-5. **Fix the Important findings.** Never fix anything yourself: your context holds the assumptions that produced
+6. **Fix the Important findings.** Never fix anything yourself: your context holds the assumptions that produced
    these bugs.
    - Defer the pre-existing findings: `L resolve <ids> --as deferred --by agent --reason "pre-existing; outside this
      change"`. Old code is what kept review from converging, so they wait in `L backlog`.
@@ -118,7 +118,7 @@ Send one message:
 
 When the user answers a finding, run `L resolve <ids> --as <outcome> --by user --reason "<their reason>"`.
 When they ask to fix the nits:
-1. Send the nits to a fixer as in step 5, then commit and resolve them the same way.
+1. Send the nits to a fixer as in step 6, then commit and resolve them the same way.
 2. Run one round with `L scope --depth quick`. It reviews only the fix, for Important findings only.
 3. Finish as above.
 
