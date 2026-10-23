@@ -451,6 +451,12 @@ def findings_state(events):
     return state
 
 
+def capped(f):
+    """A nit `record` deferred past its round's max_nits (pre-existing ones are deferred by the agent, not auto). It
+    is still this branch's to fix, so later rounds recheck it, and a fix that clears it closes it."""
+    return f["outcome"] == "deferred" and f.get("by") == "auto"
+
+
 def norm_id(raw):
     raw = raw.strip().upper()
     return raw if raw.startswith("F-") else f"F-{raw.lstrip('F')}"
@@ -839,9 +845,13 @@ def cmd_scope(args):
     state = findings_state(events)
     in_scope = set(files)
     prior = [f for f in state.values() if f["file"] in in_scope and (
-        (f["outcome"] is None and f.get("branch") == branch) or f["outcome"] in DISMISSED)]
-    prior_lines = [f"{f['id']} [{f['outcome'] or 'open'}] {f['file']}:{f.get('line', '?')} {f['title']}"
-                   + (f" -- {f['reason']}" if f.get("reason") else "") for f in prior[-30:]]
+        ((f["outcome"] is None or capped(f)) and f.get("branch") == branch) or f["outcome"] in DISMISSED)][-30:]
+
+    def prior_line(f):
+        return (f"{f['id']} [{f['outcome'] or 'open'}] {f['file']}:{f.get('line', '?')} {f['title']}"
+                + (f" -- {f['reason']}" if f.get("reason") else ""))
+    prior_lines = [prior_line(f) for f in prior]
+    recheck_lines = [prior_line(f) for f in prior if f["outcome"] is None or capped(f)]
 
     # The fewest tool uses a finder's Method takes: the diff, REVIEW.md, and one changed file. No CLAUDE.md counts:
     # subagents start with the root one in context, and a nested one comes in with the first file read under it.
@@ -883,7 +893,7 @@ def cmd_scope(args):
            "security_hint": hint,
            "check": check_command(cfg),
            "prior_findings": prior_lines,
-           "open_to_recheck": [l for l in prior_lines if "[open]" in l] if incremental else []}
+           "open_to_recheck": recheck_lines if incremental else []}
     print(json.dumps(out, indent=1))
 
 
@@ -985,7 +995,7 @@ def cmd_record(args):
     autofixed = []
     for fid in data.get("resolved_by_change", []):
         fid = norm_id(fid)
-        if fid in state and state[fid]["outcome"] is None:
+        if fid in state and (state[fid]["outcome"] is None or capped(state[fid])):
             autofixed.append({"type": "outcome", "id": fid, "ts": now(), "outcome": "fixed",
                               "by": "auto", "reason": "no longer present on re-review"})
     # Important findings and nits send the loop round again; pre-existing ones are deferred, not fixed

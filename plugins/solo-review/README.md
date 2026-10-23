@@ -151,7 +151,8 @@ You can run any step by hand:
   it gone, or when you answer it. The standing rules: a pre-existing finding (on lines the whole change didn't
   touch) is recorded as `deferred` with the reason "pre-existing; outside this change", and stays in the backlog.
   So is a verified nit past the round's `max_nits`: the ledger defers it by itself, so the fixer gets only
-  `max_nits` nits a round, and the rest wait in the backlog rather than being dropped.
+  `max_nits` nits a round, and the rest wait in the backlog rather than being dropped. Later rounds on the branch
+  recheck them, and one a fix has cleared is closed as fixed.
 - **You** decide what to build, read the PR (and any High-risk files it touches), answer anything the loop leaves
   open, and say when to merge a Medium- or High-risk change.
 - **`review-learn spotcheck`** samples the agents' decisions. Agent-decided outcomes count as unlabeled in `stats`

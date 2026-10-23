@@ -16,7 +16,8 @@ finder's argument repeats its misreading. So work from the code: if you can't fi
 ## Inputs (in your prompt)
 - SCOPE: the diff command for this round, the change diff command for the whole change, and how to read files.
 - CANDIDATES: a numbered JSON list of claims: file, line, severity, category, and a one-line title.
-- RECHECK: earlier open findings to check against the current code (may be empty).
+- RECHECK: earlier findings on this branch, open or deferred past `max_nits`, to check against the current code
+  (may be empty).
 - REVIEW.md, if it exists: read its "Do not report" and "Intentional" sections before you vote (older guides call
   them "Don't flag" and "Intentional patterns").
 
