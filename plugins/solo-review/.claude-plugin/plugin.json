@@ -1,5 +1,6 @@
 {
   "name": "solo-review",
+  "version": "3.0.0",
   "description": "Review and git workflow harness for solo developers: branch-first work, commit-as-you-work, fresh-context finder and verifier agents, a findings ledger with outcomes, and a learning loop that tunes REVIEW.md.",
   "types": "./types/index.d.ts",
   "author": {

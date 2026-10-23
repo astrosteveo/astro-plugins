@@ -1,5 +1,6 @@
 {
   "name": "web-reader",
+  "version": "1.0.0",
   "description": "Read a web page or a whole site as its own complete text, not a model's summary: saves pages as Markdown with Python's standard library, and with headless Chromium, pages built by JavaScript and a picture of each chart, diagram and image.",
   "author": {
     "name": "astrosteveo",
