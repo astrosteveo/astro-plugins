@@ -576,12 +576,16 @@ def is_clean(run):
 
 
 def change_runs(events, branch, base, db):
-    """The runs that belong to the current change. On a feature branch that's every run on it. The default branch
-    holds one change after another, so there it's the runs measured from the same base."""
+    """The runs that belong to the current change. The default branch holds one change after another, so there it's
+    the runs measured from the same base. On a feature branch it's every run on it, plus the rounds a change had while
+    it sat on the default branch before review or ship moved it here: same base, and the commit they reviewed is in
+    this branch's history. A snapshot of uncommitted work is in no branch's history, so no other change can match."""
     runs = [e for e in events if e["type"] == "run" and e.get("branch") == branch]
     if branch in (db, "HEAD"):
-        runs = [r for r in runs if r.get("base") == base]
-    return runs
+        return [r for r in runs if r.get("base") == base]
+    moved = [e for e in events if e["type"] == "run" and db and e.get("branch") == db and e.get("base") == base
+             and is_commit(e.get("target")) and is_ancestor(e["target"], "HEAD")]
+    return sorted(moved + runs, key=lambda r: (r.get("ts", ""), r.get("run", "")))
 
 
 def change_findings(events, runs):
@@ -649,7 +653,7 @@ def cmd_scope(args):
         (base, label), target, worktree = cycle_base(events, branch, args.base), snapshot(), True
     target_tree = tree_of(target)
 
-    prior_runs = [e for e in events if e["type"] == "run" and e.get("branch") == branch and e.get("base") == base]
+    prior_runs = [r for r in change_runs(events, branch, base, db) if r.get("base") == base]
     # A cycle is one review-and-fix loop: it ends on a clean round, and new work (anything but a recorded fix) starts a
     # fresh one. The cap is for "an agent author and an agent reviewer" that "keep each other busy", not new features.
     last = prior_runs[-1] if prior_runs else None
