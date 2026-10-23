@@ -161,6 +161,6 @@ test('outside an opted-in repo the pane says how to set it up', async ($, on) =>
   engine(on, JSON.stringify({ opted_in: false }))
   await $.session.start(START)
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /init/ }))?.text).toBe(summary({ opted_in: false }))
+  expect((await ui.find({ type: 'Text', text: /setup/ }))?.text).toBe(summary({ opted_in: false }))
   await ui.unmount()
 })

@@ -38,14 +38,14 @@ Requires `git` and `python3`. No other dependencies. Landing through pull reques
 ## The workflow
 
 ```
-/solo-review:review init     # once per project: REVIEW.md, CLAUDE.md, .review/, the PR template (opts the project in)
+/solo-review:setup           # once per project: REVIEW.md, CLAUDE.md, .review/, the PR template (opts the project in)
   (just work)                # Claude branches, commits as it works, then by itself: check, review loop, PR
   "merge it"                 # you read the PR and say when to merge; ship lands it (a Low-risk PR lands by itself)
 /solo-review:review-learn    # every couple of weeks: tune REVIEW.md from the ledger
 ```
 
-`init` prints the workflow rules, so they apply in the session that ran it, and the SessionStart hook gives them to
-every session after. In a new project, `init` works from an empty folder:
+Setup prints the workflow rules, so they apply in the session that ran it, and the SessionStart hook gives them to
+every session after. In a new project, setup works from an empty folder:
 - If the folder isn't a git repository yet, Claude runs `git init` first.
 - With no commits yet, the setup doesn't go on a branch, since that branch would take the first commit and the
   default branch would never exist. Claude shows you REVIEW.md and CLAUDE.md, and when you say they're ready,
