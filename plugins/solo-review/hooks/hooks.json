@@ -1,0 +1,17 @@
+{
+  "description": "solo-review's branch guard. In a repository set up for solo-review, changes reach the default branch only through a reviewed PR, so Claude's file edits and `git commit`s on the default branch are refused until it starts a branch (a plain branch, never a worktree). Ignored files, the .solo-review/ handoff folder, a new repository's first commit and an unfinished rebase or merge are let through. It fails open.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger.py\" guard",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
