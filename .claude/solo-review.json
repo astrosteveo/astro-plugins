@@ -1,5 +1,0 @@
-{
-  "check": "python3 -B -m unittest discover -s plugins/solo-review/tests && python3 -B plugins/web-reader/scripts/webread.py --help > /dev/null && claude plugin validate .",
-  "high": ["plugins/web-reader/scripts/webread.py"],
-  "skip": []
-}
