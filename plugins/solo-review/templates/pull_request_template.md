@@ -1,26 +1,26 @@
-## What and why
+## Summary
 
-<!-- Two or three sentences: what this changes, and the problem it solves. -->
+<!-- What this change does and why, in two or three sentences. -->
 
-## Testing
+## Changes
 
-<!-- The commands that ran on top of the latest main, and what they printed: the real output, trimmed, not "tests
-pass". For a UI change, a screenshot of the changed screen. -->
-
-## Risk
-
-<!-- First line: "Risk: Low", "Medium" or "High", and which paths set it.
-Then what could break, and what the review and the checks would not catch here, so you know what to read yourself. -->
-
-## How to revert
-
-<!-- The command (`git revert <sha>`, or the flag to turn off), and anything a revert won't undo: a migration that
-ran, data written in a new format, a release already published. -->
+<!-- One line per commit, oldest first: `sha` subject. Each commit can be reverted on its own. -->
 
 ## Review
 
-<!-- Rounds, findings, and how each one was answered. /solo-review:ship fills this in. -->
+<!-- solo-review rounds, findings, and how each one was answered. /solo-review:ship fills this from the ledger. -->
 
----
+## Testing
 
-- [ ] I read the evidence above, and I own this change.
+<!-- The checks that ran on top of the latest default branch, and their results. -->
+
+## Risk and rollback
+
+<!-- What could break, and which commit to revert if it does. Then: what the checks and the review would not
+catch here, so the reader knows what to look at themselves. -->
+
+## Checklist
+
+- [ ] Every review finding (Important and nit) is fixed or answered with a reason
+- [ ] The latest review round covers the final code
+- [ ] Checks pass on top of the latest default branch
