@@ -36,10 +36,17 @@ Ask the user in plain sentences, never with a question or menu tool.
    - If it already existed, launch a fresh `general-purpose` agent with its path and this task: check each line
      against the code, and report false, stale, and unverifiable lines with evidence, plus conventions the code
      depends on that the file lacks. Propose the edits, and apply them only with the user's approval.
-5. If `L init` said there are no commits yet, show REVIEW.md and CLAUDE.md, and ask the user to edit them or say
-   they are ready. They become the first commit, which has nothing before it to be reviewed against, so the user's
-   read is its only review. When the user is ready, run `git add` with every setup file `L init` listed (its
-   `.review/` files included, so clones and worktrees have opted in too), then `git commit -m 'Set up
-   solo-review'`. Leave everything else uncommitted. Otherwise, show REVIEW.md to the user to edit.
+5. Commit the setup yourself, as soon as steps 2 to 4 are done. Don't leave the files for the user to edit first:
+   you filled them in from the code, and the user corrects them later like any other change. Stage only the setup
+   files you created or edited, by path, and leave everything else uncommitted. If you proposed edits to an
+   existing CLAUDE.md, commit the rest now, and commit those edits on their own once the user approves them.
+   - If `L init` said there are no commits yet, run `git add` with every setup file it listed (its `.review/` files
+     included, so clones and worktrees have opted in too), then `git commit -m 'Set up solo-review'`. This first
+     commit has nothing before it to be reviewed against, so say that the user's read of REVIEW.md and CLAUDE.md is
+     its only review, and that corrections go on a branch.
+   - Otherwise, stage REVIEW.md, CLAUDE.md and the pull request template, never `.review/` (`/solo-review:ship`
+     commits it), and commit them as `Set up solo-review`, with a body naming what you filled in and the `check`.
+     The review and ship of this branch review them like any other change.
+   Then tell the user, in a few lines, what you put in "What Important means here", the `check`, and CLAUDE.md.
 6. Tell the user that the workflow rules apply from now on, in this session too (`L init` prints them when it opts
    the project in), and the hooks give them to every new session. Follow them yourself from here.

@@ -60,10 +60,14 @@ Setup prints the workflow rules, so they apply in the session that ran it, and t
 every session after. In a new project, setup works from an empty folder:
 - If the folder isn't a git repository yet, Claude runs `git init` first.
 - With no commits yet, the setup doesn't go on a branch, since that branch would take the first commit and the
-  default branch would never exist. Claude shows you REVIEW.md and CLAUDE.md, and when you say they're ready,
-  commits them as the first commit on the default branch, with the PR template and `.review/`'s empty ledger, so
-  every clone and worktree has opted in. A first commit has nothing before it to be reviewed against, so your read
-  is its only review. Everything after it goes on a branch.
+  default branch would never exist. Claude commits REVIEW.md and CLAUDE.md as the first commit on the default
+  branch, with the PR template and `.review/`'s empty ledger, so every clone and worktree has opted in, and tells
+  you what it filled in. A first commit has nothing before it to be reviewed against, so your read is its only
+  review. Everything after it, corrections included, goes on a branch.
+
+In a project with history, setup works on a branch and commits REVIEW.md, CLAUDE.md and the PR template there
+itself, without waiting for you to edit them; the review and ship of that branch review them like any other change.
+Edits to a CLAUDE.md you already had are the exception: Claude proposes them and applies them when you approve.
 
 With `workflow: auto`, everything between your request and the open PR runs without you (the default, `manual`, stops
 after step 1 until you ask for the review and the PR):
