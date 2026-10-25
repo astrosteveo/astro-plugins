@@ -142,12 +142,13 @@ const SHOW_TOOL = {
   },
 } as const
 
-const TAGS: Record<NoteKind, { tag: string; color: Color }> = {
-  decision: { tag: 'decided', color: 'claude' },
-  assumption: { tag: 'assume', color: 'warning' },
-  question: { tag: 'ask', color: 'suggestion' },
-  finding: { tag: 'found', color: 'success' },
-  risk: { tag: 'risk', color: 'error' },
+// The tag says who wrote the note; the ask says what the person does with it.
+const TAGS: Record<NoteKind, { tag: string; ask: string; color: Color }> = {
+  decision: { tag: 'I chose', ask: 'veto?', color: 'claude' },
+  assumption: { tag: 'I assume', ask: 'correct me?', color: 'warning' },
+  question: { tag: 'I ask', ask: 'answer me', color: 'suggestion' },
+  finding: { tag: 'I found', ask: 'FYI', color: 'success' },
+  risk: { tag: 'Risk', ask: 'heads up', color: 'error' },
 }
 
 const STEP_MARK: Record<StepStatus, { mark: string; color?: Color }> = {
@@ -557,8 +558,8 @@ export const register: Register = on => {
           <Text color={TAGS[note.kind].color} weight="bold">
             {TAGS[note.kind].tag}
           </Text>{' '}
-          {note.text}
-          {note.isReplied ? ' ↩' : ''}
+          {note.text}{' '}
+          <Text dimColor>{note.isReplied ? '↩ replied' : `· ${TAGS[note.kind].ask}`}</Text>
         </Button>
         {isWithWhy && note.why !== undefined && (
           <Text dimColor>
@@ -619,7 +620,11 @@ export const register: Register = on => {
       const listed = isShowingEarlier ? allNotes : current
       body = (
         <Box flexDirection="column">
-          {listed.length === 0 && <Text dimColor>No notes for this task yet.</Text>}
+          {listed.length === 0 ? (
+            <Text dimColor>No notes for this task yet.</Text>
+          ) : (
+            <Text dimColor>Claude's notes on this task. Press one to reply.</Text>
+          )}
           {listed.slice(-30).map(note => noteRow(note, true))}
           {earlier > 0 && (
             <Button

@@ -99,9 +99,13 @@ test('pressing a note quotes it into the prompt and marks it replied', async ($,
     const ui = await $.ui.mount({ ...PANE, surface })
     // Now holds the open question and no decision.
     const ask = await ui.find({ type: 'Button', text: /Esc also close/ })
-    expect(ask?.text).toBe('ask Should Esc also close the menu?')
+    expect(ask?.text).toBe('I ask Should Esc also close the menu? · answer me')
     expect(await ui.find({ type: 'Button', text: /CanvasLayer/ })).toBeUndefined()
     await ui.press({ key: 'tab-notes' })
+    expect(await ui.find({ type: 'Text', text: /Press one to reply/ })).toBeDefined()
+    expect((await ui.find({ type: 'Button', text: /CanvasLayer/ }))?.text).toBe(
+      'I chose Use a CanvasLayer for the menu · veto?',
+    )
     expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeDefined()
     await ui.press({ key: 'tab-now' })
     await ui.unmount()
@@ -113,7 +117,7 @@ test('pressing a note quotes it into the prompt and marks it replied', async ($,
   expect(filled).toEqual(['About your question "Should Esc also close the menu?": '])
   expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeUndefined()
   await ui.press({ key: 'tab-notes' })
-  expect((await ui.find({ type: 'Button', text: /Esc also close/ }))?.text).toMatch(/↩$/)
+  expect((await ui.find({ type: 'Button', text: /Esc also close/ }))?.text).toMatch(/↩ replied$/)
   await ui.unmount()
 })
 
