@@ -1,5 +1,5 @@
 import type { On } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = {
   plugin: 'show-work',
@@ -18,10 +18,12 @@ const PANE = {
 const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 
 // Nothing sits beneath the plugin: each hook here stands for the engine.
-function engine(on: On) {
+function engine(on: On, { isTicking = true } = {}) {
   const filled: string[] = []
   let now = 0
-  on('clock.now', () => ({ value: (now += 1000) }))
+  if (isTicking) {
+    on('clock.now', () => ({ value: (now += 1000) }))
+  }
   on('tool.register', (_, e) => ({ value: { tool: `mcp__show-work__${e.name}` } }))
   on('command.register', () => ({ value: { command: 'work' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -599,4 +601,42 @@ test('the legend swatches use the chart colors', () => {
   expect(lines[0]).toBe('█ turn  █ subagent')
   expect(words[1]).toBe(0xd97757)
   expect(words[8 * 3 + 1]).toBe(0x5fa8d3)
+})
+
+test('a running bar grows between redraws, repainted by blit, and stops when done', async ($, on) => {
+  engine(on, { isTicking: false })
+  const clock = mock.clock(on, { now: 1_000 })
+  const blits: { cells: string; columns: number; rows: number }[] = []
+  on('ui.blit', (_, e) => {
+    if ('cells' in e && e.cells !== undefined) {
+      blits.push({ cells: e.cells, columns: e.columns, rows: e.rows })
+    }
+
+    return { value: {} }
+  })
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'go', turnId: 'turn-a' } as never)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-timeline' })
+  await clock.advance(10_000)
+  const count = blits.length
+  expect(count).toBeGreaterThan(30)
+  // The bar fills its row by now, and the leading cell pulses frame to frame.
+  const last = decode(blits.at(-1)!.cells, blits.at(-1)!.columns, 1)
+  expect(last.lines[0]?.slice(15).trim()).toMatch(/^█+$/)
+  const heads = blits.slice(-2).map(one => {
+    const words = decode(one.cells, one.columns, 1).words
+    return words[(one.columns - 1) * 3 + 1]
+  })
+  expect(new Set(heads).size).toBe(2)
+
+  await $.turn.complete({ turnId: 'turn-a', reason: 'answer', answer: '', durationMs: 0, isAborted: false } as never)
+  await clock.advance(2_000)
+  const after = blits.length
+  await clock.advance(5_000)
+  expect(blits.length).toBe(after)
+  await ui.unmount()
 })

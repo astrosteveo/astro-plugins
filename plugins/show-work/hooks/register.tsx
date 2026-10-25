@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Color, EngineInterface, Register } from 'claude-code'
+import type { Color, EngineInterface, Register, Timer } from 'claude-code'
 
 import type {
   Act,
@@ -348,13 +348,15 @@ export type Bar = {
   start: number
   end?: number
   color: number
-  /** Drawn from its start alone, as a tick: a bar too short to see. */
   isSub: boolean
 }
 
 const DEFAULT = 0x01000000
 const GRID = 0x3a3a3a
 const LABEL = 14
+const PULSE = 0xffe0b0
+// How often a running chart repaints, in ms.
+const FRAME = 250
 // Half-cell glyphs: a bar's ends land on half a column.
 const LEFT = 0x258c
 const RIGHT = 0x2590
@@ -377,7 +379,8 @@ export function base64(bytes: Uint8Array) {
 
 // A Gantt chart as Raster cells: one row per bar, labels on the left, time
 // running left to right from the earliest start to now, with a faint grid.
-export function gantt(bars: Bar[], now: number, columns: number) {
+// A running bar's leading cell pulses brighter on odd frames.
+export function gantt(bars: Bar[], now: number, columns: number, frame = 0) {
   const width = Math.max(4, columns - LABEL - 1)
   const from = Math.min(now - 1000, ...bars.map(bar => bar.start))
   const span = Math.max(1, now - from)
@@ -403,11 +406,18 @@ export function gantt(bars: Bar[], now: number, columns: number) {
     const halves = width * 2
     const a = Math.floor(((bar.start - from) / span) * halves)
     const b = Math.max(a + 1, Math.ceil((((bar.end ?? now) - from) / span) * halves))
+    const head = Math.floor((Math.min(halves, b) - 1) / 2)
     for (let half = Math.max(0, a); half < Math.min(halves, b); half += 1) {
       const col = Math.floor(half / 2)
       const hasLeft = col * 2 >= a && col * 2 < b
       const hasRight = col * 2 + 1 >= a && col * 2 + 1 < b
-      put(row, LABEL + 1 + col, hasLeft && hasRight ? FULL : hasLeft ? LEFT : RIGHT, bar.color)
+      const isPulse = bar.end === undefined && col === head && frame % 2 === 1
+      put(
+        row,
+        LABEL + 1 + col,
+        hasLeft && hasRight ? FULL : hasLeft ? LEFT : RIGHT,
+        isPulse ? PULSE : bar.color,
+      )
     }
   })
 
@@ -524,6 +534,33 @@ async function keep($: EngineInterface, picture: Picture) {
   if (dropped.length > 0) {
     const files = dropped.flatMap(one => [one.file, one.file.replace(/\.png$/, '.svg')])
     await $.process.run(['rm', '-f', ...files])
+  }
+}
+
+// What the drawn timeline shows, for the timer that repaints its running
+// bars between redraws; the timer stops when nothing runs or it is gone.
+const ticker: {
+  live?: { bars: Bar[]; columns: number }
+  timer?: Timer
+  frame: number
+} = { frame: 0 }
+
+async function tick($: EngineInterface) {
+  const shown = ticker.live
+  if (shown === undefined || shown.bars.every(bar => bar.end !== undefined)) {
+    ticker.timer?.cancel()
+    ticker.timer = undefined
+
+    return
+  }
+  ticker.frame += 1
+  const chart = gantt(shown.bars, await $.clock.now(), shown.columns, ticker.frame)
+  // A refused or failed paint means the chart is gone: the next tick stops.
+  const painted = await $.ui
+    .blit({ requestId: PANE, key: 'gantt', columns: shown.columns, rows: chart.rows, cells: chart.cells })
+    .catch(() => ({ deny: 'failed' }))
+  if (painted.deny !== undefined) {
+    ticker.live = undefined
   }
 }
 
@@ -866,7 +903,7 @@ export const register: Register = on => {
     const allTurns = await read($, turns)
     const now = await $.clock.now()
 
-    if (shown === null && allNotes.length === 0 && acts.length === 0 && pics.length === 0) {
+    if (shown === null && allNotes.length === 0 && acts.length === 0 && pics.length === 0 && allTurns.length === 0) {
       return (
         <Box flexDirection="column">
           <Text dimColor>
@@ -1058,7 +1095,11 @@ export const register: Register = on => {
 
       const { Raster } = $.ui.resolve(e)
       const columns = Math.max(24, Math.min(512, e.props.bodyColumns))
-      const chart = gantt(bars, now, columns)
+      const chart = gantt(bars, now, columns, ticker.frame)
+      ticker.live = { bars, columns }
+      if (ticker.timer === undefined && bars.some(bar => bar.end === undefined)) {
+        ticker.timer = $.clock.every(FRAME, () => void tick($))
+      }
       const key = legend([
         [COLORS.turn, 'turn'],
         [COLORS.lane, 'subagent'],
