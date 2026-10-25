@@ -34,6 +34,24 @@ export type Act = {
   count?: number
 }
 
+/** A changed file's diff, as git gave it when the person pressed the file. */
+export type Diff = { file: string; lines: string[]; isCut: boolean }
+
+/** A subagent's lane: its task and what it is doing now. */
+export type Lane = {
+  /** The subagent's id, which its own tool calls carry as `agentId`. */
+  id: string
+  /** The Agent call that spawned it. */
+  toolUseId: string
+  label: string
+  type: string
+  status: ActStatus
+  calls: number
+  /** Its latest call, as the activity log words it. */
+  last?: string
+  at: number
+}
+
 /** An image frozen as a PNG in the cache, as it was when shown or read. */
 export type Picture = {
   id: string
@@ -57,6 +75,8 @@ declare module 'claude-code' {
       activity: Shaped<Act[]>
       changed: Shaped<string[]>
       pictures: Shaped<Picture[]>
+      diff: Shaped<Diff | null>
+      lanes: Shaped<Lane[]>
       picked: string | null
       tab: Tab
       showEarlier: boolean

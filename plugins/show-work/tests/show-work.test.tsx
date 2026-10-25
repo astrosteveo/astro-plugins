@@ -425,3 +425,83 @@ test('a new goal starts a new task and hides the old notes', async ($, on) => {
   expect(await ui.find({ type: 'Button', text: /Same task/ })).toBeDefined()
   await ui.unmount()
 })
+
+const DIFF = `diff --git a/src/menu.gd b/src/menu.gd
+--- a/src/menu.gd
++++ b/src/menu.gd
+@@ -1,2 +1,2 @@
+ extends Control
+-var open = false
++var is_open := false
+`
+
+test('pressing a changed file shows its diff, colored, and close returns', async ($, on) => {
+  engine(on)
+  const asked: string[][] = []
+  on('process.run', (_, e) => {
+    asked.push([...e.argv])
+    const stdout = e.argv.includes('HEAD') ? DIFF : ''
+
+    return {
+      value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    }
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/src/menu.gd', old_string: 'a', new_string: 'b' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-activity' })
+  await ui.press({ key: 'file-src/menu.gd' })
+  expect(asked.at(-1)).toEqual(['git', '-C', '/proj/src', 'diff', '--no-color', 'HEAD', '--', '/proj/src/menu.gd'])
+  expect((await ui.find({ type: 'Text', text: /^\+var/ }))?.props.color).toBe('success')
+  expect((await ui.find({ type: 'Text', text: /^-var/ }))?.props.color).toBe('error')
+  expect(await ui.find({ type: 'Text', text: /^\+\+\+/ })).toBeUndefined()
+  await ui.press({ key: 'diff-close' })
+  expect(await ui.find({ type: 'Text', text: /^\+var/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /menu\.gd/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a new file diffs against nothing', async ($, on) => {
+  engine(on)
+  on('process.run', (_, e) => ({
+    value: {
+      exitCode: 1,
+      stdout: e.argv.includes('--no-index') ? '@@ -0,0 +1 @@\n+hello\n' : '',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Write', file_path: '/proj/new.txt', content: 'hello' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-activity' })
+  await ui.press({ key: 'file-new.txt' })
+  expect((await ui.find({ type: 'Text', text: '+hello' }))?.props.color).toBe('success')
+  await ui.unmount()
+})
+
+test('a subagent gets a lane with its latest call, done when its Agent call returns', async ($, on) => {
+  engine(on)
+  on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'ag1' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.agent.spawn({
+    tool_use_id: 'toolu_a1',
+    prompt: 'Find the menu scene',
+    description: 'Find menu scene',
+    subagentType: 'Explore',
+  } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/menu.tscn', agentId: 'ag1' } as never)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^Agents/ }))?.text).toBe('Agents 1 running')
+  expect((await ui.find({ type: 'Text', text: /Find menu scene/ }))?.text).toBe(
+    '… Find menu scene Explore · 1 call',
+  )
+  expect((await ui.find({ type: 'Text', text: /↳ read/ }))?.text).toBe('  ↳ read menu.tscn')
+  await $.tool.call({ tool: 'Agent', description: 'Find menu scene', prompt: 'x', tool_use_id: 'toolu_a1' } as never)
+  expect((await ui.find({ type: 'Text', text: /^Agents/ }))?.text).toBe('Agents 0 running')
+  expect((await ui.find({ type: 'Text', text: /Find menu scene/ }))?.text).toMatch(/^✓/)
+  await ui.unmount()
+})

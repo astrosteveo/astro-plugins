@@ -5,6 +5,8 @@ import type {
   Act,
   ActKind,
   ActStatus,
+  Diff,
+  Lane,
   Note,
   NoteKind,
   Picture,
@@ -35,6 +37,13 @@ const changed = atom({ plugin: 'show-work', key: 'changed' } as const, [], {
 const pictures = atom({ plugin: 'show-work', key: 'pictures' } as const, [], {
   shape: 'pictures-1',
 })
+// The diff the Activity tab shows; null shows the log.
+const diff = atom({ plugin: 'show-work', key: 'diff' } as const, null, {
+  shape: 'diff-1',
+})
+const lanes = atom({ plugin: 'show-work', key: 'lanes' } as const, [], {
+  shape: 'lanes-1',
+})
 // The picture the pane shows; null shows the newest.
 const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
 const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
@@ -43,6 +52,8 @@ const showEarlier = atom({ plugin: 'show-work', key: 'showEarlier' } as const, f
 const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
 const KEPT_PICTURES = 30
+const KEPT_LANES = 20
+const DIFF_LINES = 300
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
 const STEP_STATUSES: readonly StepStatus[] = ['todo', 'doing', 'done', 'dropped']
@@ -301,6 +312,43 @@ export function describe(
   }
 }
 
+// The color of a diff line by its first character.
+export function diffColor(line: string): Color | undefined {
+  if (line.startsWith('+++') || line.startsWith('---')) {
+    return undefined
+  }
+  if (line.startsWith('+')) {
+    return 'success'
+  }
+  if (line.startsWith('-')) {
+    return 'error'
+  }
+
+  return line.startsWith('@@') ? 'suggestion' : undefined
+}
+
+// Asks git what changed in a file: against HEAD when it is tracked, against
+// nothing when it is new.
+async function loadDiff($: EngineInterface, path: string, label: string): Promise<Diff> {
+  const dir = path.slice(0, path.lastIndexOf('/')) || '/'
+  let out = (await $.process.run(['git', '-C', dir, 'diff', '--no-color', 'HEAD', '--', path])).stdout
+  if (out.trim() === '') {
+    out = (
+      await $.process.run(['git', '-C', dir, 'diff', '--no-color', '--no-index', '/dev/null', path])
+    ).stdout
+  }
+  // The header lines before the first hunk say nothing the title doesn't.
+  const all = out.split('\n')
+  const hunk = all.findIndex(line => line.startsWith('@@'))
+  const lines = (hunk < 0 ? all : all.slice(hunk)).filter((line, i, list) => i < list.length - 1 || line !== '')
+
+  return {
+    file: label,
+    lines: lines.length === 0 ? [] : lines.slice(0, DIFF_LINES),
+    isCut: lines.length > DIFF_LINES,
+  }
+}
+
 type Source = { path: string } | { svg: string }
 
 // Copies or converts an image into the cache as a PNG, so a later write to
@@ -414,6 +462,8 @@ export const register: Register = on => {
       await update($, changed, () => [])
       await update($, pictures, () => [])
       await update($, picked, () => null)
+      await update($, diff, () => null)
+      await update($, lanes, () => [])
 
       return { text: 'Show work cleared.' }
     }
@@ -505,10 +555,57 @@ export const register: Register = on => {
     return ran
   })
 
+  // Each subagent gets a lane, keyed by the id its own tool calls carry.
+  on('agent.spawn', async ($, e, next) => {
+    const spawned = await next(e)
+    if (spawned.deny === undefined && spawned.agentId !== undefined) {
+      const lane: Lane = {
+        id: spawned.agentId,
+        toolUseId: e.tool_use_id,
+        label: e.description || 'subagent',
+        type: e.subagentType,
+        status: 'runs',
+        calls: 0,
+        at: await $.clock.now(),
+      }
+      await update($, lanes, list =>
+        [...list.filter(one => one.id !== lane.id), lane].slice(-KEPT_LANES),
+      )
+    }
+
+    return spawned
+  })
+
+  // A foreground Agent call returns when its subagent is done; a background
+  // one returns at once, so its lane stays running.
+  on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    const ran = await next(e)
+    // This build's Agent input type leaves the flag out; the call may carry it.
+    const isBackground = (e as Record<string, unknown>).run_in_background === true
+    if (isBackground &&ran.deny === undefined && ran.isError !== true) {
+      return ran
+    }
+    const status: ActStatus = ran.deny !== undefined || ran.isError === true ? 'failed' : 'ok'
+    await update($, lanes, list =>
+      list.map(one => (one.toolUseId === e.tool_use_id ? { ...one, status } : one)),
+    )
+
+    return ran
+  })
+
   on('tool.call', async ($, e, next) => {
     const what = describe(e, cwd)
     if (what === undefined) {
       return next(e)
+    }
+    if (e.agentId !== undefined) {
+      await update($, lanes, list =>
+        list.map(one =>
+          one.id === e.agentId
+            ? { ...one, calls: one.calls + 1, last: `${what.kind} ${what.label}` }
+            : one,
+        ),
+      )
     }
 
     const act: Act = {
@@ -537,6 +634,12 @@ export const register: Register = on => {
       await update($, changed, list =>
         list.includes(label) ? list : [...list, label],
       )
+      // A diff open on this file goes stale with the edit: refresh it.
+      const open = await read($, diff)
+      if (open !== null && open.file === label) {
+        const fresh = await loadDiff($, what.path, label)
+        await update($, diff, () => fresh)
+      }
     }
 
     return ran
@@ -594,6 +697,8 @@ export const register: Register = on => {
     const tab = await read($, tabAtom)
     const isShowingEarlier = await read($, showEarlier)
     const openId = await read($, openNote)
+    const shownDiff = await read($, diff)
+    const allLanes = await read($, lanes)
 
     if (shown === null && allNotes.length === 0 && acts.length === 0 && pics.length === 0) {
       return (
@@ -612,6 +717,10 @@ export const register: Register = on => {
     const open = current.filter(note => note.kind === 'question' && !note.isReplied)
     const picture = pics.find(one => one.id === pickedId) ?? pics.at(-1)
     const failed = acts.filter(act => act.status === 'failed').length
+    // Lanes of this task, and any still running from before it.
+    const currentLanes = allLanes.filter(
+      lane => since === undefined || lane.at >= since || lane.status === 'runs',
+    )
 
     // The note turns replied when the prompt is sent, in prompt.submit.
     const reply = (note: Note, fill = '') => async () => {
@@ -689,6 +798,50 @@ export const register: Register = on => {
             {act.detail}
           </Text>
         )}
+      </Box>
+    )
+
+    const laneRow = (lane: Lane) => (
+      <Box key={`lane-${lane.id}`} flexDirection="column">
+        <Text wrap="truncate-end" dimColor={lane.status === 'ok'}>
+          <Text color={ACT_MARK[lane.status].color}>{ACT_MARK[lane.status].mark}</Text>{' '}
+          <Text weight="bold">{lane.label}</Text> <Text dimColor>{lane.type}</Text>
+          <Text dimColor>
+            {' '}· {lane.calls} {lane.calls === 1 ? 'call' : 'calls'}
+          </Text>
+        </Text>
+        {lane.last !== undefined && lane.status === 'runs' && (
+          <Text wrap="truncate-end" dimColor>
+            {'  ↳ '}
+            {lane.last}
+          </Text>
+        )}
+      </Box>
+    )
+
+    const openDiff = (file: string) => async () => {
+      const loaded = await loadDiff($, absolute(file, cwd), file)
+      await update($, diff, () => loaded)
+    }
+
+    const diffView = (shownDiff: Diff) => (
+      <Box flexDirection="column">
+        <Box flexDirection="row" gap={2}>
+          <Text weight="bold">{shownDiff.file}</Text>
+          <Button key="diff-close" plain dimColor hotkey="x" onPress={() => update($, diff, () => null)}>
+            ✗ close
+          </Button>
+        </Box>
+        {shownDiff.lines.length === 0 ? (
+          <Text dimColor>No changes against git HEAD.</Text>
+        ) : (
+          shownDiff.lines.map(line => (
+            <Text wrap="truncate-end" color={diffColor(line)} dimColor={diffColor(line) === undefined}>
+              {line === '' ? ' ' : line}
+            </Text>
+          ))
+        )}
+        {shownDiff.isCut && <Text dimColor>… cut at {DIFF_LINES} lines</Text>}
       </Box>
     )
 
@@ -787,9 +940,23 @@ export const register: Register = on => {
                 ))}
           </Box>
         )
+    } else if (tab === 'activity' && shownDiff !== null) {
+      body = diffView(shownDiff)
     } else if (tab === 'activity') {
       body = (
         <Box flexDirection="column">
+          {files.length > 0 && (
+            <Box flexDirection="column" marginBottom={1}>
+              <Text weight="bold">
+                Changed <Text dimColor>press for the diff</Text>
+              </Text>
+              {files.slice(-12).map(file => (
+                <Button key={`file-${file}`} plain onPress={openDiff(file)}>
+                  <Text color="warning">±</Text> {file}
+                </Button>
+              ))}
+            </Box>
+          )}
           <Text dimColor>
             {acts.reduce((sum, act) => sum + (act.count ?? 1), 0)} calls,{' '}
             {files.length} files changed
@@ -808,6 +975,17 @@ export const register: Register = on => {
                 Waiting on you <Text dimColor>press to reply</Text>
               </Text>
               {open.map(note => noteRow(note))}
+            </Box>
+          )}
+          {currentLanes.length > 0 && (
+            <Box flexDirection="column">
+              <Text weight="bold">
+                Agents{' '}
+                <Text dimColor>
+                  {currentLanes.filter(lane => lane.status === 'runs').length} running
+                </Text>
+              </Text>
+              {currentLanes.slice(-6).map(laneRow)}
             </Box>
           )}
           {acts.length > 0 && (
