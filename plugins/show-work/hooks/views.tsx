@@ -3,7 +3,8 @@
 
 import type { Color, Elements, RenderElement } from 'claude-code'
 
-import type { CommitRow, Meter, TestRun, Touch, Turn } from '../types'
+import type { CommitRow, Meter, Preview, TestRun, Touch, Turn } from '../types'
+import { matches, treeRows } from './explorer'
 import {
   PALETTE,
   area,
@@ -271,6 +272,151 @@ export function commitsView(
                 </Text>
               )}
             </Text>
+          ))}
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+// A git status code's color: changed, added or new, deleted.
+const STATUS_COLOR: Record<string, Color> = { M: 'warning', A: 'success', '??': 'success', D: 'error', R: 'suggestion' }
+const statusColor = (code: string) => STATUS_COLOR[code] ?? STATUS_COLOR[code[0] ?? ''] ?? 'warning'
+
+export type ExplorerKit = Kit & {
+  Input?: Elements['terminal']['Input']
+  Code: Elements['terminal']['Code']
+}
+
+// The project's files: a tree to walk, a filter that finds a file by a few
+// of its letters, and a preview with a button that mentions it in the prompt.
+export function explorerView(
+  { Box, Text, Button, Input, Code }: ExplorerKit,
+  data: {
+    files: string[]
+    codes: Record<string, string>
+    touched: Touch[]
+    open: string[]
+    filter: string
+    preview: Preview | null
+    onFilter: (text: string) => void
+    onToggle: (dir: string) => () => void
+    onOpen: (file: string) => () => void
+    onClose: () => void
+    onMention: (file: string) => () => void
+    onDiff: (file: string) => () => void
+    onRefresh: () => void
+  },
+): RenderElement {
+  const changed = Object.keys(data.codes).length
+  const touch = new Map(data.touched.map(one => [one.file, one]))
+  const marks = (path: string) => {
+    const code = data.codes[path]
+    const mine = touch.get(path)
+
+    return (
+      <Text>
+        {code !== undefined && <Text color={statusColor(code)}> {code}</Text>}
+        {mine !== undefined && (
+          <Text color={mine.edits > 0 ? 'claude' : 'suggestion'}> {mine.edits > 0 ? '± edited' : '· read'}</Text>
+        )}
+      </Text>
+    )
+  }
+
+  if (data.preview !== null) {
+    const shown = data.preview
+    const code = data.codes[shown.file]
+
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Box flexDirection="column">
+          <Text wrap="truncate-end">
+            <Text weight="bold">{shown.file}</Text>
+            <Text dimColor> {shown.lines} lines</Text>
+            {marks(shown.file)}
+          </Text>
+          <Box flexDirection="row" gap={2}>
+            <Button key="ex-mention" variant="primary" hotkey="m" onPress={data.onMention(shown.file)}>
+              @ mention
+            </Button>
+            {code !== undefined && code !== '??' && (
+              <Button key="ex-diff" variant="secondary" hotkey="d" onPress={data.onDiff(shown.file)}>
+                diff
+              </Button>
+            )}
+            <Button key="ex-close" plain dimColor hotkey="x" onPress={data.onClose}>
+              ✗ close
+            </Button>
+          </Box>
+        </Box>
+        {shown.isBinary ? (
+          <Text dimColor>A binary file: nothing to preview.</Text>
+        ) : (
+          <Code source={shown.source === '' ? ' ' : shown.source} path={shown.file} startLine={1} />
+        )}
+        {shown.isCut && <Text dimColor>… the first {shown.source.split('\n').length} lines</Text>}
+      </Box>
+    )
+  }
+
+  const found = data.filter.trim() === '' ? undefined : matches(data.files, data.filter, 40)
+  const rows = found === undefined ? treeRows(data.files, new Set(data.open)).slice(0, 120) : []
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Box flexDirection="column">
+        {Input !== undefined && (
+          <Input
+            key="ex-filter"
+            autoFocus
+            placeholder="find a file by a few letters…"
+            value={data.filter}
+            onInput={value => data.onFilter(value)}
+            onSubmit={value => {
+              const first = matches(data.files, value, 1)[0]
+              if (first !== undefined) {
+                data.onOpen(first)()
+              }
+            }}
+          />
+        )}
+        <Box flexDirection="row" gap={2}>
+          <Text dimColor>
+            {data.files.length} files{changed > 0 ? ` · ${changed} changed` : ''}
+          </Text>
+          <Button key="ex-refresh" plain dimColor hotkey="r" onPress={data.onRefresh}>
+            ↻ refresh
+          </Button>
+        </Box>
+      </Box>
+      {data.files.length === 0 ? (
+        <Text dimColor>No files found here.</Text>
+      ) : found !== undefined ? (
+        <Box flexDirection="column">
+          {found.length === 0 && <Text dimColor>No file matches.</Text>}
+          {found.map(path => (
+            <Button key={`ex-${path}`} plain onPress={data.onOpen(path)}>
+              <Text dimColor>{path.slice(0, path.lastIndexOf('/') + 1)}</Text>
+              <Text weight="bold">{basename(path)}</Text>
+              {marks(path)}
+            </Button>
+          ))}
+        </Box>
+      ) : (
+        <Box flexDirection="column">
+          {rows.map(row => (
+            <Button
+              key={`ex-${row.path}`}
+              plain
+              dimColor={!row.isDir && data.codes[row.path] === undefined && !touch.has(row.path)}
+              onPress={row.isDir ? data.onToggle(row.path) : data.onOpen(row.path)}
+            >
+              {'  '.repeat(row.depth)}
+              {row.isDir ? <Text color="suggestion">{row.isOpen ? '▾ ' : '▸ '}</Text> : '  '}
+              {row.isDir ? <Text weight="bold">{row.name}/</Text> : row.name}
+              {!row.isDir && marks(row.path)}
+            </Button>
           ))}
         </Box>
       )}

@@ -6,6 +6,7 @@ import type {
   ActKind,
   CommitRow,
   Meter,
+  Preview,
   TestRun,
   Touch,
   ActStatus,
@@ -22,7 +23,8 @@ import type {
 } from '../types'
 import { GREEN, RED, gantt, gauge, legend, parseLog, parseTests, patchCounts, pulse, shareBar } from './charts'
 import type { Bar } from './charts'
-import { contextView, commitsView, filesView, testsView } from './views'
+import { parseStatus } from './explorer'
+import { contextView, commitsView, explorerView, filesView, testsView } from './views'
 
 const PANE = 'show-work'
 const TITLE = 'Show work'
@@ -67,6 +69,11 @@ const touches = atom({ plugin: 'show-work', key: 'touches' } as const, [], {
 const commits = atom({ plugin: 'show-work', key: 'commits' } as const, [], {
   shape: 'commits-1',
 })
+const tree = atom({ plugin: 'show-work', key: 'tree' } as const, [], { shape: 'tree-1' })
+const gitStatus = atom({ plugin: 'show-work', key: 'status' } as const, {}, { shape: 'status-1' })
+const openDirs = atom({ plugin: 'show-work', key: 'openDirs' } as const, [], { shape: 'openDirs-1' })
+const filter = atom({ plugin: 'show-work', key: 'filter' } as const, '')
+const preview = atom({ plugin: 'show-work', key: 'preview' } as const, null, { shape: 'preview-1' })
 // The picture the pane shows; null shows the newest.
 const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
 const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
@@ -78,6 +85,8 @@ const KEPT_PICTURES = 30
 const KEPT_LANES = 20
 const KEPT_TURNS = 50
 const KEPT_RUNS = 40
+const TREE_FILES = 20_000
+const PREVIEW_LINES = 400
 const KEPT_TOUCHES = 200
 // A test command, by the runner or the word.
 const TEST_COMMAND = /\b(tests?|spec|pytest|jest|vitest|mocha|rspec|ctest|gut|gdunit\w*)\b/i
@@ -549,6 +558,53 @@ async function loadMeter($: EngineInterface): Promise<Meter | null> {
   }
 }
 
+// The project's files as git sees them, ignored ones left out; where git
+// is not, whatever find turns up a few levels down.
+async function loadTree($: EngineInterface, cwd: string): Promise<string[]> {
+  if (cwd === '') {
+    return []
+  }
+  const listed = await $.process
+    .run(['git', '-C', cwd, 'ls-files', '--cached', '--others', '--exclude-standard'])
+    .catch(() => undefined)
+  if (listed !== undefined && listed.exitCode === 0) {
+    return [...new Set(listed.stdout.split('\n').filter(line => line !== ''))].slice(0, TREE_FILES)
+  }
+  const found = await $.process
+    .run(['find', cwd, '-maxdepth', '6', '-type', 'f', '-not', '-path', '*/.git/*', '-not', '-path', '*/node_modules/*'])
+    .catch(() => undefined)
+
+  return (found?.stdout ?? '')
+    .split('\n')
+    .filter(line => line.startsWith(cwd + '/'))
+    .map(line => line.slice(cwd.length + 1))
+    .slice(0, TREE_FILES)
+}
+
+async function loadStatus($: EngineInterface, cwd: string): Promise<Record<string, string>> {
+  const ran = await $.process.run(['git', '-C', cwd, 'status', '--porcelain']).catch(() => undefined)
+
+  return ran !== undefined && ran.exitCode === 0 ? parseStatus(ran.stdout) : {}
+}
+
+// A file's text for the preview: the head of a long one, none of a binary one.
+async function loadPreview($: EngineInterface, cwd: string, file: string): Promise<Preview> {
+  const text = await $.fs.read(absolute(file, cwd)).catch(() => '')
+  const source = typeof text === 'string' ? text : ''
+  if (source.includes('\u0000')) {
+    return { file, source: '', lines: 0, isCut: false, isBinary: true }
+  }
+  const lines = source.split('\n')
+
+  return {
+    file,
+    source: lines.slice(0, PREVIEW_LINES).join('\n'),
+    lines: lines.length,
+    isCut: lines.length > PREVIEW_LINES,
+    isBinary: false,
+  }
+}
+
 // This session's commits on every branch: those after the last commit made
 // before the session began.
 async function loadCommits($: EngineInterface, cwd: string): Promise<CommitRow[]> {
@@ -589,11 +645,18 @@ export const register: Register = on => {
     })
     void $.ui.open({ id: PANE, title: TITLE })
     const started = await next(e)
-    const [shown, rows] = await Promise.all([loadMeter($), loadCommits($, cwd)])
+    const [shown, rows, files, codes] = await Promise.all([
+      loadMeter($),
+      loadCommits($, cwd),
+      loadTree($, cwd),
+      loadStatus($, cwd),
+    ])
     if (shown !== null) {
       await update($, meter, () => shown)
     }
     await update($, commits, () => rows)
+    await update($, tree, () => files)
+    await update($, gitStatus, () => codes)
 
     return started
   })
@@ -909,6 +972,19 @@ export const register: Register = on => {
         await keep($, made)
       }
     }
+    if (status === 'ok' && (what.path !== undefined || (e.tool === 'Bash' && GIT_MOVE.test(asText(e.command))))) {
+      const codes = await loadStatus($, cwd)
+      await update($, gitStatus, () => codes)
+      if (e.tool !== 'Edit') {
+        const files = await loadTree($, cwd)
+        await update($, tree, () => files)
+      }
+      const open = await read($, preview)
+      if (open !== null && what.path !== undefined && relative(what.path, cwd) === open.file) {
+        const fresh = await loadPreview($, cwd, open.file)
+        await update($, preview, () => fresh)
+      }
+    }
     if (status === 'ok' && what.path !== undefined && what.path !== '') {
       const label = what.label
       await update($, changed, list =>
@@ -1104,6 +1180,11 @@ export const register: Register = on => {
     const runs = await read($, tests)
     const touched = await read($, touches)
     const commitRows = await read($, commits)
+    const projectFiles = await read($, tree)
+    const codes = await read($, gitStatus)
+    const opened = await read($, openDirs)
+    const filterText = await read($, filter)
+    const shownPreview = await read($, preview)
     const now = await $.clock.now()
     // Only what this drawing holds can be repainted between drawings.
     forget(PANE)
@@ -1112,7 +1193,7 @@ export const register: Register = on => {
     const kit = { Box, Text, Button, ...(Raster === undefined ? {} : { Raster }) }
     const bodyColumns = Math.max(24, Math.min(512, e.props.bodyColumns))
 
-    const isEmpty = [allNotes, acts, pics, allTurns, runs, touched, commitRows].every(list => list.length === 0)
+    const isEmpty = [allNotes, acts, pics, allTurns, runs, touched, commitRows, projectFiles].every(list => list.length === 0)
     if (shown === null && isEmpty) {
       return (
         <Box flexDirection="column">
@@ -1480,6 +1561,39 @@ export const register: Register = on => {
           },
         },
       )
+    } else if (tab === 'explorer') {
+      body = explorerView(
+        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }), Code },
+        {
+          files: projectFiles,
+          codes,
+          touched: touched,
+          open: opened,
+          filter: filterText,
+          preview: shownPreview,
+          onFilter: text => update($, filter, () => text),
+          onToggle: dir => () =>
+            update($, openDirs, list => (list.includes(dir) ? list.filter(one => one !== dir) : [...list, dir])),
+          onOpen: file => async () => {
+            const loaded = await loadPreview($, cwd, file)
+            await update($, preview, () => loaded)
+          },
+          onClose: () => update($, preview, () => null),
+          onMention: file => async () => {
+            await $.prompt.fill({ text: `@${file} `, mode: 'insert' })
+          },
+          onDiff: file => async () => {
+            const loaded = await loadDiff($, absolute(file, cwd), file)
+            await update($, diff, () => loaded)
+            await update($, tabAtom, () => 'activity')
+          },
+          onRefresh: async () => {
+            const [listed, status] = await Promise.all([loadTree($, cwd), loadStatus($, cwd)])
+            await update($, tree, () => listed)
+            await update($, gitStatus, () => status)
+          },
+        },
+      )
     } else if (tab === 'commits') {
       body = commitsView(
         kit,
@@ -1574,6 +1688,7 @@ export const register: Register = on => {
       { id: 'tests', label: 'Tests', count: runs.length, hotkey: '7' },
       { id: 'files', label: 'Files', count: touched.length, hotkey: '8' },
       { id: 'commits', label: 'Commits', count: commitRows.filter(row => row.sha !== undefined).length, hotkey: '9' },
+      { id: 'explorer', label: 'Explorer', count: Object.keys(codes).length, hotkey: '0' },
     ]
 
     startTicking($, now)

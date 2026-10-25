@@ -28,6 +28,7 @@ export type Tab =
   | 'tests'
   | 'files'
   | 'commits'
+  | 'explorer'
 
 export type ActKind = 'read' | 'edit' | 'run' | 'search' | 'web' | 'agent' | 'tool'
 export type ActStatus = 'runs' | 'ok' | 'failed'
@@ -91,6 +92,9 @@ export type TestRun = {
 /** How often a file was read and edited. */
 export type Touch = { file: string; reads: number; edits: number; at: number }
 
+/** A file open in the Explorer's preview. */
+export type Preview = { file: string; source: string; lines: number; isCut: boolean; isBinary: boolean }
+
 /** A row of `git log --graph`: a commit, or a line of the graph alone. */
 export type CommitRow = {
   graph: string
@@ -152,6 +156,11 @@ declare module 'claude-code' {
       tests: Shaped<TestRun[]>
       touches: Shaped<Touch[]>
       commits: Shaped<CommitRow[]>
+      tree: Shaped<string[]>
+      status: Shaped<Record<string, string>>
+      openDirs: Shaped<string[]>
+      filter: string
+      preview: Shaped<Preview | null>
       picked: string | null
       tab: Tab
       showEarlier: boolean

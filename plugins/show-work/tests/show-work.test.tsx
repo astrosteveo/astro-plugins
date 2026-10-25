@@ -903,13 +903,13 @@ test("the Commits tab draws this session's graph and refreshes after a commit", 
   on('session.usage', () => ({ value: { ...USAGE, startedAt: 1_700_000_000_000 } }))
   on('process.run', (_, e) => {
     asked.push([...e.argv])
-    const stdout = e.argv.includes('rev-list') ? 'basesha\n' : log
+    const stdout = e.argv.includes('rev-list') ? 'basesha\n' : e.argv.includes('log') ? log : ''
 
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  expect(asked[0]).toEqual(['git', '-C', '/proj', 'rev-list', '-1', '--before=@1700000000', 'HEAD'])
-  expect(asked[1]?.at(-1)).toBe('^basesha')
+  expect(asked.find(argv => argv.includes('rev-list'))).toEqual(['git', '-C', '/proj', 'rev-list', '-1', '--before=@1700000000', 'HEAD'])
+  expect(asked.find(argv => argv.includes('log'))?.at(-1)).toBe('^basesha')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-commits' })
@@ -1012,5 +1012,69 @@ test('the band shows the pulse, context and step while Claude works, and nothing
   expect(await ui.find({ type: 'Raster', key: 'hud-pulse' })).toBeDefined()
   expect(await ui.find({ type: 'Raster', key: 'hud-gauge' })).toBeDefined()
   expect((await ui.find({ type: 'Text', text: /▸/ }))?.text).toBe('60% · ▸ Write the band')
+  await ui.unmount()
+})
+
+import { matches, parseStatus, treeRows } from '../hooks/explorer'
+
+const FILES = ['README.md', 'hooks/register.tsx', 'hooks/charts.ts', 'tests/show-work.test.tsx', 'types/index.d.ts']
+
+test('the tree lists folders first and opens only the open ones', () => {
+  const closed = treeRows(FILES, new Set())
+  expect(closed.map(row => row.path)).toEqual(['hooks', 'tests', 'types', 'README.md'])
+  const open = treeRows(FILES, new Set(['hooks']))
+  expect(open.map(row => `${'  '.repeat(row.depth)}${row.name}`)).toEqual([
+    'hooks',
+    '  charts.ts',
+    '  register.tsx',
+    'tests',
+    'types',
+    'README.md',
+  ])
+})
+
+test('a filter finds files by a few letters, name hits first', () => {
+  expect(matches(FILES, 'reg', 5)[0]).toBe('hooks/register.tsx')
+  expect(matches(FILES, 'hct', 5)).toEqual(['hooks/charts.ts'])
+  expect(matches(FILES, 'zzz', 5)).toEqual([])
+  expect(parseStatus(' M hooks/register.tsx\n?? hooks/explorer.ts\nR  a.ts -> b.ts\n')).toEqual({
+    'hooks/register.tsx': 'M',
+    'hooks/explorer.ts': '??',
+    'b.ts': 'R',
+  })
+})
+
+test('the Explorer walks the tree, filters, previews a file and mentions it', async ($, on) => {
+  const filled = engine(on)
+  on('process.run', (_, e) => {
+    const stdout = e.argv.includes('ls-files')
+      ? FILES.join('\n') + '\n'
+      : e.argv.includes('status')
+        ? ' M hooks/register.tsx\n'
+        : ''
+
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.read', () => ({ value: 'export const register = 1\nexport const two = 2\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-explorer' })
+  expect((await ui.find({ type: 'Button', key: 'tab-explorer' }))?.text).toBe('Explorer 1')
+  expect((await ui.find({ type: 'Text', text: /files/ }))?.text).toBe('5 files · 1 changed')
+  await ui.press({ key: 'ex-hooks' })
+  expect((await ui.find({ type: 'Button', key: 'ex-hooks/register.tsx' }))?.text).toBe('    register.tsx M')
+
+  await ui.input({ key: 'ex-filter', text: 'chts', kind: 'change' })
+  expect((await ui.findAll({ type: 'Button', text: /charts/ })).map(one => one.key)).toEqual(['ex-hooks/charts.ts'])
+  await ui.input({ key: 'ex-filter', text: 'reg', kind: 'submit' })
+  const code = await ui.find({ type: 'Code' })
+  expect(code?.props).toMatchObject({ path: 'hooks/register.tsx', startLine: 1 })
+  expect(code?.props.source).toMatch(/^export const register = 1/)
+  expect(await ui.find({ type: 'Button', key: 'ex-diff' })).toBeDefined()
+  await ui.press({ key: 'ex-mention' })
+  expect(filled).toEqual(['@hooks/register.tsx '])
+  await ui.press({ key: 'ex-close' })
+  expect(await ui.find({ type: 'Code' })).toBeUndefined()
   await ui.unmount()
 })
