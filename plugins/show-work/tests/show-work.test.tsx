@@ -512,7 +512,7 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
   await ui.unmount()
 })
 
-import { base64, divider, duration, gantt, legend } from '../hooks/register'
+import { base64, divider, duration, gantt, glyphs, legend } from '../hooks/register'
 
 const decode = (cells: string, columns: number, rows: number) => {
   const bin = atob(cells)
@@ -639,4 +639,13 @@ test('a running bar grows between redraws, repainted by blit, and stops when don
   await clock.advance(5_000)
   expect(blits.length).toBe(after)
   await ui.unmount()
+})
+
+test('labels a Raster cannot draw turn to ?, and a narrow pane still fits', () => {
+  expect(String.fromCharCode(...glyphs('fix 🐛 バグ ↳'))).toBe('fix ? ?? ↳')
+  const chart = gantt([{ label: 'ship 🚀', start: 0, end: 500, color: 0xd97757, isSub: true }], 1_000, 8)
+  expect(chart.columns).toBe(19)
+  const { lines } = decode(chart.cells, chart.columns, chart.rows)
+  expect(lines[0]?.slice(0, 9)).toBe('↳ ship ? ')
+  expect(gantt([], 1_000, 40)).toMatchObject({ rows: 0, cells: '' })
 })

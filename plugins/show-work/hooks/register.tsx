@@ -379,9 +379,20 @@ export function base64(bytes: Uint8Array) {
 
 // A Gantt chart as Raster cells: one row per bar, labels on the left, time
 // running left to right from the earliest start to now, with a faint grid.
+// A Raster takes one printable, single-width BMP character per cell: plain
+// ASCII and the arrow pass, anything else (emoji, CJK, controls) draws as ?.
+export function glyphs(text: string) {
+  return [...text].map(ch => {
+    const code = ch.codePointAt(0) ?? 0x3f
+
+    return (code >= 0x20 && code < 0x7f) || code === 0x21b3 ? code : 0x3f
+  })
+}
+
 // A running bar's leading cell pulses brighter on odd frames.
-export function gantt(bars: Bar[], now: number, columns: number, frame = 0) {
-  const width = Math.max(4, columns - LABEL - 1)
+export function gantt(bars: Bar[], now: number, wanted: number, frame = 0) {
+  const columns = Math.max(LABEL + 5, wanted)
+  const width = columns - LABEL - 1
   const from = Math.min(now - 1000, ...bars.map(bar => bar.start))
   const span = Math.max(1, now - from)
   const words = new Uint32Array(columns * bars.length * 3)
@@ -396,8 +407,8 @@ export function gantt(bars: Bar[], now: number, columns: number, frame = 0) {
     for (let col = 0; col < columns; col++) {
       put(row, col, 0x20, DEFAULT)
     }
-    const label = (bar.isSub ? '↳ ' + bar.label : bar.label).slice(0, LABEL)
-    ;[...label].forEach((ch, col) => put(row, col, ch.charCodeAt(0), bar.isSub ? 0x8a8a8a : 0xd0d0d0))
+    const label = glyphs(bar.isSub ? '↳ ' + bar.label : bar.label).slice(0, LABEL)
+    label.forEach((code, col) => put(row, col, code, bar.isSub ? 0x8a8a8a : 0xd0d0d0))
     for (let col = 0; col < width; col += 6) {
       put(row, LABEL + 1 + col, 0x00b7, GRID)
     }
@@ -422,6 +433,7 @@ export function gantt(bars: Bar[], now: number, columns: number, frame = 0) {
   })
 
   return {
+    columns,
     rows: bars.length,
     cells: base64(new Uint8Array(words.buffer)),
     from,
@@ -430,14 +442,14 @@ export function gantt(bars: Bar[], now: number, columns: number, frame = 0) {
 
 // One row of swatches and names, in the very colors the chart draws.
 export function legend(entries: [number, string][]) {
-  const glyphs: [number, number][] = entries.flatMap(([color, name], i) => [
+  const row: [number, number][] = entries.flatMap(([color, name], i) => [
     ...(i === 0 ? [] : ([...'  '].map(ch => [ch.charCodeAt(0), DEFAULT]) as [number, number][])),
     [FULL, color] as [number, number],
-    ...[...` ${name}`].map(ch => [ch.charCodeAt(0), 0x8a8a8a] as [number, number]),
+    ...glyphs(` ${name}`).map(code => [code, 0x8a8a8a] as [number, number]),
   ])
-  const words = Uint32Array.from(glyphs.flatMap(([glyph, fg]) => [glyph, fg, DEFAULT]))
+  const words = Uint32Array.from(row.flatMap(([glyph, fg]) => [glyph, fg, DEFAULT]))
 
-  return { columns: glyphs.length, cells: base64(new Uint8Array(words.buffer)) }
+  return { columns: row.length, cells: base64(new Uint8Array(words.buffer)) }
 }
 
 // The color of a diff line by its first character.
