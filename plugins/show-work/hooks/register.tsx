@@ -1580,7 +1580,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" gap={1}>
-        <Box flexDirection="row" gap={2} flexWrap="wrap">
+        <Box flexDirection="row" columnGap={2} rowGap={0} flexWrap="wrap">
           {TABS.map(one => (
             <Button
               key={`tab-${one.id}`}

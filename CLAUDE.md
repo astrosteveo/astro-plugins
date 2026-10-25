@@ -19,8 +19,10 @@ Run a second Claude Code session in a detached tmux session with the plugin load
 # Start: wide enough that the pane docks unasked (144 columns or more).
 tmux new-session -d -s mod -x 220 -y 60 -c "$PWD" 'claude --plugin-dir plugins/<name>'
 
-# Type a prompt, or press keys.
-tmux send-keys -t mod 'Read README.md and summarise it' Enter
+# Type a prompt, then submit it with its own C-m: Enter sent with the text
+# lands as part of the paste and does not submit.
+tmux send-keys -t mod 'Read README.md and summarise it'
+tmux send-keys -t mod C-m
 tmux send-keys -t mod C-x Tab      # focus the pane
 tmux send-keys -t mod 5            # a pane hotkey, such as a tab
 
