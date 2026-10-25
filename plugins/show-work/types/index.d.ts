@@ -9,9 +9,13 @@ export type Note = {
   kind: NoteKind
   text: string
   why?: string
+  /** More for whoever opens the note: what Claude saw, where, what it means. */
+  detail?: string
   /** When it was posted; a note from before the current task has none or less. */
   at?: number
   isReplied: boolean
+  /** The person read it and pressed OK: no reply needed. */
+  isOk?: boolean
 }
 
 export type Tab = 'now' | 'notes' | 'pictures' | 'activity'
@@ -41,7 +45,7 @@ export type Picture = {
 declare module 'claude-code' {
   interface McpToolInputs {
     'mcp__show-work__plan': { goal: string; steps: Step[] }
-    'mcp__show-work__note': { kind: NoteKind; text: string; why?: string }
+    'mcp__show-work__note': { kind: NoteKind; text: string; why?: string; detail?: string }
     'mcp__show-work__show': { caption: string; path?: string; svg?: string }
   }
   interface PluginState {
@@ -54,6 +58,7 @@ declare module 'claude-code' {
       picked: string | null
       tab: Tab
       showEarlier: boolean
+      openNote: string | null
     }
   }
 }

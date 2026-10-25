@@ -103,11 +103,10 @@ test('pressing a note quotes it into the prompt; sending a reply marks it', asyn
     expect(ask?.text).toBe('I ask Should Esc also close the menu? · answer me')
     expect(await ui.find({ type: 'Button', text: /CanvasLayer/ })).toBeUndefined()
     await ui.press({ key: 'tab-notes' })
-    expect(await ui.find({ type: 'Text', text: /Press one to reply/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Press a question to answer/ })).toBeDefined()
     expect((await ui.find({ type: 'Button', text: /CanvasLayer/ }))?.text).toBe(
-      'I chose Use a CanvasLayer for the menu · veto?',
+      'I chose Use a CanvasLayer for the menu · veto? ▸',
     )
-    expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeDefined()
     await ui.press({ key: 'tab-now' })
     await ui.unmount()
   }
@@ -124,6 +123,49 @@ test('pressing a note quotes it into the prompt; sending a reply marks it', asyn
   expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeUndefined()
   await ui.press({ key: 'tab-notes' })
   expect((await ui.find({ type: 'Button', text: /Esc also close/ }))?.text).toMatch(/↩ replied$/)
+  await ui.unmount()
+})
+
+test('pressing another note opens it to its why, detail and actions', async ($, on) => {
+  const filled = engine(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'mcp__show-work__note',
+    kind: 'decision',
+    text: 'Use a CanvasLayer for the menu',
+    why: 'It draws above the game camera',
+    detail: 'A Control under the camera would scroll with the level.',
+  })
+  await $.tool.call({
+    tool: 'mcp__show-work__note',
+    kind: 'finding',
+    text: 'The save system already writes to user://',
+  })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-notes' })
+  expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeUndefined()
+
+  const decision = await ui.find({ type: 'Button', text: /CanvasLayer/ })
+  await ui.press({ key: decision?.key ?? '' })
+  expect((await ui.find({ type: 'Button', text: /CanvasLayer/ }))?.text).toMatch(/veto\? ▾$/)
+  expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /would scroll with the level/ })).toBeDefined()
+  expect(filled).toEqual([])
+
+  // Veto starts a reply and closes the note; sending it marks it replied.
+  await ui.press({ key: `reply-${decision?.key}` })
+  expect(filled).toEqual([`About your decision "Use a CanvasLayer for the menu": I'd rather `])
+  expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeUndefined()
+  await $.prompt.submit({ text: `${filled[0]}use a Control.` })
+  expect((await ui.find({ type: 'Button', text: /CanvasLayer/ }))?.text).toMatch(/↩ replied$/)
+
+  // Got it marks the finding read without a reply.
+  const finding = await ui.find({ type: 'Button', text: /user:\/\// })
+  await ui.press({ key: finding?.key ?? '' })
+  await ui.press({ key: `ok-${finding?.key}` })
+  expect((await ui.find({ type: 'Button', text: /user:\/\// }))?.text).toMatch(/✓ ok$/)
+  expect(filled).toHaveLength(1)
   await ui.unmount()
 })
 

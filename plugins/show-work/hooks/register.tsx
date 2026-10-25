@@ -39,6 +39,8 @@ const pictures = atom({ plugin: 'show-work', key: 'pictures' } as const, [], {
 const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
 const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
 const showEarlier = atom({ plugin: 'show-work', key: 'showEarlier' } as const, false)
+// The note opened to show its why, detail and actions; null when none is.
+const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
 const KEPT_PICTURES = 30
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
@@ -76,7 +78,7 @@ The person watches a "Show work" pane beside the chat. Keep it current so they c
 - Give each Bash call a description that says why you run it, not only what it does: the pane shows it as the reason above the command.
 - Notes are how you keep the person in the loop without stopping. Once the goal is clear, keep working until it is met; stop only for a question that blocks the work or a snag that needs their direction.
 - To show the person a design, mockup, layout, diagram or screenshot, call mcp__show-work__show with an image path or SVG source: it draws the picture in the chat. Reach for it whenever a picture says it faster than words, and before building a visual design, so they can veto it. Give an SVG a background rect and a width of 800 or more. Images you Read land in the pane by themselves.
-- One short sentence per note. The person can press a note to reply to it, so write each to stand alone.
+- One short sentence per note, written to stand alone. The person presses a question to answer it, and opens any other note to read its "why" and "detail", then vetoes, corrects or asks more, or presses OK. So put in "detail" what they need to judge the note: what you saw and where, what it means, what you would do.
 - Notes do not replace your reply: still say what matters in chat, briefly.`
 
 const PLAN_TOOL = {
@@ -110,7 +112,7 @@ const PLAN_TOOL = {
 const NOTE_TOOL = {
   name: 'note',
   description:
-    'Post a decision, assumption, open question, finding or risk to the Show work pane, where the person can press it to reply.',
+    'Post a decision, assumption, open question, finding or risk to the Show work pane, where the person can answer a question, or open another note to read more and veto, correct or OK it.',
   isDeferred: false,
   inputSchema: {
     type: 'object',
@@ -120,6 +122,11 @@ const NOTE_TOOL = {
       why: {
         type: 'string',
         description: 'The reason, for a decision or a risk. Optional.',
+      },
+      detail: {
+        type: 'string',
+        description:
+          'Shown when the person opens the note: what you saw and where, what it means, what you would do. Two or three sentences. Optional.',
       },
     },
     required: ['kind', 'text'],
@@ -149,6 +156,19 @@ const TAGS: Record<NoteKind, { tag: string; ask: string; color: Color }> = {
   question: { tag: 'I ask', ask: 'answer me', color: 'suggestion' },
   finding: { tag: 'I found', ask: 'FYI', color: 'success' },
   risk: { tag: 'Risk', ask: 'heads up', color: 'error' },
+}
+
+// What an opened note offers: a reply started in the prompt, then an OK. A
+// question has none: pressing it starts the answer at once.
+const ACTIONS: Record<Exclude<NoteKind, 'question'>, { reply: string; fill: string; ok: string }> = {
+  decision: { reply: 'Veto', fill: "I'd rather ", ok: 'OK' },
+  assumption: { reply: 'Correct it', fill: 'Not quite: ', ok: 'Right' },
+  finding: { reply: 'Tell me more', fill: 'tell me more.', ok: 'Got it' },
+  risk: {
+    reply: 'What would you do?',
+    fill: 'how likely is it, and what would you do about it?',
+    ok: 'Got it',
+  },
 }
 
 const STEP_MARK: Record<StepStatus, { mark: string; color?: Color }> = {
@@ -408,11 +428,13 @@ export const register: Register = on => {
       ? (e.kind as NoteKind)
       : 'finding'
     const why = asText(e.why)
+    const detail = asText(e.detail)
     const note: Note = {
       id: crypto.randomUUID(),
       kind,
       text,
       ...(why === '' ? {} : { why }),
+      ...(detail === '' ? {} : { detail }),
       at: await $.clock.now(),
       isReplied: false,
     }
@@ -552,6 +574,7 @@ export const register: Register = on => {
     const pickedId = await read($, picked)
     const tab = await read($, tabAtom)
     const isShowingEarlier = await read($, showEarlier)
+    const openId = await read($, openNote)
 
     if (shown === null && allNotes.length === 0 && acts.length === 0 && pics.length === 0) {
       return (
@@ -572,26 +595,65 @@ export const register: Register = on => {
     const failed = acts.filter(act => act.status === 'failed').length
 
     // The note turns replied when the prompt is sent, in prompt.submit.
-    const reply = (note: Note) => async () => {
-      await $.prompt.fill({ text: replyPrefix(note), mode: 'insert' })
+    const reply = (note: Note, fill = '') => async () => {
+      await $.prompt.fill({ text: replyPrefix(note) + fill, mode: 'insert' })
+      await update($, openNote, () => null)
     }
 
-    const noteRow = (note: Note, isWithWhy: boolean) => (
-      <Box flexDirection="column">
-        <Button key={note.id} plain dimColor={note.isReplied} onPress={reply(note)}>
-          <Text color={TAGS[note.kind].color} weight="bold">
-            {TAGS[note.kind].tag}
-          </Text>{' '}
-          {note.text}{' '}
-          <Text dimColor>{note.isReplied ? '↩ replied' : `· ${TAGS[note.kind].ask}`}</Text>
-        </Button>
-        {isWithWhy && note.why !== undefined && (
-          <Text dimColor>
-            {'  '}why: {note.why}
-          </Text>
-        )}
-      </Box>
-    )
+    const ok = (note: Note) => async () => {
+      await update($, notes, list =>
+        list.map(one => (one.id === note.id ? { ...one, isOk: true } : one)),
+      )
+      await update($, openNote, () => null)
+    }
+
+    const noteRow = (note: Note) => {
+      const isOpen = note.id === openId
+      const isDone = note.isReplied || note.isOk === true
+      let status = `· ${TAGS[note.kind].ask}`
+      if (note.isReplied) {
+        status = '↩ replied'
+      } else if (note.isOk === true) {
+        status = '✓ ok'
+      } else if (note.kind !== 'question') {
+        status += isOpen ? ' ▾' : ' ▸'
+      }
+      const press =
+        note.kind === 'question'
+          ? reply(note)
+          : () => update($, openNote, id => (id === note.id ? null : note.id))
+
+      return (
+        <Box flexDirection="column">
+          <Button key={note.id} plain dimColor={isDone} onPress={press}>
+            <Text color={TAGS[note.kind].color} weight="bold">
+              {TAGS[note.kind].tag}
+            </Text>{' '}
+            {note.text} <Text dimColor>{status}</Text>
+          </Button>
+          {isOpen && note.kind !== 'question' && (
+            <Box flexDirection="column" paddingLeft={2}>
+              {note.why !== undefined && <Text dimColor>why: {note.why}</Text>}
+              {note.detail !== undefined && <Text>{note.detail}</Text>}
+              <Box flexDirection="row" gap={1}>
+                <Button
+                  key={`reply-${note.id}`}
+                  variant="primary"
+                  onPress={reply(note, ACTIONS[note.kind].fill)}
+                >
+                  {ACTIONS[note.kind].reply}
+                </Button>
+                {!isDone && (
+                  <Button key={`ok-${note.id}`} variant="secondary" onPress={ok(note)}>
+                    {ACTIONS[note.kind].ok}
+                  </Button>
+                )}
+              </Box>
+            </Box>
+          )}
+        </Box>
+      )
+    }
 
     const actRow = (act: Act) => (
       <Box flexDirection="column">
@@ -647,9 +709,12 @@ export const register: Register = on => {
           {listed.length === 0 ? (
             <Text dimColor>No notes for this task yet.</Text>
           ) : (
-            <Text dimColor>Claude's notes on this task. Press one to reply.</Text>
+            <Text dimColor>
+              Claude's notes on this task. Press a question to answer it, any
+              other note to open it.
+            </Text>
           )}
-          {listed.slice(-30).map(note => noteRow(note, true))}
+          {listed.slice(-30).map(note => noteRow(note))}
           {earlier > 0 && (
             <Button
               key="earlier"
@@ -720,7 +785,7 @@ export const register: Register = on => {
               <Text weight="bold">
                 Waiting on you <Text dimColor>press to reply</Text>
               </Text>
-              {open.map(note => noteRow(note, false))}
+              {open.map(note => noteRow(note))}
             </Box>
           )}
           {acts.length > 0 && (
