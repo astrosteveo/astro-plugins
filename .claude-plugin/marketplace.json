@@ -1,0 +1,10 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "astro-plugins",
+  "description": "Personal Claude Code plugins for solo hobby projects.",
+  "owner": {
+    "name": "astrosteveo",
+    "email": "smosleyjr@pm.me"
+  },
+  "plugins": []
+}
