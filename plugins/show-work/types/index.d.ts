@@ -179,6 +179,15 @@ export type Picture = {
   origin: 'shown' | 'read'
 }
 
+/** A ```mermaid block of a reply, rendered once; `error` when it would not. */
+export type Diagram = {
+  id: string
+  file: string
+  width: number
+  height: number
+  error?: string
+}
+
 declare module 'claude-code' {
   interface McpToolInputs {
     'mcp__show-work__plan': { goal: string; steps: Step[] }
@@ -192,6 +201,7 @@ declare module 'claude-code' {
       activity: Shaped<Act[]>
       changed: Shaped<string[]>
       pictures: Shaped<Picture[]>
+      diagrams: Shaped<Diagram[]>
       diff: Shaped<Diff | null>
       lanes: Shaped<Lane[]>
       turns: Shaped<Turn[]>

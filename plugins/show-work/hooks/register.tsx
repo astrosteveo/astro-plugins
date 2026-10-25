@@ -12,6 +12,7 @@ import type {
 import type {
   Act,
   ActKind,
+  Diagram,
   CommitRow,
   GitState,
   Job,
@@ -35,6 +36,7 @@ import type {
 import { GREEN, RED, gantt, gauge, legend, parseLog, parseTests, patchCounts, pulse, shareBar } from './charts'
 import type { Bar } from './charts'
 import { parseGit, parseHits, parseStatus, plain } from './explorer'
+import { diagramColumns, hashOf, splitMermaid } from './mermaid'
 import { contextView, commitsView, explorerView, filesView, gitView, runView, searchView, testsView } from './views'
 
 const PANE = 'show-work'
@@ -57,6 +59,9 @@ const changed = atom({ plugin: 'show-work', key: 'changed' } as const, [], {
 })
 const pictures = atom({ plugin: 'show-work', key: 'pictures' } as const, [], {
   shape: 'pictures-1',
+})
+const diagrams = atom({ plugin: 'show-work', key: 'diagrams' } as const, [], {
+  shape: 'diagrams-1',
 })
 // The diff the Activity tab shows; null shows the log.
 const diff = atom({ plugin: 'show-work', key: 'diff' } as const, null, {
@@ -97,6 +102,11 @@ const showEarlier = atom({ plugin: 'show-work', key: 'showEarlier' } as const, f
 const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
 const KEPT_PICTURES = 30
+const KEPT_DIAGRAMS = 40
+// mmdc draws at this many pixels per CSS pixel, so a diagram stays sharp.
+const DIAGRAM_SCALE = 2
+// The most an Image takes as bytes: 2 MiB, as base64.
+const PNG_BYTES = Math.floor((2 * 1024 * 1024 * 4) / 3)
 const KEPT_LANES = 20
 const KEPT_TURNS = 50
 const KEPT_RUNS = 40
@@ -311,7 +321,7 @@ const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1)
 
 // Rows a picture takes at a width, a terminal cell being about twice as tall
 // as it is wide.
-export function rowsFor(picture: Picture, columns: number, most: number) {
+export function rowsFor(picture: Pick<Picture, 'width' | 'height'>, columns: number, most: number) {
   const rows = Math.round((columns * picture.height) / picture.width / 2)
 
   return Math.max(1, Math.min(most, rows))
@@ -499,6 +509,37 @@ async function keep($: EngineInterface, picture: Picture) {
     const files = dropped.flatMap(one => [one.file, one.file.replace(/\.png$/, '.svg')])
     await $.process.run(['rm', '-f', ...files])
   }
+}
+
+// Renders a mermaid block to a PNG in the cache with mmdc, in the person's
+// theme, and keeps the newest. A block that will not render keeps why.
+async function drawDiagram($: EngineInterface, source: string, id: string) {
+  const cache = (await $.env.get('XDG_CACHE_HOME')) || `${await $.env.get('HOME')}/.cache`
+  const dir = `${cache}/show-work`
+  const file = `${dir}/mermaid-${id}.png`
+  const made = await $.process
+    .run(['mkdir', '-p', dir])
+    .then(async () => {
+      if (await $.fs.exists(file)) {
+        return undefined
+      }
+      const theme = (await $.config.list()).find(row => row.key === 'theme')
+      const isLight = /light/i.test(String(theme?.value ?? ''))
+      await $.fs.write(`${dir}/mermaid-${id}.mmd`, source)
+      const argv = ['mmdc', '-q', '-i', `${dir}/mermaid-${id}.mmd`, '-o', file]
+      const style = ['-t', isLight ? 'default' : 'dark', '-b', 'transparent', '-s', String(DIAGRAM_SCALE)]
+      const ran = await $.process.run([...argv, ...style], { timeoutMs: 30_000 })
+
+      return ran.exitCode === 0 ? undefined : firstLine(plain(ran.stderr)) || 'mmdc failed'
+    })
+    .catch((error: unknown) => (/ENOENT|not found/i.test(String(error)) ? 'mmdc is not installed' : String(error)))
+  const size = made === undefined ? await $.process.run(['magick', 'identify', '-format', '%w %h', file]) : undefined
+  const [width = 0, height = 0] = (size?.stdout ?? '').split(' ').map(Number)
+  const drawn: Diagram =
+    made === undefined && width > 0 && height > 0
+      ? { id, file, width, height }
+      : { id, file, width: 0, height: 0, error: made ?? 'mmdc drew nothing' }
+  await update($, diagrams, list => [...list.filter(one => one.id !== id), drawn].slice(-KEPT_DIAGRAMS))
 }
 
 // The Rasters the pane drew that move on their own: the timer repaints each
@@ -1146,6 +1187,75 @@ export const register: Register = on => {
     }
 
     return ran
+  })
+
+  // A reply's ```mermaid blocks draw as diagrams in place: the code shows
+  // while one renders, and again under why when it will not.
+  const rendering = new Set<string>()
+  // Each diagram's PNG, base64: bytes draw inside tmux too, a file name there
+  // only its alt.
+  const bytes = new Map<string, string>()
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    const parts = splitMermaid(e.props.text)
+    if (e.surface !== 'terminal' || e.props.isSummary === true || !parts.some(part => part.kind === 'mermaid')) {
+      return next(e)
+    }
+    const drawn = await read($, diagrams)
+    for (const diagram of drawn) {
+      if (diagram.error === undefined && !bytes.has(diagram.id)) {
+        const png = await $.fs.read(diagram.file, { as: 'bytes' }).catch(() => undefined)
+        bytes.set(diagram.id, png === undefined || png.base64.length > PNG_BYTES ? '' : png.base64)
+      }
+    }
+    for (const id of bytes.keys()) {
+      if (!drawn.some(one => one.id === id)) {
+        bytes.delete(id)
+      }
+    }
+    const { Box, Image, Markdown, Text } = $.ui.resolve(e)
+    const room = Math.max(1, (e.viewport?.columns ?? 84) - 6)
+
+    // Laid out as the engine's reply row: a blank line above, the reply's
+    // bullet, the body two columns in.
+    return (
+      <Box flexDirection="row" marginTop={1}>
+        <Box width={2} flexShrink={0}>
+          <Text color="text">{e.props.isFirstOfReply ? '●' : ' '}</Text>
+        </Box>
+        <Box flexDirection="column" gap={1} flexGrow={1}>
+          {parts.map((part, n) => {
+            if (part.kind === 'markdown') {
+              return <Markdown key={`md-${n}`} text={part.text} />
+            }
+            const id = hashOf(part.source)
+            const diagram = drawn.find(one => one.id === id)
+            if (diagram === undefined && !rendering.has(id)) {
+              rendering.add(id)
+              void drawDiagram($, part.source, id).finally(() => rendering.delete(id))
+            }
+            if (diagram === undefined || diagram.error !== undefined) {
+              return (
+                <Box key={`mmd-${n}`} flexDirection="column">
+                  <Markdown text={part.fence} />
+                  <Text dimColor>{diagram?.error === undefined ? 'Rendering diagram…' : `Diagram: ${diagram.error}`}</Text>
+                </Box>
+              )
+            }
+            const columns = diagramColumns(diagram.width, DIAGRAM_SCALE, room)
+
+            return (
+              <Image
+                key={`mmd-${n}`}
+                source={bytes.get(id) ? { png: bytes.get(id) ?? '' } : { file: diagram.file, format: 'png' }}
+                columns={columns}
+                rows={rowsFor(diagram, columns, 60)}
+                alt={`mermaid diagram: ${firstLine(part.source)}`}
+              />
+            )
+          })}
+        </Box>
+      </Box>
+    )
   })
 
   // An edit's row in the chat gets a bar of the lines it added and removed.

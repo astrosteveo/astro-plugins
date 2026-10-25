@@ -23,6 +23,8 @@ Outside the pane: while Claude works, a band above the prompt shows the pulse, a
 
 Claude can also draw a picture in the chat itself with the `show` tool: an image file or SVG source, such as a mockup of a design before it builds it. The picture appears under the tool's row, in a terminal that draws images (kitty, Ghostty, iTerm2); other surfaces show its caption and path. Pictures are kept as PNGs in `~/.cache/show-work` (the newest 30), converted with `rsvg-convert` and ImageMagick's `magick`.
 
+A ```mermaid block in Claude's reply draws as the diagram itself, in place, in such a terminal: its code shows while it renders and again, under mermaid's error, if it will not. Diagrams render once with mermaid-cli's `mmdc` (`npm i -g @mermaid-js/mermaid-cli`) in Claude Code's light or dark theme and are cached in `~/.cache/show-work` (the newest 40). Other surfaces draw the block as Claude Code does.
+
 A short section in the system prompt tells Claude when to post a plan and when to note something.
 
 ## Use

@@ -1,6 +1,8 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
+import { hashOf, splitMermaid } from '../hooks/mermaid'
+
 const PANE = {
   plugin: 'show-work',
   component: 'Pane',
@@ -1178,5 +1180,116 @@ test('the Search tab finds text and a hit opens the file at that line', async ($
   expect(code?.props).toMatchObject({ path: 'hooks/a.ts', startLine: 32 })
   expect(code?.props.source).toMatch(/^line 32\n/)
   expect((await ui.find({ type: 'Text', text: /line 42 of/ }))?.text).toBe('hooks/a.ts line 42 of 80')
+  await ui.unmount()
+})
+
+test('closed mermaid blocks split from the text; open or nested ones stay text', () => {
+  const reply = ['Here:', '```mermaid', 'graph LR', '  A-->B', '```', 'Done.'].join('\n')
+  expect(splitMermaid(reply)).toEqual([
+    { kind: 'markdown', text: 'Here:' },
+    {
+      kind: 'mermaid',
+      source: 'graph LR\n  A-->B',
+      fence: '```mermaid\ngraph LR\n  A-->B\n```',
+    },
+    { kind: 'markdown', text: 'Done.' },
+  ])
+  expect(splitMermaid('Soon:\n```mermaid\ngraph LR')).toEqual([
+    { kind: 'markdown', text: 'Soon:\n```mermaid\ngraph LR' },
+  ])
+  const nested = '````markdown\n```mermaid\ngraph LR\n```\n````'
+  expect(splitMermaid(nested)).toEqual([{ kind: 'markdown', text: nested }])
+  expect(hashOf('graph LR')).toBe(hashOf('graph LR'))
+  expect(hashOf('graph LR')).not.toBe(hashOf('graph TD'))
+})
+
+// A 1x1 white PNG.
+const ONE_PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg=='
+
+const REPLY = (text: string) =>
+  ({
+    plugin: 'show-work',
+    component: 'AssistantMessage',
+    requestId: 'msg-1',
+    props: { text, isFirstOfReply: true },
+  }) as const
+
+test("a reply's mermaid block renders with mmdc and draws as a picture in place", async ($, on) => {
+  engine(on)
+  const ran: string[][] = []
+  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
+  on('fs.exists', () => ({ value: false }))
+  on('fs.write', () => ({ value: undefined }))
+  on('process.run', (_, e) => {
+    ran.push([...e.argv])
+    const stdout = e.argv[1] === 'identify' ? '1600 900' : ''
+
+    return {
+      value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    }
+  })
+  on('config.list', () => ({ value: [{ key: 'theme', value: 'light' }] as never }))
+  on('fs.read', () => ({ value: { base64: ONE_PIXEL } }))
+  on('ui.render', ENGINE_ROW)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({
+    ...REPLY('The flow:\n```mermaid\ngraph LR\n  A-->B\n```\nThat is all.'),
+    surface: 'terminal',
+    viewport: { columns: 120, rows: 40 },
+  })
+  let picture = await ui.find({ type: 'Image' })
+  for (let tries = 0; picture === undefined && tries < 50; tries += 1) {
+    await Promise.resolve()
+    picture = await ui.find({ type: 'Image' })
+  }
+  const mmdc = ran.find(argv => argv[0] === 'mmdc')
+  expect(mmdc).toContain('default')
+  expect(mmdc?.at(mmdc.indexOf('-o') + 1)).toMatch(/^\/home\/u\/\.cache\/show-work\/mermaid-[0-9a-f]{8}\.png$/)
+  // 1600x900 pixels at 2x is 800 CSS pixels: 100 columns, 28 rows.
+  expect(picture?.props.columns).toBe(100)
+  expect(picture?.props.rows).toBe(28)
+  expect(picture?.props.source).toEqual({ png: ONE_PIXEL })
+  expect((await ui.find({ type: 'Markdown', text: /That is all/ }))).toBeDefined()
+  expect(ran.filter(argv => argv[0] === 'mmdc')).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('a reply with no mermaid, or off the terminal, draws as the engine does', async ($, on) => {
+  engine(on)
+  on('ui.render', ENGINE_ROW)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const plainReply = await $.ui.mount({ ...REPLY('No pictures here.'), surface: 'terminal' })
+  expect((await plainReply.find({ type: 'Text', text: 'engine row' }))).toBeDefined()
+  await plainReply.unmount()
+  const desktop = await $.ui.mount({ ...REPLY('```mermaid\ngraph LR\n```'), surface: 'desktop' })
+  expect((await desktop.find({ type: 'Text', text: 'engine row' }))).toBeDefined()
+  await desktop.unmount()
+})
+
+test('a mermaid block that will not render shows its code and why', async ($, on) => {
+  engine(on)
+  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
+  on('fs.exists', () => ({ value: false }))
+  on('fs.write', () => ({ value: undefined }))
+  on('config.list', () => ({ value: [] }))
+  on('process.run', (_, e) => ({
+    value: {
+      exitCode: e.argv[0] === 'mmdc' ? 1 : 0,
+      stdout: '',
+      stderr: e.argv[0] === 'mmdc' ? 'Error: Parse error on line 2\nmore' : '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...REPLY('```mermaid\ngraph LR\n  A-->\n```'), surface: 'terminal' })
+  let why = await ui.find({ type: 'Text', text: /^Diagram:/ })
+  for (let tries = 0; why === undefined && tries < 50; tries += 1) {
+    await Promise.resolve()
+    why = await ui.find({ type: 'Text', text: /^Diagram:/ })
+  }
+  expect(why?.text).toBe('Diagram: Error: Parse error on line 2')
+  expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('```mermaid\ngraph LR\n  A-->\n```')
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
   await ui.unmount()
 })
