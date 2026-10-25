@@ -196,3 +196,122 @@ test('a TodoWrite list shows as the plan', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /Tune the glow/ }))?.text).toBe('▸ Tune the glow')
   await ui.unmount()
 })
+
+// The host beneath freeze: a cache under HOME, files that exist, and the
+// image tools answering as they would for a 1600x900 picture.
+function host(on: On) {
+  const ran: string[][] = []
+  const written: string[] = []
+  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
+  on('fs.exists', (_, e) => ({ value: !String(e.path).includes('missing') }))
+  on('fs.write', (_, e) => {
+    written.push(e.path)
+
+    return { value: undefined }
+  })
+  on('process.run', (_, e) => {
+    ran.push([...e.argv])
+    const stdout = e.argv[1] === 'identify' ? '1600 900' : ''
+
+    return {
+      value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    }
+  })
+
+  return { ran, written }
+}
+
+const RESULT = (tool_use_id: string) =>
+  ({
+    plugin: 'show-work',
+    component: 'ToolResult',
+    requestId: tool_use_id,
+    props: { tool_use_id, tool: 'mcp__show-work__show', output: '', isErrored: false },
+  }) as const
+
+test('a shown SVG is converted and drawn in the chat', async ($, on) => {
+  engine(on)
+  const { ran, written } = host(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const shown = await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_a',
+    caption: 'Pause menu layout',
+    svg: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450"/>',
+  })
+  expect(shown.result).toBe('Shown in the chat and the pane: Pause menu layout (1600x900).')
+  expect(written).toEqual(['/home/u/.cache/show-work/toolu_a.svg'])
+  expect(ran).toContainEqual([
+    'rsvg-convert',
+    '-o',
+    '/home/u/.cache/show-work/toolu_a.png',
+    '/home/u/.cache/show-work/toolu_a.svg',
+  ])
+
+  const chat = await $.ui.mount({ ...RESULT('toolu_a'), surface: 'terminal' })
+  const image = await chat.find({ type: 'Image' })
+  expect(image?.props).toMatchObject({
+    source: { file: '/home/u/.cache/show-work/toolu_a.png', format: 'png' },
+    alt: 'Pause menu layout',
+  })
+  await chat.unmount()
+
+  const desk = await $.ui.mount({ ...RESULT('toolu_a'), surface: 'desktop' })
+  expect((await desk.find({ type: 'Text' }))?.text).toBe(
+    'Pause menu layout: /home/u/.cache/show-work/toolu_a.png',
+  )
+  await desk.unmount()
+})
+
+test('show refuses a missing image and an empty call', async ($, on) => {
+  engine(on)
+  host(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const missing = await $.tool.call({
+    tool: 'mcp__show-work__show',
+    caption: 'x',
+    path: 'missing.png',
+  })
+  expect(missing.deny).toBe('No image at /proj/missing.png.')
+  const empty = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'x' })
+  expect(empty.deny).toBe('Give the path of an image or SVG source.')
+})
+
+test('a screenshot Claude reads lands in the pane, and the list picks one', async ($, on) => {
+  engine(on)
+  const { ran } = host(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Read', tool_use_id: 'toolu_r1', file_path: '/proj/shots/menu.png' })
+  await $.tool.call({ tool: 'Read', tool_use_id: 'toolu_r2', file_path: '/proj/shots/hud.jpg' })
+  expect(ran).toContainEqual(['cp', '/proj/shots/menu.png', '/home/u/.cache/show-work/toolu_r1.png'])
+  expect(ran).toContainEqual([
+    'magick',
+    '/proj/shots/hud.jpg[0]',
+    '/home/u/.cache/show-work/toolu_r2.png',
+  ])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /^Pictures/ }))?.text).toBe('Pictures 2')
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({
+    source: { file: '/home/u/.cache/show-work/toolu_r2.png' },
+    columns: 60,
+    rows: 17,
+  })
+  await ui.press({ key: 'pic-toolu_r1' })
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({
+    source: { file: '/home/u/.cache/show-work/toolu_r1.png' },
+  })
+  await ui.unmount()
+
+  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await desk.find({ type: 'Text', text: '/home/u/.cache/show-work/toolu_r1.png' })).toBeDefined()
+  await desk.unmount()
+})
+
+test('reading a picture already in the cache adds no copy', async ($, on) => {
+  engine(on)
+  const { ran } = host(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Read', file_path: '/home/u/.cache/show-work/toolu_a.png' })
+  expect(ran.some(argv => argv[0] === 'cp')).toBe(false)
+})

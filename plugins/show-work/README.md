@@ -2,11 +2,14 @@
 
 A pane beside the chat where Claude shows its work as it goes, so you can follow and steer it without reading every tool call.
 
-The pane has three parts:
+The pane has four parts:
 
 - **Plan**: the goal as Claude understands it and its steps, with the current one marked. Claude posts it with the `plan` tool; a `TodoWrite` list shows here too.
 - **Notes**: each decision (with its reason), assumption, open question, finding and risk, posted with the `note` tool the moment it comes up. Press a note to quote it into your prompt and reply.
+- **Pictures**: every image Claude reads (a screenshot, a render) is copied here as it was at that moment; the list under it picks an older one.
 - **Activity**: every file read, file edited, command run and search, logged by the mod itself, with failures marked and a count of files changed.
+
+Claude can also draw a picture in the chat itself with the `show` tool: an image file or SVG source, such as a mockup of a design before it builds it. The picture appears under the tool's row, in a terminal that draws images (kitty, Ghostty, iTerm2); other surfaces show its caption and path. Pictures are kept as PNGs in `~/.cache/show-work` (the newest 30), converted with `rsvg-convert` and ImageMagick's `magick`.
 
 A short section in the system prompt tells Claude when to post a plan and when to note something.
 

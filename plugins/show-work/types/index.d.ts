@@ -23,10 +23,21 @@ export type Act = {
   isSubagent: boolean
 }
 
+/** An image frozen as a PNG in the cache, as it was when shown or read. */
+export type Picture = {
+  id: string
+  file: string
+  width: number
+  height: number
+  caption: string
+  origin: 'shown' | 'read'
+}
+
 declare module 'claude-code' {
   interface McpToolInputs {
     'mcp__show-work__plan': { goal: string; steps: Step[] }
     'mcp__show-work__note': { kind: NoteKind; text: string; why?: string }
+    'mcp__show-work__show': { caption: string; path?: string; svg?: string }
   }
   interface PluginState {
     'show-work': {
@@ -34,6 +45,8 @@ declare module 'claude-code' {
       notes: Shaped<Note[]>
       activity: Shaped<Act[]>
       changed: Shaped<string[]>
+      pictures: Shaped<Picture[]>
+      picked: string | null
     }
   }
 }

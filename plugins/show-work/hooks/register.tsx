@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Color, Register } from 'claude-code'
+import type { Color, EngineInterface, Register } from 'claude-code'
 
 import type {
   Act,
@@ -7,6 +7,7 @@ import type {
   ActStatus,
   Note,
   NoteKind,
+  Picture,
   Plan,
   Step,
   StepStatus,
@@ -30,6 +31,14 @@ const activity = atom({ plugin: 'show-work', key: 'activity' } as const, [], {
 const changed = atom({ plugin: 'show-work', key: 'changed' } as const, [], {
   shape: 'changed-1',
 })
+const pictures = atom({ plugin: 'show-work', key: 'pictures' } as const, [], {
+  shape: 'pictures-1',
+})
+// The picture the pane shows; null shows the newest.
+const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
+
+const KEPT_PICTURES = 30
+const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
 const STEP_STATUSES: readonly StepStatus[] = ['todo', 'doing', 'done', 'dropped']
 const NOTE_KINDS: readonly NoteKind[] = [
@@ -63,6 +72,7 @@ The person watches a "Show work" pane beside the chat. Keep it current so they c
   - learn something that changes the picture ("finding"), or see a hazard ("risk").
 - Give each Bash call a description that says why you run it, not only what it does: the pane shows it as the reason above the command.
 - Notes are how you keep the person in the loop without stopping. Once the goal is clear, keep working until it is met; stop only for a question that blocks the work or a snag that needs their direction.
+- To show the person a design, mockup, layout, diagram or screenshot, call mcp__show-work__show with an image path or SVG source: it draws the picture in the chat. Reach for it whenever a picture says it faster than words, and before building a visual design, so they can veto it. Give an SVG a background rect and a width of 800 or more. Images you Read land in the pane by themselves.
 - One short sentence per note. The person can press a note to reply to it, so write each to stand alone.
 - Notes do not replace your reply: still say what matters in chat, briefly.`
 
@@ -113,6 +123,22 @@ const NOTE_TOOL = {
   },
 } as const
 
+const SHOW_TOOL = {
+  name: 'show',
+  description:
+    'Draw a picture in the chat for the person: a design, mockup, diagram or screenshot. Give either the path of an image file (PNG, JPEG, GIF, WebP, BMP or SVG) or SVG source.',
+  isDeferred: false,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      caption: { type: 'string', description: 'What the picture shows, a few words.' },
+      path: { type: 'string', description: 'An image file, absolute or relative to the working directory.' },
+      svg: { type: 'string', description: 'SVG source, in place of a path.' },
+    },
+    required: ['caption'],
+  },
+} as const
+
 const TAGS: Record<NoteKind, { tag: string; color: Color }> = {
   decision: { tag: 'decided', color: 'claude' },
   assumption: { tag: 'assume', color: 'warning' },
@@ -151,6 +177,20 @@ export function readSteps(value: unknown): Step[] {
   })
 }
 
+export function absolute(path: string, cwd: string) {
+  return path.startsWith('/') || cwd === '' ? path : `${cwd}/${path}`
+}
+
+const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1)
+
+// Rows a picture takes at a width, a terminal cell being about twice as tall
+// as it is wide.
+export function rowsFor(picture: Picture, columns: number, most: number) {
+  const rows = Math.round((columns * picture.height) / picture.width / 2)
+
+  return Math.max(1, Math.min(most, rows))
+}
+
 export function relative(path: string, cwd: string) {
   return cwd !== '' && path.startsWith(cwd + '/') ? path.slice(cwd.length + 1) : path
 }
@@ -159,7 +199,9 @@ export function relative(path: string, cwd: string) {
 export function describe(
   e: { tool: string; [argument: string]: unknown },
   cwd: string,
-): { kind: ActKind; label: string; detail?: string; path?: string } | undefined {
+):
+  | { kind: ActKind; label: string; detail?: string; path?: string; image?: string }
+  | undefined {
   const tool = String(e.tool)
   if (QUIET.has(tool) || tool.startsWith(OWN)) {
     return undefined
@@ -168,7 +210,9 @@ export function describe(
   const path = asText(e.file_path) || asText(e.notebook_path)
   switch (tool) {
     case 'Read':
-      return { kind: 'read', label: relative(path, cwd) }
+      return IMAGE.test(path)
+        ? { kind: 'read', label: relative(path, cwd), image: path }
+        : { kind: 'read', label: relative(path, cwd) }
     case 'Edit':
     case 'Write':
     case 'NotebookEdit':
@@ -195,6 +239,66 @@ export function describe(
   }
 }
 
+type Source = { path: string } | { svg: string }
+
+// Copies or converts an image into the cache as a PNG, so a later write to
+// the same file leaves this picture as it was. Answers why when it can't.
+async function freeze(
+  $: EngineInterface,
+  source: Source,
+  id: string,
+  caption: string,
+  origin: Picture['origin'],
+): Promise<Picture | string> {
+  const cache = (await $.env.get('XDG_CACHE_HOME')) || `${await $.env.get('HOME')}/.cache`
+  const dir = `${cache}/show-work`
+  const file = `${dir}/${id}.png`
+  await $.process.run(['mkdir', '-p', dir])
+
+  const from = 'path' in source ? source.path : `${dir}/${id}.svg`
+  if (from.startsWith(`${dir}/`) && 'path' in source) {
+    return 'That picture is already shown.'
+  }
+  if ('svg' in source) {
+    await $.fs.write(from, source.svg)
+  } else if (!(await $.fs.exists(from))) {
+    return `No image at ${from}.`
+  }
+  const argv = /\.svg$/i.test(from)
+    ? ['rsvg-convert', '-o', file, from]
+    : /\.png$/i.test(from)
+      ? ['cp', from, file]
+      : ['magick', `${from}[0]`, file]
+  const made = await $.process.run(argv)
+  if (made.exitCode !== 0) {
+    return `Could not read the image: ${firstLine(made.stderr) || argv[0]}`
+  }
+
+  const size = await $.process.run(['magick', 'identify', '-format', '%w %h', file])
+  const [width = 0, height = 0] = size.stdout.split(' ').map(Number)
+  const isSized = width > 0 && height > 0
+
+  return isSized
+    ? { id, file, width, height, caption, origin }
+    : { id, file, width: 16, height: 9, caption, origin }
+}
+
+// Keeps the newest pictures and deletes the files of the rest.
+async function keep($: EngineInterface, picture: Picture) {
+  let dropped: Picture[] = []
+  await update($, pictures, list => {
+    const all = [...list.filter(one => one.id !== picture.id), picture]
+    dropped = all.slice(0, -KEPT_PICTURES)
+
+    return all.slice(-KEPT_PICTURES)
+  })
+  await update($, picked, () => null)
+  if (dropped.length > 0) {
+    const files = dropped.flatMap(one => [one.file, one.file.replace(/\.png$/, '.svg')])
+    await $.process.run(['rm', '-f', ...files])
+  }
+}
+
 export const register: Register = on => {
   let cwd = ''
 
@@ -202,6 +306,7 @@ export const register: Register = on => {
     cwd = e.cwd
     await $.tool.register(PLAN_TOOL)
     await $.tool.register(NOTE_TOOL)
+    await $.tool.register(SHOW_TOOL)
     await $.command.register({
       name: 'work',
       description: "Show Claude's plan, notes and activity in a pane",
@@ -229,6 +334,8 @@ export const register: Register = on => {
       await update($, notes, () => [])
       await update($, activity, () => [])
       await update($, changed, () => [])
+      await update($, pictures, () => [])
+      await update($, picked, () => null)
 
       return { text: 'Show work cleared.' }
     }
@@ -266,6 +373,27 @@ export const register: Register = on => {
     await update($, notes, list => [...list, note].slice(-100))
 
     return { result: `Noted (${kind}).` }
+  })
+
+  on('tool.call', { tool: 'mcp__show-work__show' }, async ($, e) => {
+    const path = asText(e.path)
+    const svg = asText(e.svg)
+    if (path === '' && svg === '') {
+      return { deny: 'Give the path of an image or SVG source.' }
+    }
+
+    const source: Source = svg !== '' ? { svg } : { path: absolute(path, cwd) }
+    const caption = asText(e.caption) || basename(path) || 'design'
+    const id = e.tool_use_id ?? crypto.randomUUID()
+    const made = await freeze($, source, id, caption, 'shown')
+    if (typeof made === 'string') {
+      return { deny: made }
+    }
+    await keep($, made)
+
+    return {
+      result: `Shown in the chat and the pane: ${caption} (${made.width}x${made.height}).`,
+    }
   })
 
   // A TodoWrite list is a plan too: mirror it while no plan tool call wrote one.
@@ -306,6 +434,12 @@ export const register: Register = on => {
     await update($, activity, list =>
       list.map(one => (one.id === act.id ? { ...one, status } : one)),
     )
+    if (status === 'ok' && what.image !== undefined) {
+      const made = await freeze($, { path: what.image }, act.id, what.label, 'read')
+      if (typeof made !== 'string') {
+        await keep($, made)
+      }
+    }
     if (status === 'ok' && what.path !== undefined && what.path !== '') {
       const label = what.label
       await update($, changed, list =>
@@ -316,8 +450,52 @@ export const register: Register = on => {
     return ran
   })
 
+  // A shown picture draws in the chat, under its tool row.
+  on(
+    'ui.render',
+    { component: 'ToolResult', props: { tool: 'mcp__show-work__show' } },
+    async ($, e, next) => {
+      const picture = (await read($, pictures)).find(
+        one => one.id === e.props.tool_use_id,
+      )
+      if (picture === undefined || e.props.isErrored) {
+        return next(e)
+      }
+
+      if (e.surface !== 'terminal') {
+        const { Text } = $.ui.resolve(e)
+
+        return (
+          <Text dimColor>
+            {picture.caption}: {picture.file}
+          </Text>
+        )
+      }
+
+      const { Box, Image, Text } = $.ui.resolve(e)
+      const columns = Math.max(1, Math.min(100, (e.viewport?.columns ?? 84) - 4))
+
+      return (
+        <Box flexDirection="column">
+          <Image
+            source={{ file: picture.file, format: 'png' }}
+            columns={columns}
+            rows={rowsFor(picture, columns, 40)}
+            alt={picture.caption}
+          />
+          <Text dimColor>
+            {picture.caption} <Text dimColor>{picture.width}x{picture.height}</Text>
+          </Text>
+        </Box>
+      )
+    },
+  )
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
+    const pics = await read($, pictures)
+    const pickedId = await read($, picked)
+    const picture = pics.find(one => one.id === pickedId) ?? pics.at(-1)
     const shown = await read($, plan)
     const noted = await read($, notes)
     const acts = await read($, activity)
@@ -334,7 +512,7 @@ export const register: Register = on => {
       )
     }
 
-    if (shown === null && noted.length === 0 && acts.length === 0) {
+    if (shown === null && noted.length === 0 && acts.length === 0 && pics.length === 0) {
       return (
         <Box flexDirection="column">
           <Text dimColor>
@@ -342,6 +520,20 @@ export const register: Register = on => {
             works, and logs the files and commands it touches.
           </Text>
         </Box>
+      )
+    }
+
+    let view
+    if (picture !== undefined && e.surface === 'terminal') {
+      const { Image } = $.ui.resolve(e)
+      const columns = Math.max(1, Math.min(255, e.props.bodyColumns))
+      view = (
+        <Image
+          source={{ file: picture.file, format: 'png' }}
+          columns={columns}
+          rows={rowsFor(picture, columns, 20)}
+          alt={picture.caption}
+        />
       )
     }
 
@@ -372,6 +564,31 @@ export const register: Register = on => {
                 {step.text}
               </Text>
             ))}
+          </Box>
+        )}
+        {picture !== undefined && (
+          <Box flexDirection="column">
+            <Text weight="bold">
+              Pictures <Text dimColor>{pics.length}</Text>
+            </Text>
+            {view ?? <Text dimColor>{picture.file}</Text>}
+            <Text italic>{picture.caption}</Text>
+            {pics.length > 1 &&
+              pics
+                .slice(-6)
+                .reverse()
+                .map(one => (
+                  <Button
+                    key={`pic-${one.id}`}
+                    plain
+                    dimColor={one.id !== picture.id}
+                    onPress={() => update($, picked, () => one.id)}
+                  >
+                    {one.id === picture.id ? '▸ ' : '  '}
+                    {one.origin === 'shown' ? 'design ' : 'image  '}
+                    {one.caption}
+                  </Button>
+                ))}
           </Box>
         )}
         {noted.length > 0 && (
