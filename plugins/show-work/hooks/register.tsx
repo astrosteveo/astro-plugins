@@ -418,6 +418,18 @@ export function gantt(bars: Bar[], now: number, columns: number) {
   }
 }
 
+// One row of swatches and names, in the very colors the chart draws.
+export function legend(entries: [number, string][]) {
+  const glyphs: [number, number][] = entries.flatMap(([color, name], i) => [
+    ...(i === 0 ? [] : ([...'  '].map(ch => [ch.charCodeAt(0), DEFAULT]) as [number, number][])),
+    [FULL, color] as [number, number],
+    ...[...` ${name}`].map(ch => [ch.charCodeAt(0), 0x8a8a8a] as [number, number]),
+  ])
+  const words = Uint32Array.from(glyphs.flatMap(([glyph, fg]) => [glyph, fg, DEFAULT]))
+
+  return { columns: glyphs.length, cells: base64(new Uint8Array(words.buffer)) }
+}
+
 // The color of a diff line by its first character.
 export function diffColor(line: string): Color | undefined {
   if (line.startsWith('+++') || line.startsWith('---')) {
@@ -1047,11 +1059,16 @@ export const register: Register = on => {
       const { Raster } = $.ui.resolve(e)
       const columns = Math.max(24, Math.min(512, e.props.bodyColumns))
       const chart = gantt(bars, now, columns)
+      const key = legend([
+        [COLORS.turn, 'turn'],
+        [COLORS.lane, 'subagent'],
+        [COLORS.failed, 'failed'],
+      ])
 
       return (
         <Box flexDirection="column">
           <Text dimColor>
-            {shownTurns.length} turns · {running} running · each · is{' '}
+            {shownTurns.length} turns · {running} running · · ={' '}
             {duration(((now - chart.from) / Math.max(1, columns - 15)) * 6)}
           </Text>
           <Raster key="gantt" columns={columns} rows={chart.rows} cells={chart.cells} />
@@ -1059,10 +1076,7 @@ export const register: Register = on => {
             <Text dimColor>{''.padEnd(15)}0s</Text>
             <Text dimColor>{duration(now - chart.from)} now</Text>
           </Box>
-          <Text dimColor>
-            <Text color="claude">█</Text> turn  <Text color="suggestion">█</Text> subagent{'  '}
-            <Text color="error">█</Text> failed
-          </Text>
+          <Raster key="gantt-key" columns={key.columns} rows={1} cells={key.cells} />
         </Box>
       )
     }

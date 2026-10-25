@@ -510,7 +510,7 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
   await ui.unmount()
 })
 
-import { base64, divider, duration, gantt } from '../hooks/register'
+import { base64, divider, duration, gantt, legend } from '../hooks/register'
 
 const decode = (cells: string, columns: number, rows: number) => {
   const bin = atob(cells)
@@ -588,4 +588,15 @@ test('turns draw dividers in Activity and bars on the Timeline', async ($, on) =
   await desk.press({ key: 'tab-timeline' })
   expect((await desk.find({ type: 'Text', text: /^turn 2/ }))?.text).toMatch(/…$/)
   await desk.unmount()
+})
+
+test('the legend swatches use the chart colors', () => {
+  const key = legend([
+    [0xd97757, 'turn'],
+    [0x5fa8d3, 'subagent'],
+  ])
+  const { lines, words } = decode(key.cells, key.columns, 1)
+  expect(lines[0]).toBe('█ turn  █ subagent')
+  expect(words[1]).toBe(0xd97757)
+  expect(words[8 * 3 + 1]).toBe(0x5fa8d3)
 })
