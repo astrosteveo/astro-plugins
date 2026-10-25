@@ -139,6 +139,9 @@ test('activity logs reads, edits and failed commands', async ($, on) => {
     expect((await ui.find({ type: 'Text', text: /Run the tests/ }))?.text).toBe(
       '✗ run    Run the tests',
     )
+    expect((await ui.find({ type: 'Text', text: /\$ false/ }))?.text).toBe(
+      '         $ false && echo',
+    )
     await ui.unmount()
   }
 })

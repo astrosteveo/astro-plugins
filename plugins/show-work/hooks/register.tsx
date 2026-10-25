@@ -25,7 +25,7 @@ const notes = atom({ plugin: 'show-work', key: 'notes' } as const, [], {
   shape: 'notes-1',
 })
 const activity = atom({ plugin: 'show-work', key: 'activity' } as const, [], {
-  shape: 'activity-1',
+  shape: 'activity-2',
 })
 const changed = atom({ plugin: 'show-work', key: 'changed' } as const, [], {
   shape: 'changed-1',
@@ -61,6 +61,8 @@ The person watches a "Show work" pane beside the chat. Keep it current so they c
   - assume something you have not confirmed ("assumption");
   - hit a question only the person can answer ("question"); if you can go on under a stated assumption, note both and keep working rather than stopping;
   - learn something that changes the picture ("finding"), or see a hazard ("risk").
+- Give each Bash call a description that says why you run it, not only what it does: the pane shows it as the reason above the command.
+- Notes are how you keep the person in the loop without stopping. Once the goal is clear, keep working until it is met; stop only for a question that blocks the work or a snag that needs their direction.
 - One short sentence per note. The person can press a note to reply to it, so write each to stand alone.
 - Notes do not replace your reply: still say what matters in chat, briefly.`
 
@@ -157,7 +159,7 @@ export function relative(path: string, cwd: string) {
 export function describe(
   e: { tool: string; [argument: string]: unknown },
   cwd: string,
-): { kind: ActKind; label: string; path?: string } | undefined {
+): { kind: ActKind; label: string; detail?: string; path?: string } | undefined {
   const tool = String(e.tool)
   if (QUIET.has(tool) || tool.startsWith(OWN)) {
     return undefined
@@ -171,11 +173,14 @@ export function describe(
     case 'Write':
     case 'NotebookEdit':
       return { kind: 'edit', label: relative(path, cwd), path }
-    case 'Bash':
-      return {
-        kind: 'run',
-        label: asText(e.description) || firstLine(asText(e.command)),
-      }
+    case 'Bash': {
+      const command = firstLine(asText(e.command))
+      const why = asText(e.description)
+
+      return why === ''
+        ? { kind: 'run', label: command }
+        : { kind: 'run', label: why, detail: command }
+    }
     case 'Grep':
     case 'Glob':
       return { kind: 'search', label: asText(e.pattern) }
@@ -290,6 +295,7 @@ export const register: Register = on => {
       id: e.tool_use_id,
       kind: what.kind,
       label: what.label,
+      ...(what.detail === undefined ? {} : { detail: what.detail }),
       status: 'runs',
       isSubagent: e.agentId !== undefined,
     }
@@ -347,7 +353,7 @@ export const register: Register = on => {
       <Box flexDirection="column" gap={1}>
         {shown !== null && (
           <Box flexDirection="column">
-            <Text bold>
+            <Text weight="bold">
               Plan{' '}
               <Text dimColor>
                 {done}/{steps.length}
@@ -358,7 +364,7 @@ export const register: Register = on => {
               <Text
                 dimColor={step.status === 'done'}
                 strikethrough={step.status === 'dropped'}
-                bold={step.status === 'doing'}
+                weight={step.status === 'doing' ? 'bold' : 'regular'}
               >
                 <Text color={STEP_MARK[step.status].color}>
                   {STEP_MARK[step.status].mark}
@@ -370,13 +376,13 @@ export const register: Register = on => {
         )}
         {noted.length > 0 && (
           <Box flexDirection="column">
-            <Text bold>
+            <Text weight="bold">
               Notes <Text dimColor>press one to reply</Text>
             </Text>
             {noted.slice(-12).map(note => (
               <Box flexDirection="column">
                 <Button key={note.id} plain dimColor={note.isReplied} onPress={reply(note)}>
-                  <Text color={TAGS[note.kind].color} bold>
+                  <Text color={TAGS[note.kind].color} weight="bold">
                     {TAGS[note.kind].tag}
                   </Text>{' '}
                   {note.text}
@@ -393,7 +399,7 @@ export const register: Register = on => {
         )}
         {acts.length > 0 && (
           <Box flexDirection="column">
-            <Text bold>
+            <Text weight="bold">
               Activity{' '}
               <Text dimColor>
                 {acts.length} calls, {files.length} files changed
@@ -401,11 +407,19 @@ export const register: Register = on => {
               </Text>
             </Text>
             {acts.slice(-15).map(act => (
-              <Text wrap="truncate-end" dimColor={act.status === 'ok'}>
-                <Text color={ACT_MARK[act.status].color}>{ACT_MARK[act.status].mark}</Text>{' '}
-                {act.isSubagent ? '↳ ' : ''}
-                {act.kind.padEnd(6)} {act.label}
-              </Text>
+              <Box flexDirection="column">
+                <Text wrap="truncate-end" dimColor={act.status === 'ok'}>
+                  <Text color={ACT_MARK[act.status].color}>{ACT_MARK[act.status].mark}</Text>{' '}
+                  {act.isSubagent ? '↳ ' : ''}
+                  {act.kind.padEnd(6)} {act.label}
+                </Text>
+                {act.detail !== undefined && (
+                  <Text wrap="truncate-end" dimColor>
+                    {'         $ '}
+                    {act.detail}
+                  </Text>
+                )}
+              </Box>
             ))}
           </Box>
         )}

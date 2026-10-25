@@ -17,11 +17,17 @@ export type Act = {
   id: string
   kind: ActKind
   label: string
+  /** The command itself, shown under a Bash call's description. */
+  detail?: string
   status: ActStatus
   isSubagent: boolean
 }
 
 declare module 'claude-code' {
+  interface McpToolInputs {
+    'mcp__show-work__plan': { goal: string; steps: Step[] }
+    'mcp__show-work__note': { kind: NoteKind; text: string; why?: string }
+  }
   interface PluginState {
     'show-work': {
       plan: Shaped<Plan | null>
