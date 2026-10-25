@@ -210,6 +210,28 @@ test('activity logs reads, edits and failed commands', async ($, on) => {
   }
 })
 
+test('repeated edits of a file fold into one row with a count', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const edit = { tool: 'Edit', file_path: '/proj/scripts/pause.gd', old_string: 'a', new_string: 'b' }
+  await $.tool.call(edit)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/scenes/main.tscn' })
+  await $.tool.call(edit)
+  await $.tool.call(edit)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-activity' })
+  expect((await ui.find({ type: 'Text', text: /calls,/ }))?.text).toBe(
+    '4 calls, 1 files changed',
+  )
+  const rows = await ui.findAll({ type: 'Text', text: /^✓ (read|edit)/ })
+  expect(rows.map(row => row.text)).toEqual([
+    '✓ read   scenes/main.tscn',
+    '✓ edit   ×3 scripts/pause.gd',
+  ])
+  await ui.unmount()
+})
+
 test('the guide joins the system prompt last', async ($, on) => {
   engine(on)
   on('prompt.compose', () => ({

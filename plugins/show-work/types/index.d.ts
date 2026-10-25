@@ -30,6 +30,8 @@ export type Act = {
   detail?: string
   status: ActStatus
   isSubagent: boolean
+  /** Calls folded into this row: repeated reads or edits of one file. */
+  count?: number
 }
 
 /** An image frozen as a PNG in the cache, as it was when shown or read. */

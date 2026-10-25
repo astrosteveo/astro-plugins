@@ -239,6 +239,25 @@ export function relative(path: string, cwd: string) {
 }
 
 // What the activity log says for one call, or nothing for a quiet one.
+// A read or edit of a file already listed folds into its row, which moves to
+// the end and takes the new call's id, so the call's status lands on it.
+export function addAct(list: Act[], act: Act): Act[] {
+  const same =
+    act.kind === 'read' || act.kind === 'edit'
+      ? list.find(
+          one =>
+            one.kind === act.kind &&
+            one.label === act.label &&
+            one.isSubagent === act.isSubagent,
+        )
+      : undefined
+  if (same === undefined) {
+    return [...list, act].slice(-200)
+  }
+
+  return [...list.filter(one => one !== same), { ...act, count: (same.count ?? 1) + 1 }]
+}
+
 export function describe(
   e: { tool: string; [argument: string]: unknown },
   cwd: string,
@@ -500,7 +519,7 @@ export const register: Register = on => {
       status: 'runs',
       isSubagent: e.agentId !== undefined,
     }
-    await update($, activity, list => [...list, act].slice(-200))
+    await update($, activity, list => addAct(list, act))
     const ran = await next(e)
     const status: ActStatus =
       ran.deny !== undefined || ran.isError === true ? 'failed' : 'ok'
@@ -660,7 +679,9 @@ export const register: Register = on => {
         <Text wrap="truncate-end" dimColor={act.status === 'ok'}>
           <Text color={ACT_MARK[act.status].color}>{ACT_MARK[act.status].mark}</Text>{' '}
           {act.isSubagent ? '↳ ' : ''}
-          {act.kind.padEnd(6)} {act.label}
+          {act.kind.padEnd(6)}{' '}
+          {act.count === undefined ? '' : <Text weight="bold">×{act.count} </Text>}
+          {act.label}
         </Text>
         {act.detail !== undefined && (
           <Text wrap="truncate-end" dimColor>
@@ -770,7 +791,8 @@ export const register: Register = on => {
       body = (
         <Box flexDirection="column">
           <Text dimColor>
-            {acts.length} calls, {files.length} files changed
+            {acts.reduce((sum, act) => sum + (act.count ?? 1), 0)} calls,{' '}
+            {files.length} files changed
             {failed > 0 ? `, ${failed} failed` : ''}
           </Text>
           {acts.slice(-40).map(actRow)}
