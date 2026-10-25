@@ -23,7 +23,7 @@ function engine(
   {
     isTicking = true,
     bash,
-  }: { isTicking?: boolean; bash?: (command: string) => { text: string; isError?: boolean } | undefined } = {},
+  }: { isTicking?: boolean; bash?: (command: string, id: string) => { text: string; isError?: boolean } | undefined } = {},
 ) {
   const filled: string[] = []
   let now = 0
@@ -41,7 +41,7 @@ function engine(
   })
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('tool.call', (_, e) => {
-    const said = e.tool === 'Bash' ? bash?.(String(e.command)) : undefined
+    const said = e.tool === 'Bash' ? bash?.(String(e.command), e.tool_use_id) : undefined
     if (said !== undefined) {
       return said.isError === true
         ? { isError: true, result: said.text, text: said.text }
@@ -472,11 +472,12 @@ test('pressing a changed file shows its diff, colored, and close returns', async
   await ui.press({ key: 'tab-activity' })
   await ui.press({ key: 'file-src/menu.gd' })
   expect(asked.at(-1)).toEqual(['git', '-C', '/proj/src', 'diff', '--no-color', 'HEAD', '--', '/proj/src/menu.gd'])
-  expect((await ui.find({ type: 'Text', text: /^\+var/ }))?.props.color).toBe('success')
-  expect((await ui.find({ type: 'Text', text: /^-var/ }))?.props.color).toBe('error')
-  expect(await ui.find({ type: 'Text', text: /^\+\+\+/ })).toBeUndefined()
+  // The hunks go to Code as a diff, which highlights them; the headers do not.
+  const code = await ui.find({ type: 'Code' })
+  expect(code?.props).toMatchObject({ format: 'diff', path: 'src/menu.gd' })
+  expect(code?.props.source).toBe('@@ -1,2 +1,2 @@\n extends Control\n-var open = false\n+var is_open := false')
   await ui.press({ key: 'diff-close' })
-  expect(await ui.find({ type: 'Text', text: /^\+var/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Code' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', text: /menu\.gd/ })).toBeDefined()
   await ui.unmount()
 })
@@ -497,7 +498,7 @@ test('a new file diffs against nothing', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-activity' })
   await ui.press({ key: 'file-new.txt' })
-  expect((await ui.find({ type: 'Text', text: '+hello' }))?.props.color).toBe('success')
+  expect((await ui.find({ type: 'Code' }))?.props.source).toBe('@@ -0,0 +1 @@\n+hello')
   await ui.unmount()
 })
 
@@ -533,6 +534,8 @@ import { divider, duration } from '../hooks/register'
 import {
   area,
   base64,
+  patchCounts,
+  shareBar,
   flaky,
   gantt,
   gauge,
@@ -889,7 +892,7 @@ test('files read and edited draw as tiles; pressing one opens its diff', async (
   expect(await ui.find({ type: 'Raster', key: 'files-map' })).toBeDefined()
   expect((await ui.find({ type: 'Button', text: /player\.gd/ }))?.text).toBe('± player.gd 1 read · 1 edit')
   await ui.press({ key: 'touch-player.gd' })
-  expect((await ui.find({ type: 'Text', text: '+b' }))?.props.color).toBe('success')
+  expect((await ui.find({ type: 'Code' }))?.props.source).toBe('@@ -1 +1 @@\n-a\n+b')
   await ui.unmount()
 })
 
@@ -914,5 +917,100 @@ test("the Commits tab draws this session's graph and refreshes after a commit", 
   log = '* \x1e2222222\x1fsecond\x1fnow\x1fHEAD -> work\n' + log.replace('HEAD -> work', '')
   await $.tool.call({ tool: 'Bash', command: 'git commit -m second', description: 'Commit' })
   expect((await ui.find({ type: 'Text', text: /^This session's commits/ }))?.text).toBe("This session's commits 2")
+  await ui.unmount()
+})
+
+test('a share bar keeps its parts in proportion and shows each that has any', () => {
+  const bar = shareBar(
+    [
+      { n: 30, color: 0x6cc070, word: '+30' },
+      { n: 1, color: 0xe06c75, word: '−1' },
+    ],
+    10,
+  )
+  const { lines, words } = decode(bar.cells, bar.columns, 1)
+  expect(lines[0]).toBe('+30 −1 ██████████')
+  expect(words[(bar.columns - 1) * 3 + 1]).toBe(0xe06c75)
+  expect(patchCounts({ structuredPatch: [{ lines: [' a', '-b', '+c', '+d'] }] })).toEqual({ added: 2, removed: 1 })
+  expect(patchCounts({ type: 'create', content: 'a\nb\nc', structuredPatch: [] })).toEqual({ added: 3, removed: 0 })
+})
+
+// Stands for the engine's own drawing of a row or the band.
+const ENGINE_ROW = () => ({ type: 'Text', props: {}, children: ['engine row'] }) as never
+
+const TOOL_RESULT = (tool_use_id: string, tool: string, output: unknown) =>
+  ({
+    plugin: 'show-work',
+    component: 'ToolResult',
+    requestId: tool_use_id,
+    props: { tool_use_id, tool, output, isErrored: false },
+  }) as const
+
+test("an edit's row in the chat gets a bar of lines added and removed", async ($, on) => {
+  engine(on)
+  on('ui.render', ENGINE_ROW)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({
+    ...TOOL_RESULT('toolu_e1', 'Edit', { structuredPatch: [{ lines: ['-a', '+b', '+c'] }] }),
+    surface: 'terminal',
+  })
+  const bar = await ui.find({ type: 'Raster', key: 'edit-toolu_e1' })
+  expect(decode(bar?.props.cells, bar?.props.columns, 1).lines[0]).toMatch(/^\+2 −1 █+$/)
+  await ui.unmount()
+})
+
+test("a test command's row in the chat gets a pass and fail bar", async ($, on) => {
+  let id = ''
+  engine(on, {
+    bash: (command, callId) => {
+      id = callId
+
+      return command === 'bun test' ? { text: BUN_OUT(false), isError: true } : undefined
+    },
+  })
+  on('ui.render', ENGINE_ROW)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'bun test', description: 'Run the suite' })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...TOOL_RESULT(id, 'Bash', { stdout: '' }), surface })
+    if (surface === 'terminal') {
+      const bar = await ui.find({ type: 'Raster', key: `tests-${id}` })
+      expect(decode(bar?.props.cells, bar?.props.columns, 1).lines[0]).toMatch(/^✗ 1 pass 1 fail █+$/)
+    } else {
+      expect((await ui.find({ type: 'Text', text: /pass/ }))?.text).toBe('✗ 1 pass · 1 fail')
+    }
+    await ui.unmount()
+  }
+})
+
+const BAND = (isWorking: boolean) =>
+  ({
+    plugin: 'show-work',
+    component: 'AbovePrompt',
+    requestId: 'band',
+    props: { hasSurvey: false, isWorking, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+  }) as const
+
+test('the band shows the pulse, context and step while Claude works, and nothing idle', async ($, on) => {
+  engine(on)
+  on('clock.every', () => ({ value: { cancel: () => {} } }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('ui.render', ENGINE_ROW)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'mcp__show-work__plan',
+    goal: 'Ship it',
+    steps: [{ text: 'Write the band', status: 'doing' }],
+  })
+  await $.tool.call({ tool: 'Read', file_path: '/proj/a.gd' })
+
+  const idle = await $.ui.mount({ ...BAND(false), surface: 'terminal' })
+  expect(await idle.find({ type: 'Raster' })).toBeUndefined()
+  await idle.unmount()
+
+  const ui = await $.ui.mount({ ...BAND(true), surface: 'terminal' })
+  expect(await ui.find({ type: 'Raster', key: 'hud-pulse' })).toBeDefined()
+  expect(await ui.find({ type: 'Raster', key: 'hud-gauge' })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /▸/ }))?.text).toBe('60% · ▸ Write the band')
   await ui.unmount()
 })

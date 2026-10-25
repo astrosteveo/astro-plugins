@@ -40,13 +40,16 @@ export function base64(bytes: Uint8Array) {
   return out
 }
 
+// The few marks beyond ASCII the charts write, each one cell wide.
+const MARKS = new Set([...'↳−✓✗·…'].map(ch => ch.codePointAt(0)))
+
 // A Raster takes one printable, single-width BMP character per cell: plain
-// ASCII and the arrow pass, anything else (emoji, CJK, controls) draws as ?.
+// ASCII and the marks pass, anything else (emoji, CJK, controls) draws as ?.
 export function glyphs(text: string) {
   return [...text].map(ch => {
     const code = ch.codePointAt(0) ?? 0x3f
 
-    return (code >= 0x20 && code < 0x7f) || code === 0x21b3 ? code : 0x3f
+    return (code >= 0x20 && code < 0x7f) || MARKS.has(code) ? code : 0x3f
   })
 }
 
@@ -462,4 +465,55 @@ export function parseLog(stdout: string): CommitRow[] {
   }
 
   return rows
+}
+
+// A share bar under a transcript row: a count in words, then a bar whose
+// parts are in proportion, at most `most` cells long.
+export function shareBar(parts: { n: number; color: number; word: string }[], most: number) {
+  const words = parts.map(part => `${part.word}`).join(' ')
+  const total = parts.reduce((sum, part) => sum + part.n, 0)
+  const width = Math.min(most, Math.max(1, total))
+  const cells = parts.map(part => (total === 0 ? 0 : Math.round((part.n / total) * width)))
+  // Every part that has any shows at least one cell, taken from the largest.
+  parts.forEach((part, i) => {
+    if (part.n > 0 && cells[i] === 0) {
+      cells[i] = 1
+    }
+  })
+  while (cells.reduce((a, b) => a + b, 0) > width) {
+    const most = cells.indexOf(Math.max(...cells))
+    cells[most] = cells[most]! - 1
+  }
+  const g = grid([...words].length + 1 + cells.reduce((a, b) => a + b, 0), 1)
+  let col = 0
+  parts.forEach((part, i) => {
+    g.text(0, col, part.word, part.color)
+    col += [...part.word].length + (i < parts.length - 1 ? 1 : 0)
+  })
+  col += 1
+  parts.forEach((part, i) => {
+    for (let n = 0; n < cells[i]!; n++, col++) {
+      g.put(0, col, FULL, part.color)
+    }
+  })
+
+  return g.done()
+}
+
+// Lines added and removed by an Edit or Write, from the tool's own record.
+export function patchCounts(output: unknown) {
+  const record = (output ?? {}) as {
+    type?: string
+    content?: string
+    structuredPatch?: { lines?: string[] }[]
+  }
+  const lines = (record.structuredPatch ?? []).flatMap(hunk => hunk.lines ?? [])
+  if (lines.length === 0 && record.type === 'create' && typeof record.content === 'string') {
+    return { added: record.content.split('\n').length, removed: 0 }
+  }
+
+  return {
+    added: lines.filter(line => line.startsWith('+')).length,
+    removed: lines.filter(line => line.startsWith('-')).length,
+  }
 }

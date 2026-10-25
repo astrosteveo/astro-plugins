@@ -20,7 +20,7 @@ import type {
   Tab,
   Turn,
 } from '../types'
-import { gantt, legend, parseLog, parseTests, pulse } from './charts'
+import { GREEN, RED, gantt, gauge, legend, parseLog, parseTests, patchCounts, pulse, shareBar } from './charts'
 import type { Bar } from './charts'
 import { contextView, commitsView, filesView, testsView } from './views'
 
@@ -472,6 +472,9 @@ async function keep($: EngineInterface, picture: Picture) {
 // The Rasters the pane drew that move on their own: the timer repaints each
 // while it is live, drops one whose paint is refused, and stops with none.
 type Paint = {
+  /** The site the Raster is drawn in: the pane, or the band's request id. */
+  site: string
+  key: string
   draw: (now: number, frame: number) => { columns: number; rows: number; cells: string }
   isLive: (now: number) => boolean
 }
@@ -490,15 +493,33 @@ async function tick($: EngineInterface) {
     return
   }
   ticker.frame += 1
-  for (const [key, paint] of live) {
+  for (const [id, paint] of live) {
     const cells = paint.draw(now, ticker.frame)
     // A refused or failed paint means the Raster is gone.
     const painted = await $.ui
-      .blit({ requestId: PANE, key, ...cells })
+      .blit({ requestId: paint.site, key: paint.key, ...cells })
       .catch(() => ({ deny: 'failed' }))
     if (painted.deny !== undefined) {
-      ticker.paints.delete(key)
+      ticker.paints.delete(id)
     }
+  }
+}
+
+function paint(one: Paint) {
+  ticker.paints.set(`${one.site}:${one.key}`, one)
+}
+
+function forget(site: string) {
+  for (const [id, one] of ticker.paints) {
+    if (one.site === site) {
+      ticker.paints.delete(id)
+    }
+  }
+}
+
+function startTicking($: EngineInterface, now: number) {
+  if (ticker.timer === undefined && [...ticker.paints.values()].some(one => one.isLive(now))) {
+    ticker.timer = $.clock.every(FRAME, () => void tick($))
   }
 }
 
@@ -904,6 +925,126 @@ export const register: Register = on => {
     return ran
   })
 
+  // An edit's row in the chat gets a bar of the lines it added and removed.
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    const own = await next(e)
+    if ((e.props.tool !== 'Edit' && e.props.tool !== 'Write') || e.props.isErrored) {
+      return own
+    }
+    const { added, removed } = patchCounts(e.props.output)
+    if (added + removed === 0) {
+      return own
+    }
+    const { Box, Text } = $.ui.resolve(e)
+    const parts = [
+      { n: added, color: GREEN, word: `+${added}` },
+      { n: removed, color: RED, word: `−${removed}` },
+    ]
+    if (e.surface !== 'terminal') {
+      return (
+        <Box flexDirection="column">
+          {own}
+          <Text dimColor>{parts.map(part => part.word).join(' ')}</Text>
+        </Box>
+      )
+    }
+    const { Raster } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="column">
+        {own}
+        <Raster key={`edit-${e.props.tool_use_id}`} {...shareBar(parts, 30)} />
+      </Box>
+    )
+  })
+
+  // A test command's row gets a bar of its passes and failures.
+  on('ui.render', { component: 'ToolResult', props: { tool: 'Bash' } }, async ($, e, next) => {
+    const run = (await read($, tests)).find(one => one.id === e.props.tool_use_id)
+    const own = await next(e)
+    if (run === undefined) {
+      return own
+    }
+    const { Box, Text } = $.ui.resolve(e)
+    const isGreen = run.failed === 0 && !run.isError
+    const parts = [
+      { n: run.passed, color: GREEN, word: `${isGreen ? '✓' : '✗'} ${run.passed} pass` },
+      { n: run.failed, color: RED, word: `${run.failed} fail` },
+    ]
+    if (e.surface !== 'terminal') {
+      return (
+        <Box flexDirection="column">
+          {own}
+          <Text color={isGreen ? 'success' : 'error'}>{parts.map(part => part.word).join(' · ')}</Text>
+        </Box>
+      )
+    }
+    const { Raster } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="column">
+        {own}
+        <Raster key={`tests-${run.id}`} {...shareBar(parts, 40)} />
+      </Box>
+    )
+  })
+
+  // While Claude works, a strip above the prompt: the pulse, the context, the
+  // step it is on, its agents and what waits on you.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const acts = await read($, activity)
+    const shownPlan = await read($, plan)
+    const allLanes = await read($, lanes)
+    const allNotes = await read($, notes)
+    const runs = await read($, tests)
+    const shownMeter = await read($, meter)
+    const running = allLanes.filter(lane => lane.status === 'runs').length
+    const open = allNotes.filter(
+      note => note.kind === 'question' && !note.isReplied && isCurrent(note, shownPlan?.startedAt),
+    ).length
+    forget(e.requestId)
+    if (e.props.hasSurvey || (!e.props.isWorking && running === 0 && open === 0)) {
+      return next(e)
+    }
+
+    const { Box, Text } = $.ui.resolve(e)
+    const now = await $.clock.now()
+    const step = shownPlan?.steps.find(one => one.status === 'doing')?.text
+    const last = runs.at(-1)
+    const bits = [
+      ...(shownMeter?.percent === undefined ? [] : [`${shownMeter.percent}%`]),
+      ...(step === undefined ? [] : [`▸ ${step}`]),
+      ...(running === 0 ? [] : [`${running} agent${running === 1 ? '' : 's'}`]),
+      ...(last === undefined ? [] : [last.failed === 0 && !last.isError ? `✓ ${last.passed}` : `✗ ${last.failed} failing`]),
+      ...(open === 0 ? [] : [`${open} waiting on you`]),
+    ]
+    if (e.surface !== 'terminal') {
+      return <Text dimColor>{bits.join(' · ')}</Text>
+    }
+
+    const { Raster } = $.ui.resolve(e)
+    const width = Math.max(8, Math.min(24, Math.floor(e.props.bodyColumns / 4)))
+    const beats = acts.map(act => ({ at: act.at ?? 0, kind: act.kind, status: act.status }))
+    paint({
+      site: e.requestId,
+      key: 'hud-pulse',
+      draw: at => pulse(beats, at, width, BEAT / 2),
+      isLive: () => true,
+    })
+    startTicking($, now)
+    const fraction = (shownMeter?.tokens ?? 0) / Math.max(1, shownMeter?.window ?? 1)
+
+    return (
+      <Box flexDirection="row" gap={1}>
+        <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
+        {shownMeter !== null && <Raster key="hud-gauge" {...gauge(fraction, 10)} />}
+        <Text wrap="truncate-end" dimColor>
+          {bits.join(' · ')}
+        </Text>
+      </Box>
+    )
+  })
+
   // A shown picture draws in the chat, under its tool row.
   on(
     'ui.render',
@@ -946,7 +1087,7 @@ export const register: Register = on => {
   )
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Button, Code, Text } = $.ui.resolve(e)
     const shown = await read($, plan)
     const allNotes = await read($, notes)
     const acts = await read($, activity)
@@ -965,7 +1106,7 @@ export const register: Register = on => {
     const commitRows = await read($, commits)
     const now = await $.clock.now()
     // Only what this drawing holds can be repainted between drawings.
-    ticker.paints.clear()
+    forget(PANE)
     const Raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : undefined
     // The views draw a Raster only where the surface has one.
     const kit = { Box, Text, Button, ...(Raster === undefined ? {} : { Raster }) }
@@ -1107,11 +1248,7 @@ export const register: Register = on => {
         {shownDiff.lines.length === 0 ? (
           <Text dimColor>No changes against git HEAD.</Text>
         ) : (
-          shownDiff.lines.map(line => (
-            <Text wrap="truncate-end" color={diffColor(line)} dimColor={diffColor(line) === undefined}>
-              {line === '' ? ' ' : line}
-            </Text>
-          ))
+          <Code source={shownDiff.lines.join('\n')} format="diff" path={shownDiff.file} />
         )}
         {shownDiff.isCut && <Text dimColor>… cut at {DIFF_LINES} lines</Text>}
       </Box>
@@ -1165,7 +1302,9 @@ export const register: Register = on => {
       const { Raster } = $.ui.resolve(e)
       const columns = Math.max(24, Math.min(512, e.props.bodyColumns))
       const chart = gantt(bars, now, columns, ticker.frame)
-      ticker.paints.set('gantt', {
+      paint({
+        site: PANE,
+        key: 'gantt',
         draw: (at, frame) => gantt(bars, at, columns, frame),
         isLive: () => bars.some(bar => bar.end === undefined),
       })
@@ -1203,7 +1342,9 @@ export const register: Register = on => {
       }
       const beats = acts.map(act => ({ at: act.at ?? 0, kind: act.kind, status: act.status }))
       const span = bodyColumns * BEAT
-      ticker.paints.set('pulse', {
+      paint({
+        site: PANE,
+        key: 'pulse',
         draw: at => pulse(beats, at, bodyColumns, BEAT),
         isLive: at => at - lastAt < span,
       })
@@ -1435,9 +1576,7 @@ export const register: Register = on => {
       { id: 'commits', label: 'Commits', count: commitRows.filter(row => row.sha !== undefined).length, hotkey: '9' },
     ]
 
-    if (ticker.timer === undefined && [...ticker.paints.values()].some(paint => paint.isLive(now))) {
-      ticker.timer = $.clock.every(FRAME, () => void tick($))
-    }
+    startTicking($, now)
 
     return (
       <Box flexDirection="column" gap={1}>
