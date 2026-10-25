@@ -11,6 +11,7 @@ import type {
   Plan,
   Step,
   StepStatus,
+  Tab,
 } from '../types'
 
 const PANE = 'show-work'
@@ -36,6 +37,8 @@ const pictures = atom({ plugin: 'show-work', key: 'pictures' } as const, [], {
 })
 // The picture the pane shows; null shows the newest.
 const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
+const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
+const showEarlier = atom({ plugin: 'show-work', key: 'showEarlier' } as const, false)
 
 const KEPT_PICTURES = 30
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
@@ -175,6 +178,11 @@ export function readSteps(value: unknown): Step[] {
 
     return text === '' ? [] : [{ text, status }]
   })
+}
+
+// Whether a note belongs to the task the plan opened; with no plan, all do.
+export function isCurrent(note: Note, since: number | undefined) {
+  return since === undefined || (note.at ?? -1) >= since
 }
 
 export function absolute(path: string, cwd: string) {
@@ -347,7 +355,13 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__show-work__plan' }, async ($, e) => {
     const goal = asText(e.goal)
     const steps = readSteps(e.steps)
-    await update($, plan, () => ({ goal, steps }))
+    const now = await $.clock.now()
+    await update($, plan, old => ({
+      goal,
+      steps,
+      startedAt: old !== null && old.goal === goal ? (old.startedAt ?? now) : now,
+    }))
+    await update($, showEarlier, () => false)
     const done = steps.filter(step => step.status === 'done').length
 
     return { result: `Plan shown: ${done}/${steps.length} steps done.` }
@@ -368,6 +382,7 @@ export const register: Register = on => {
       kind,
       text,
       ...(why === '' ? {} : { why }),
+      at: await $.clock.now(),
       isReplied: false,
     }
     await update($, notes, list => [...list, note].slice(-100))
@@ -407,7 +422,12 @@ export const register: Register = on => {
           status: STATUS[todo.status as keyof typeof STATUS],
         })),
       )
-      await update($, plan, old => ({ goal: old?.goal ?? '', steps }))
+      const now = await $.clock.now()
+      await update($, plan, old => ({
+        goal: old?.goal ?? '',
+        steps,
+        startedAt: old?.startedAt ?? now,
+      }))
     }
 
     return ran
@@ -493,13 +513,32 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
-    const pics = await read($, pictures)
-    const pickedId = await read($, picked)
-    const picture = pics.find(one => one.id === pickedId) ?? pics.at(-1)
     const shown = await read($, plan)
-    const noted = await read($, notes)
+    const allNotes = await read($, notes)
     const acts = await read($, activity)
     const files = await read($, changed)
+    const pics = await read($, pictures)
+    const pickedId = await read($, picked)
+    const tab = await read($, tabAtom)
+    const isShowingEarlier = await read($, showEarlier)
+
+    if (shown === null && allNotes.length === 0 && acts.length === 0 && pics.length === 0) {
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>
+            Nothing yet. Claude posts its plan, decisions and questions here as it
+            works, and logs the files and commands it touches.
+          </Text>
+        </Box>
+      )
+    }
+
+    const since = shown?.startedAt
+    const current = allNotes.filter(note => isCurrent(note, since))
+    const earlier = allNotes.length - current.length
+    const open = current.filter(note => note.kind === 'question' && !note.isReplied)
+    const picture = pics.find(one => one.id === pickedId) ?? pics.at(-1)
+    const failed = acts.filter(act => act.status === 'failed').length
 
     const reply = (note: Note) => async () => {
       const quote = note.text.length > 80 ? note.text.slice(0, 77) + '...' : note.text
@@ -512,70 +551,112 @@ export const register: Register = on => {
       )
     }
 
-    if (shown === null && noted.length === 0 && acts.length === 0 && pics.length === 0) {
+    const noteRow = (note: Note, isWithWhy: boolean) => (
+      <Box flexDirection="column">
+        <Button key={note.id} plain dimColor={note.isReplied} onPress={reply(note)}>
+          <Text color={TAGS[note.kind].color} weight="bold">
+            {TAGS[note.kind].tag}
+          </Text>{' '}
+          {note.text}
+          {note.isReplied ? ' ↩' : ''}
+        </Button>
+        {isWithWhy && note.why !== undefined && (
+          <Text dimColor>
+            {'  '}why: {note.why}
+          </Text>
+        )}
+      </Box>
+    )
+
+    const actRow = (act: Act) => (
+      <Box flexDirection="column">
+        <Text wrap="truncate-end" dimColor={act.status === 'ok'}>
+          <Text color={ACT_MARK[act.status].color}>{ACT_MARK[act.status].mark}</Text>{' '}
+          {act.isSubagent ? '↳ ' : ''}
+          {act.kind.padEnd(6)} {act.label}
+        </Text>
+        {act.detail !== undefined && (
+          <Text wrap="truncate-end" dimColor>
+            {'         $ '}
+            {act.detail}
+          </Text>
+        )}
+      </Box>
+    )
+
+    const planView = () => {
+      if (shown === null) {
+        return <Text dimColor>No plan posted yet.</Text>
+      }
+      const done = shown.steps.filter(step => step.status === 'done').length
+
       return (
         <Box flexDirection="column">
-          <Text dimColor>
-            Nothing yet. Claude posts its plan, decisions and questions here as it
-            works, and logs the files and commands it touches.
+          <Text weight="bold">
+            {shown.goal || 'Plan'}{' '}
+            <Text dimColor>
+              {done}/{shown.steps.length}
+            </Text>
           </Text>
+          {shown.steps.map(step => (
+            <Text
+              dimColor={step.status === 'done'}
+              strikethrough={step.status === 'dropped'}
+              weight={step.status === 'doing' ? 'bold' : 'regular'}
+            >
+              <Text color={STEP_MARK[step.status].color}>
+                {STEP_MARK[step.status].mark}
+              </Text>{' '}
+              {step.text}
+            </Text>
+          ))}
         </Box>
       )
     }
 
-    let view
-    if (picture !== undefined && e.surface === 'terminal') {
-      const { Image } = $.ui.resolve(e)
-      const columns = Math.max(1, Math.min(255, e.props.bodyColumns))
-      view = (
-        <Image
-          source={{ file: picture.file, format: 'png' }}
-          columns={columns}
-          rows={rowsFor(picture, columns, 20)}
-          alt={picture.caption}
-        />
+    let body
+    if (tab === 'notes') {
+      const listed = isShowingEarlier ? allNotes : current
+      body = (
+        <Box flexDirection="column">
+          {listed.length === 0 && <Text dimColor>No notes for this task yet.</Text>}
+          {listed.slice(-30).map(note => noteRow(note, true))}
+          {earlier > 0 && (
+            <Button
+              key="earlier"
+              plain
+              dimColor
+              onPress={() => update($, showEarlier, is => !is)}
+            >
+              {isShowingEarlier ? 'Hide' : 'Show'} {earlier} from earlier tasks
+            </Button>
+          )}
+        </Box>
       )
-    }
-
-    const steps = shown?.steps ?? []
-    const done = steps.filter(step => step.status === 'done').length
-    const failed = acts.filter(act => act.status === 'failed').length
-
-    return (
-      <Box flexDirection="column" gap={1}>
-        {shown !== null && (
+    } else if (tab === 'pictures') {
+      let view
+      if (picture !== undefined && e.surface === 'terminal') {
+        const { Image } = $.ui.resolve(e)
+        const columns = Math.max(1, Math.min(255, e.props.bodyColumns))
+        view = (
+          <Image
+            source={{ file: picture.file, format: 'png' }}
+            columns={columns}
+            rows={rowsFor(picture, columns, 20)}
+            alt={picture.caption}
+          />
+        )
+      }
+      body =
+        picture === undefined ? (
+          <Text dimColor>No pictures yet.</Text>
+        ) : (
           <Box flexDirection="column">
-            <Text weight="bold">
-              Plan{' '}
-              <Text dimColor>
-                {done}/{steps.length}
-              </Text>
-            </Text>
-            {shown.goal !== '' && <Text italic>{shown.goal}</Text>}
-            {steps.map(step => (
-              <Text
-                dimColor={step.status === 'done'}
-                strikethrough={step.status === 'dropped'}
-                weight={step.status === 'doing' ? 'bold' : 'regular'}
-              >
-                <Text color={STEP_MARK[step.status].color}>
-                  {STEP_MARK[step.status].mark}
-                </Text>{' '}
-                {step.text}
-              </Text>
-            ))}
-          </Box>
-        )}
-        {picture !== undefined && (
-          <Box flexDirection="column">
-            <Text weight="bold">
-              Pictures <Text dimColor>{pics.length}</Text>
-            </Text>
             {view ?? <Text dimColor>{picture.file}</Text>}
             <Text italic>{picture.caption}</Text>
             {pics.length > 1 &&
               pics
-                .slice(-6)
+                .slice(-8)
                 .reverse()
                 .map(one => (
                   <Button
@@ -590,56 +671,63 @@ export const register: Register = on => {
                   </Button>
                 ))}
           </Box>
-        )}
-        {noted.length > 0 && (
-          <Box flexDirection="column">
-            <Text weight="bold">
-              Notes <Text dimColor>press one to reply</Text>
-            </Text>
-            {noted.slice(-12).map(note => (
-              <Box flexDirection="column">
-                <Button key={note.id} plain dimColor={note.isReplied} onPress={reply(note)}>
-                  <Text color={TAGS[note.kind].color} weight="bold">
-                    {TAGS[note.kind].tag}
-                  </Text>{' '}
-                  {note.text}
-                  {note.isReplied ? ' ↩' : ''}
-                </Button>
-                {note.why !== undefined && (
-                  <Text dimColor>
-                    {'  '}why: {note.why}
-                  </Text>
-                )}
-              </Box>
-            ))}
-          </Box>
-        )}
-        {acts.length > 0 && (
-          <Box flexDirection="column">
-            <Text weight="bold">
-              Activity{' '}
-              <Text dimColor>
-                {acts.length} calls, {files.length} files changed
-                {failed > 0 ? `, ${failed} failed` : ''}
+        )
+    } else if (tab === 'activity') {
+      body = (
+        <Box flexDirection="column">
+          <Text dimColor>
+            {acts.length} calls, {files.length} files changed
+            {failed > 0 ? `, ${failed} failed` : ''}
+          </Text>
+          {acts.slice(-40).map(actRow)}
+        </Box>
+      )
+    } else {
+      body = (
+        <Box flexDirection="column" gap={1}>
+          {planView()}
+          {open.length > 0 && (
+            <Box flexDirection="column">
+              <Text weight="bold">
+                Waiting on you <Text dimColor>press to reply</Text>
               </Text>
-            </Text>
-            {acts.slice(-15).map(act => (
-              <Box flexDirection="column">
-                <Text wrap="truncate-end" dimColor={act.status === 'ok'}>
-                  <Text color={ACT_MARK[act.status].color}>{ACT_MARK[act.status].mark}</Text>{' '}
-                  {act.isSubagent ? '↳ ' : ''}
-                  {act.kind.padEnd(6)} {act.label}
-                </Text>
-                {act.detail !== undefined && (
-                  <Text wrap="truncate-end" dimColor>
-                    {'         $ '}
-                    {act.detail}
-                  </Text>
-                )}
-              </Box>
-            ))}
-          </Box>
-        )}
+              {open.map(note => noteRow(note, false))}
+            </Box>
+          )}
+          {acts.length > 0 && (
+            <Box flexDirection="column">
+              <Text weight="bold">Latest</Text>
+              {acts.slice(-3).map(actRow)}
+            </Box>
+          )}
+        </Box>
+      )
+    }
+
+    const TABS: { id: Tab; label: string; count?: number; hotkey: string }[] = [
+      { id: 'now', label: 'Now', hotkey: '1' },
+      { id: 'notes', label: 'Notes', count: current.length, hotkey: '2' },
+      { id: 'pictures', label: 'Pictures', count: pics.length, hotkey: '3' },
+      { id: 'activity', label: 'Activity', count: acts.length, hotkey: '4' },
+    ]
+
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Box flexDirection="row" gap={2} flexWrap="wrap">
+          {TABS.map(one => (
+            <Button
+              key={`tab-${one.id}`}
+              plain
+              dimColor={one.id !== tab}
+              hotkey={one.hotkey}
+              onPress={() => update($, tabAtom, () => one.id)}
+            >
+              <Text weight={one.id === tab ? 'bold' : 'regular'}>{one.label}</Text>
+              {one.count === undefined || one.count === 0 ? '' : ` ${one.count}`}
+            </Button>
+          ))}
+        </Box>
+        {body}
       </Box>
     )
   })

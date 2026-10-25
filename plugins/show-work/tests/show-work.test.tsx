@@ -20,6 +20,8 @@ const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 // Nothing sits beneath the plugin: each hook here stands for the engine.
 function engine(on: On) {
   const filled: string[] = []
+  let now = 0
+  on('clock.now', () => ({ value: (now += 1000) }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__show-work__${e.name}` } }))
   on('command.register', () => ({ value: { command: 'work' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -68,8 +70,9 @@ test('the plan tool draws the goal and steps', async ($, on) => {
 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ type: 'Text', text: /^Plan/ }))?.text).toBe('Plan 1/3')
-    expect(await ui.find({ type: 'Text', text: 'Add a pause menu' })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /^Add a pause menu/ }))?.text).toBe(
+      'Add a pause menu 1/3',
+    )
     expect((await ui.find({ type: 'Text', text: /Build the menu/ }))?.text).toBe(
       '▸ Build the menu',
     )
@@ -94,9 +97,13 @@ test('pressing a note quotes it into the prompt and marks it replied', async ($,
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeDefined()
+    // Now holds the open question and no decision.
     const ask = await ui.find({ type: 'Button', text: /Esc also close/ })
     expect(ask?.text).toBe('ask Should Esc also close the menu?')
+    expect(await ui.find({ type: 'Button', text: /CanvasLayer/ })).toBeUndefined()
+    await ui.press({ key: 'tab-notes' })
+    expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeDefined()
+    await ui.press({ key: 'tab-now' })
     await ui.unmount()
   }
 
@@ -104,6 +111,8 @@ test('pressing a note quotes it into the prompt and marks it replied', async ($,
   const ask = await ui.find({ type: 'Button', text: /Esc also close/ })
   await ui.press({ key: ask?.key ?? '' })
   expect(filled).toEqual(['About your question "Should Esc also close the menu?": '])
+  expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeUndefined()
+  await ui.press({ key: 'tab-notes' })
   expect((await ui.find({ type: 'Button', text: /Esc also close/ }))?.text).toMatch(/↩$/)
   await ui.unmount()
 })
@@ -130,8 +139,10 @@ test('activity logs reads, edits and failed commands', async ($, on) => {
 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ type: 'Text', text: /^Activity/ }))?.text).toBe(
-      'Activity 3 calls, 1 files changed, 1 failed',
+    expect(await ui.find({ type: 'Text', text: /main\.tscn/ })).toBeDefined()
+    await ui.press({ key: 'tab-activity' })
+    expect((await ui.find({ type: 'Text', text: /calls,/ }))?.text).toBe(
+      '3 calls, 1 files changed, 1 failed',
     )
     expect((await ui.find({ type: 'Text', text: /main\.tscn/ }))?.text).toBe(
       '✓ read   scenes/main.tscn',
@@ -142,6 +153,7 @@ test('activity logs reads, edits and failed commands', async ($, on) => {
     expect((await ui.find({ type: 'Text', text: /\$ false/ }))?.text).toBe(
       '         $ false && echo',
     )
+    await ui.press({ key: 'tab-now' })
     await ui.unmount()
   }
 })
@@ -291,7 +303,8 @@ test('a screenshot Claude reads lands in the pane, and the list picks one', asyn
   ])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Text', text: /^Pictures/ }))?.text).toBe('Pictures 2')
+  expect((await ui.find({ type: 'Button', key: 'tab-pictures' }))?.text).toBe('Pictures 2')
+  await ui.press({ key: 'tab-pictures' })
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({
     source: { file: '/home/u/.cache/show-work/toolu_r2.png' },
     columns: 60,
@@ -314,4 +327,27 @@ test('reading a picture already in the cache adds no copy', async ($, on) => {
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Read', file_path: '/home/u/.cache/show-work/toolu_a.png' })
   expect(ran.some(argv => argv[0] === 'cp')).toBe(false)
+})
+
+test('a new goal starts a new task and hides the old notes', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__show-work__plan', goal: 'First', steps: [] })
+  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'finding', text: 'Old news' })
+  await $.tool.call({ tool: 'mcp__show-work__plan', goal: 'First', steps: [] })
+  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'finding', text: 'Same task' })
+  await $.tool.call({ tool: 'mcp__show-work__plan', goal: 'Second', steps: [] })
+  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'risk', text: 'Fresh' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes 1')
+  await ui.press({ key: 'tab-notes' })
+  expect(await ui.find({ type: 'Button', text: /Old news/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Button', key: 'earlier' }))?.text).toBe(
+    'Show 2 from earlier tasks',
+  )
+  await ui.press({ key: 'earlier' })
+  expect(await ui.find({ type: 'Button', text: /Old news/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Same task/ })).toBeDefined()
+  await ui.unmount()
 })

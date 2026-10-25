@@ -2,7 +2,7 @@
 
 A pane beside the chat where Claude shows its work as it goes, so you can follow and steer it without reading every tool call.
 
-The pane has four parts:
+The pane has four tabs (hotkeys 1 to 4 while it has focus). **Now**, the default, holds only the plan, the questions waiting on you and the last three actions; the other tabs hold the rest. A plan with a new goal starts a new task, and the notes of earlier tasks hide behind a button on the Notes tab.
 
 - **Plan**: the goal as Claude understands it and its steps, with the current one marked. Claude posts it with the `plan` tool; a `TodoWrite` list shows here too.
 - **Notes**: each decision (with its reason), assumption, open question, finding and risk, posted with the `note` tool the moment it comes up. Press a note to quote it into your prompt and reply.

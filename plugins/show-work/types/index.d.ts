@@ -1,6 +1,7 @@
 export type StepStatus = 'todo' | 'doing' | 'done' | 'dropped'
 export type Step = { text: string; status: StepStatus }
-export type Plan = { goal: string; steps: Step[] }
+/** `startedAt`, when this goal was first posted, opens the current task. */
+export type Plan = { goal: string; steps: Step[]; startedAt?: number }
 
 export type NoteKind = 'decision' | 'assumption' | 'question' | 'finding' | 'risk'
 export type Note = {
@@ -8,8 +9,12 @@ export type Note = {
   kind: NoteKind
   text: string
   why?: string
+  /** When it was posted; a note from before the current task has none or less. */
+  at?: number
   isReplied: boolean
 }
+
+export type Tab = 'now' | 'notes' | 'pictures' | 'activity'
 
 export type ActKind = 'read' | 'edit' | 'run' | 'search' | 'web' | 'agent' | 'tool'
 export type ActStatus = 'runs' | 'ok' | 'failed'
@@ -47,6 +52,8 @@ declare module 'claude-code' {
       changed: Shaped<string[]>
       pictures: Shaped<Picture[]>
       picked: string | null
+      tab: Tab
+      showEarlier: boolean
     }
   }
 }
