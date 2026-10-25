@@ -31,6 +31,7 @@ function engine(on: On) {
 
     return { isFilled: true }
   })
+  on('prompt.submit', (_, e) => ({ text: e.text }))
   on('tool.call', (_, e) =>
     e.tool === 'Bash' && String(e.command).startsWith('false')
       ? { isError: true, result: 'exit 1', text: 'exit 1' }
@@ -80,7 +81,7 @@ test('the plan tool draws the goal and steps', async ($, on) => {
   }
 })
 
-test('pressing a note quotes it into the prompt and marks it replied', async ($, on) => {
+test('pressing a note quotes it into the prompt; sending a reply marks it', async ($, on) => {
   const filled = engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.tool.call({
@@ -115,6 +116,11 @@ test('pressing a note quotes it into the prompt and marks it replied', async ($,
   const ask = await ui.find({ type: 'Button', text: /Esc also close/ })
   await ui.press({ key: ask?.key ?? '' })
   expect(filled).toEqual(['About your question "Should Esc also close the menu?": '])
+  // Pressing alone, or sending the quote with nothing after it, is no reply.
+  expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeDefined()
+  await $.prompt.submit({ text: filled[0] ?? '' })
+  expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeDefined()
+  await $.prompt.submit({ text: `${filled[0]}Yes, and Start too.` })
   expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeUndefined()
   await ui.press({ key: 'tab-notes' })
   expect((await ui.find({ type: 'Button', text: /Esc also close/ }))?.text).toMatch(/↩ replied$/)

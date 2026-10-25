@@ -164,6 +164,20 @@ const ACT_MARK: Record<ActStatus, { mark: string; color: Color }> = {
   failed: { mark: '✗', color: 'error' },
 }
 
+export function replyPrefix(note: Note) {
+  const quote = note.text.length > 80 ? note.text.slice(0, 77) + '...' : note.text
+
+  return `About your ${note.kind} "${quote}": `
+}
+
+// A prompt replies to a note when it quotes it and says something after.
+export function isReplyTo(note: Note, text: string) {
+  const prefix = replyPrefix(note)
+  const at = text.indexOf(prefix)
+
+  return at >= 0 && text.slice(at + prefix.length).trim() !== ''
+}
+
 const firstLine = (text: string) => (text.split('\n')[0] ?? '').trim()
 
 const asText = (value: unknown) => (typeof value === 'string' ? value.trim() : '')
@@ -335,6 +349,22 @@ export const register: Register = on => {
         { id: 'show-work:guide', text: GUIDE, scope: 'session' },
       ],
     }
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    const entered = await next(e)
+    if (entered.drop !== undefined || e.command !== undefined) {
+      return entered
+    }
+
+    const list = await read($, notes)
+    if (list.some(note => !note.isReplied && isReplyTo(note, e.text))) {
+      await update($, notes, all =>
+        all.map(note => (isReplyTo(note, e.text) ? { ...note, isReplied: true } : note)),
+      )
+    }
+
+    return entered
   })
 
   on('command.run', { command: 'work' }, async ($, e) => {
@@ -541,15 +571,9 @@ export const register: Register = on => {
     const picture = pics.find(one => one.id === pickedId) ?? pics.at(-1)
     const failed = acts.filter(act => act.status === 'failed').length
 
+    // The note turns replied when the prompt is sent, in prompt.submit.
     const reply = (note: Note) => async () => {
-      const quote = note.text.length > 80 ? note.text.slice(0, 77) + '...' : note.text
-      await $.prompt.fill({
-        text: `About your ${note.kind} "${quote}": `,
-        mode: 'insert',
-      })
-      await update($, notes, list =>
-        list.map(one => (one.id === note.id ? { ...one, isReplied: true } : one)),
-      )
+      await $.prompt.fill({ text: replyPrefix(note), mode: 'insert' })
     }
 
     const noteRow = (note: Note, isWithWhy: boolean) => (
