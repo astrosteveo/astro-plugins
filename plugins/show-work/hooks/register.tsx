@@ -1,12 +1,23 @@
 import { atom, read, update } from 'claude-code'
-import type { Color, EngineInterface, Register, Timer } from 'claude-code'
+import type {
+  Color,
+  EngineInterface,
+  HookStream,
+  ProcessSpawnChunk,
+  ProcessSpawnResult,
+  Register,
+  Timer,
+} from 'claude-code'
 
 import type {
   Act,
   ActKind,
   CommitRow,
+  GitState,
+  Job,
   Meter,
   Preview,
+  Search,
   TestRun,
   Touch,
   ActStatus,
@@ -23,8 +34,8 @@ import type {
 } from '../types'
 import { GREEN, RED, gantt, gauge, legend, parseLog, parseTests, patchCounts, pulse, shareBar } from './charts'
 import type { Bar } from './charts'
-import { parseStatus } from './explorer'
-import { contextView, commitsView, explorerView, filesView, testsView } from './views'
+import { parseGit, parseHits, parseStatus, plain } from './explorer'
+import { contextView, commitsView, explorerView, filesView, gitView, runView, searchView, testsView } from './views'
 
 const PANE = 'show-work'
 const TITLE = 'Show work'
@@ -74,6 +85,10 @@ const gitStatus = atom({ plugin: 'show-work', key: 'status' } as const, {}, { sh
 const openDirs = atom({ plugin: 'show-work', key: 'openDirs' } as const, [], { shape: 'openDirs-1' })
 const filter = atom({ plugin: 'show-work', key: 'filter' } as const, '')
 const preview = atom({ plugin: 'show-work', key: 'preview' } as const, null, { shape: 'preview-1' })
+const jobs = atom({ plugin: 'show-work', key: 'jobs' } as const, [], { shape: 'jobs-1' })
+const pickedJob = atom({ plugin: 'show-work', key: 'pickedJob' } as const, null)
+const git = atom({ plugin: 'show-work', key: 'git' } as const, null, { shape: 'git-1' })
+const search = atom({ plugin: 'show-work', key: 'search' } as const, null, { shape: 'search-1' })
 // The picture the pane shows; null shows the newest.
 const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
 const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
@@ -86,6 +101,11 @@ const KEPT_LANES = 20
 const KEPT_TURNS = 50
 const KEPT_RUNS = 40
 const TREE_FILES = 20_000
+const KEPT_JOBS = 12
+const JOB_LINES = 500
+// How often a running job's output is written to the pane, in ms.
+const JOB_FLUSH = 200
+const HITS = 200
 const PREVIEW_LINES = 400
 const KEPT_TOUCHES = 200
 // A test command, by the runner or the word.
@@ -230,6 +250,9 @@ const ACTIONS: Record<Exclude<NoteKind, 'question'>, { reply: string; fill: stri
     ok: 'Got it',
   },
 }
+
+// The field each tool's tab puts the typing in.
+const FIELDS: Partial<Record<Tab, string>> = { explorer: 'ex-filter', run: 'run-cmd', search: 'search-q' }
 
 const STEP_MARK: Record<StepStatus, { mark: string; color?: Color }> = {
   todo: { mark: '·' },
@@ -587,22 +610,142 @@ async function loadStatus($: EngineInterface, cwd: string): Promise<Record<strin
   return ran !== undefined && ran.exitCode === 0 ? parseStatus(ran.stdout) : {}
 }
 
-// A file's text for the preview: the head of a long one, none of a binary one.
-async function loadPreview($: EngineInterface, cwd: string, file: string): Promise<Preview> {
+// A file's text for the preview: the head of a long one, or the stretch
+// around a search hit; none of a binary one.
+async function loadPreview($: EngineInterface, cwd: string, file: string, hit?: number): Promise<Preview> {
   const text = await $.fs.read(absolute(file, cwd)).catch(() => '')
   const source = typeof text === 'string' ? text : ''
   if (source.includes('\u0000')) {
     return { file, source: '', lines: 0, isCut: false, isBinary: true }
   }
   const lines = source.split('\n')
+  const start = hit === undefined ? 1 : Math.max(1, hit - 10)
 
   return {
     file,
-    source: lines.slice(0, PREVIEW_LINES).join('\n'),
+    source: lines.slice(start - 1, start - 1 + PREVIEW_LINES).join('\n'),
     lines: lines.length,
-    isCut: lines.length > PREVIEW_LINES,
+    isCut: start > 1 || lines.length > start - 1 + PREVIEW_LINES,
     isBinary: false,
+    ...(hit === undefined ? {} : { start, hit }),
   }
+}
+
+async function loadGit($: EngineInterface, cwd: string, note?: { text: string; isError: boolean }): Promise<GitState | null> {
+  const ran = await $.process.run(['git', '-C', cwd, 'status', '--porcelain=v1', '--branch']).catch(() => undefined)
+  if (ran === undefined || ran.exitCode !== 0) {
+    return null
+  }
+
+  return {
+    ...parseGit(ran.stdout),
+    ...(note === undefined ? {} : { note: note.text, isNoteError: note.isError }),
+  }
+}
+
+// A git command from the Git tab, then the tab, the Explorer's marks and
+// the commit graph read again.
+async function gitDo($: EngineInterface, cwd: string, argv: string[], timeoutMs = 30_000) {
+  const ran = await $.process.run(['git', '-C', cwd, ...argv], { timeoutMs }).catch((error: unknown) => ({
+    exitCode: 1,
+    stdout: '',
+    stderr: String(error),
+  }))
+  const said = (ran.exitCode === 0 ? ran.stdout || ran.stderr : ran.stderr || ran.stdout).trim().split('\n')
+  const note = { text: `git ${argv[0]}: ${said.at(-1) || (ran.exitCode === 0 ? 'done' : 'failed')}`, isError: ran.exitCode !== 0 }
+  const [state, codes, rows] = await Promise.all([loadGit($, cwd, note), loadStatus($, cwd), loadCommits($, cwd)])
+  await update($, git, () => state)
+  await update($, gitStatus, () => codes)
+  await update($, commits, () => rows)
+}
+
+// ripgrep where it is, git grep where it is not: smart case, a few hits a file.
+async function runSearch($: EngineInterface, cwd: string, query: string): Promise<Search> {
+  if (query.trim() === '') {
+    return { query, hits: [], isCut: false }
+  }
+  const rg = await $.process
+    .run(['rg', '--line-number', '--no-heading', '--color', 'never', '--smart-case', '--max-count', '20', '--max-columns', '300', '--', query], { cwd })
+    .catch(() => undefined)
+  const ran =
+    rg !== undefined && rg.exitCode !== 2
+      ? rg
+      : await $.process.run(['git', '-C', cwd, 'grep', '-n', '-I', '-i', '--', query]).catch(() => undefined)
+  if (ran === undefined || ran.exitCode > 1) {
+    return { query, hits: [], isCut: false, error: (ran?.stderr ?? 'no rg or git').trim().split('\n')[0] ?? '' }
+  }
+
+  return { query, ...parseHits(ran.stdout, HITS) }
+}
+
+// Children of the Run tab, by job: ending the stream kills the child.
+const children = new Map<string, HookStream<ProcessSpawnChunk, ProcessSpawnResult>>()
+
+// Runs a command in a shell and keeps the tail of its output in the job,
+// flushed a few times a second; the job ends with the child.
+async function runJob($: EngineInterface, cwd: string, command: string) {
+  const id = crypto.randomUUID()
+  const job: Job = { id, command, status: 'running', start: await $.clock.now(), output: [], total: 0 }
+  await update($, jobs, list => [...list, job].slice(-KEPT_JOBS))
+  await update($, pickedJob, () => id)
+  const child = $.process.spawn({ argv: ['bash', '-lc', command], ...(cwd === '' ? {} : { cwd }) })
+  children.set(id, child)
+  let carry = ''
+  let lines: string[] = []
+  let flushedAt = 0
+  const flush = async () => {
+    const fresh = lines
+    lines = []
+    flushedAt = await $.clock.now()
+    await update($, jobs, list =>
+      list.map(one =>
+        one.id === id
+          ? { ...one, output: [...one.output, ...fresh].slice(-JOB_LINES), total: one.total + fresh.length }
+          : one,
+      ),
+    )
+  }
+  let result: { code: number | null; signal: string | null } | undefined
+  try {
+    let step = await child.next()
+    while (step.done !== true) {
+      const parts = (carry + step.value.text).split('\n')
+      carry = parts.pop() ?? ''
+      lines.push(...parts.map(plain))
+      if ((await $.clock.now()) - flushedAt >= JOB_FLUSH) {
+        await flush()
+      }
+      step = await child.next()
+    }
+    result = step.value
+  } catch (error) {
+    lines.push(`(could not run: ${String(error)})`)
+  }
+  if (carry !== '') {
+    lines.push(plain(carry))
+  }
+  await flush()
+  const wasStopped = !children.has(id)
+  children.delete(id)
+  const end = await $.clock.now()
+  await update($, jobs, list =>
+    list.map(one =>
+      one.id === id
+        ? {
+            ...one,
+            end,
+            code: result?.code ?? null,
+            status: wasStopped ? 'stopped' : result?.code === 0 ? 'ok' : 'failed',
+          }
+        : one,
+    ),
+  )
+}
+
+function stopJob(id: string) {
+  const child = children.get(id)
+  children.delete(id)
+  void child?.return({ code: null, signal: 'SIGTERM' })
 }
 
 // This session's commits on every branch: those after the last commit made
@@ -657,6 +800,8 @@ export const register: Register = on => {
     await update($, commits, () => rows)
     await update($, tree, () => files)
     await update($, gitStatus, () => codes)
+    const state = await loadGit($, cwd)
+    await update($, git, () => state)
 
     return started
   })
@@ -975,6 +1120,8 @@ export const register: Register = on => {
     if (status === 'ok' && (what.path !== undefined || (e.tool === 'Bash' && GIT_MOVE.test(asText(e.command))))) {
       const codes = await loadStatus($, cwd)
       await update($, gitStatus, () => codes)
+      const state = await loadGit($, cwd)
+      await update($, git, () => state)
       if (e.tool !== 'Edit') {
         const files = await loadTree($, cwd)
         await update($, tree, () => files)
@@ -1185,6 +1332,10 @@ export const register: Register = on => {
     const opened = await read($, openDirs)
     const filterText = await read($, filter)
     const shownPreview = await read($, preview)
+    const allJobs = await read($, jobs)
+    const pickedJobId = await read($, pickedJob)
+    const gitState = await read($, git)
+    const found = await read($, search)
     const now = await $.clock.now()
     // Only what this drawing holds can be repainted between drawings.
     forget(PANE)
@@ -1193,17 +1344,9 @@ export const register: Register = on => {
     const kit = { Box, Text, Button, ...(Raster === undefined ? {} : { Raster }) }
     const bodyColumns = Math.max(24, Math.min(512, e.props.bodyColumns))
 
-    const isEmpty = [allNotes, acts, pics, allTurns, runs, touched, commitRows, projectFiles].every(list => list.length === 0)
-    if (shown === null && isEmpty) {
-      return (
-        <Box flexDirection="column">
-          <Text dimColor>
-            Nothing yet. Claude posts its plan, decisions and questions here as it
-            works, and logs the files and commands it touches.
-          </Text>
-        </Box>
-      )
-    }
+    // The tabs always show, the tools among them work from the start; the
+    // Now tab says what will come while nothing has.
+    const isEmpty = shown === null && [allNotes, acts, pics, allTurns, runs].every(list => list.length === 0)
 
     const since = shown?.startedAt
     const current = allNotes.filter(note => isCurrent(note, since))
@@ -1577,6 +1720,7 @@ export const register: Register = on => {
           onOpen: file => async () => {
             const loaded = await loadPreview($, cwd, file)
             await update($, preview, () => loaded)
+            await $.ui.focus({ requestId: PANE, key: 'ex-mention' }).catch(() => undefined)
           },
           onClose: () => update($, preview, () => null),
           onMention: file => async () => {
@@ -1591,6 +1735,67 @@ export const register: Register = on => {
             const [listed, status] = await Promise.all([loadTree($, cwd), loadStatus($, cwd)])
             await update($, tree, () => listed)
             await update($, gitStatus, () => status)
+          },
+        },
+      )
+    } else if (tab === 'run') {
+      body = runView(
+        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }) },
+        {
+          jobs: allJobs,
+          picked: pickedJobId,
+          now,
+          onRun: command => () => {
+            void runJob($, cwd, command)
+            void $.ui.focus({ requestId: PANE, key: 'tab-run' }).catch(() => undefined)
+          },
+          onPick: id => () => update($, pickedJob, () => id),
+          onStop: id => () => stopJob(id),
+          onAsk: job => async () => {
+            const tail = job.output.slice(-40).join('\n')
+            await $.prompt.fill({
+              text: `The output of \`${job.command}\` (${job.status}${job.code === undefined || job.code === null ? '' : `, exit ${job.code}`}):\n\`\`\`\n${tail}\n\`\`\`\n`,
+              mode: 'insert',
+            })
+          },
+        },
+      )
+    } else if (tab === 'git') {
+      body = gitView(
+        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }) },
+        {
+          state: gitState,
+          onToggle: file => () =>
+            void gitDo($, cwd, file.index !== ' ' && file.index !== '?' ? ['restore', '--staged', '--', file.path] : ['add', '--', file.path]),
+          onDiff: file => async () => {
+            const loaded = await loadDiff($, absolute(file, cwd), file)
+            await update($, diff, () => loaded)
+            await update($, tabAtom, () => 'activity')
+          },
+          onStageAll: () => void gitDo($, cwd, ['add', '-A']),
+          onUnstageAll: () => void gitDo($, cwd, ['reset', '-q']),
+          onCommit: message => () => void gitDo($, cwd, ['commit', '-m', message]),
+          onPush: () => void gitDo($, cwd, ['push'], 120_000),
+          onRefresh: async () => {
+            const state = await loadGit($, cwd)
+            await update($, git, () => state)
+          },
+        },
+      )
+    } else if (tab === 'search') {
+      body = searchView(
+        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }) },
+        {
+          search: found,
+          onSearch: query => async () => {
+            const result = await runSearch($, cwd, query)
+            await update($, search, () => result)
+            await $.ui.focus({ requestId: PANE, key: 'tab-search' }).catch(() => undefined)
+          },
+          onOpen: (file, line) => async () => {
+            const loaded = await loadPreview($, cwd, file, line)
+            await update($, preview, () => loaded)
+            await update($, tabAtom, () => 'explorer')
           },
         },
       )
@@ -1643,6 +1848,13 @@ export const register: Register = on => {
           )}
         </Box>
       )
+    } else if (isEmpty) {
+      body = (
+        <Text dimColor>
+          Nothing yet. Claude posts its plan, decisions and questions here as it works, and logs the files and
+          commands it touches. Meanwhile: 0 explores the files, u runs a command, g is git, f searches.
+        </Text>
+      )
     } else {
       body = (
         <Box flexDirection="column" gap={1}>
@@ -1689,6 +1901,9 @@ export const register: Register = on => {
       { id: 'files', label: 'Files', count: touched.length, hotkey: '8' },
       { id: 'commits', label: 'Commits', count: commitRows.filter(row => row.sha !== undefined).length, hotkey: '9' },
       { id: 'explorer', label: 'Explorer', count: Object.keys(codes).length, hotkey: '0' },
+      { id: 'run', label: 'Run', count: allJobs.filter(job => job.status === 'running').length, hotkey: 'u' },
+      { id: 'git', label: 'Git', count: gitState?.files.length ?? 0, hotkey: 'g' },
+      { id: 'search', label: 'Search', count: found?.hits.length ?? 0, hotkey: 'f' },
     ]
 
     startTicking($, now)
@@ -1702,7 +1917,15 @@ export const register: Register = on => {
               plain
               dimColor={one.id !== tab}
               hotkey={one.hotkey}
-              onPress={() => update($, tabAtom, () => one.id)}
+              onPress={async () => {
+                await update($, tabAtom, () => one.id)
+                // A tool's tab takes the typing at once; Enter there gives
+                // the keys back to the tabs.
+                const field = FIELDS[one.id]
+                if (field !== undefined) {
+                  await $.ui.focus({ requestId: PANE, key: field }).catch(() => undefined)
+                }
+              }}
             >
               <Text weight={one.id === tab ? 'bold' : 'regular'}>{one.label}</Text>
               {one.count === undefined || one.count === 0 ? '' : ` ${one.count}`}

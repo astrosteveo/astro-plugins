@@ -101,3 +101,39 @@ export function parseStatus(stdout: string) {
 
   return codes
 }
+
+// `git status --porcelain=v1 --branch`: the branch, how far it is ahead of
+// and behind its upstream, and each file's two columns.
+export function parseGit(stdout: string) {
+  const lines = stdout.split('\n').filter(line => line !== '')
+  const head = lines[0]?.startsWith('## ') ? lines.shift()!.slice(3) : ''
+  // `work...origin/work [ahead 1]`, or `work [ahead 1]` with no upstream.
+  const branch = head.replace(/^No commits yet on /, '').split(/\.\.\.| /)[0] ?? ''
+  const ahead = Number(head.match(/ahead (\d+)/)?.[1] ?? 0)
+  const behind = Number(head.match(/behind (\d+)/)?.[1] ?? 0)
+  const files = lines.map(line => ({
+    path: line.slice(3).replace(/^.* -> /, '').replace(/^"|"$/g, ''),
+    index: line[0] ?? ' ',
+    worktree: line[1] ?? ' ',
+  }))
+
+  return { branch, ahead, behind, files }
+}
+
+// `rg --line-number --no-heading` (or `git grep -n`) output read into hits.
+export function parseHits(stdout: string, most: number) {
+  const hits: { file: string; line: number; text: string }[] = []
+  for (const row of stdout.split('\n')) {
+    const m = row.match(/^(.+?):(\d+):(.*)$/)
+    if (m !== null) {
+      hits.push({ file: m[1]!, line: Number(m[2]), text: m[3]!.trim().slice(0, 300) })
+    }
+  }
+
+  return { hits: hits.slice(0, most), isCut: hits.length > most }
+}
+
+// Terminal colour codes and carriage-return rewrites out of a line of output.
+export function plain(line: string) {
+  return (line.split('\r').at(-1) ?? '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b[()][0-9A-Za-z]/g, '')
+}

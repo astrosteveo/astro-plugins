@@ -3,7 +3,7 @@
 
 import type { Color, Elements, RenderElement } from 'claude-code'
 
-import type { CommitRow, Meter, Preview, TestRun, Touch, Turn } from '../types'
+import type { CommitRow, GitFile, GitState, Job, Meter, Preview, Search, TestRun, Touch, Turn } from '../types'
 import { matches, treeRows } from './explorer'
 import {
   PALETTE,
@@ -333,7 +333,10 @@ export function explorerView(
         <Box flexDirection="column">
           <Text wrap="truncate-end">
             <Text weight="bold">{shown.file}</Text>
-            <Text dimColor> {shown.lines} lines</Text>
+            <Text dimColor>
+              {' '}
+              {shown.hit === undefined ? `${shown.lines} lines` : `line ${shown.hit} of ${shown.lines}`}
+            </Text>
             {marks(shown.file)}
           </Text>
           <Box flexDirection="row" gap={2}>
@@ -353,9 +356,13 @@ export function explorerView(
         {shown.isBinary ? (
           <Text dimColor>A binary file: nothing to preview.</Text>
         ) : (
-          <Code source={shown.source === '' ? ' ' : shown.source} path={shown.file} startLine={1} />
+          <Code source={shown.source === '' ? ' ' : shown.source} path={shown.file} startLine={shown.start ?? 1} />
         )}
-        {shown.isCut && <Text dimColor>… the first {shown.source.split('\n').length} lines</Text>}
+        {shown.isCut && (
+          <Text dimColor>
+            … lines {shown.start ?? 1} to {(shown.start ?? 1) + shown.source.split('\n').length - 1}
+          </Text>
+        )}
       </Box>
     )
   }
@@ -369,7 +376,6 @@ export function explorerView(
         {Input !== undefined && (
           <Input
             key="ex-filter"
-            autoFocus
             placeholder="find a file by a few letters…"
             value={data.filter}
             onInput={value => data.onFilter(value)}
@@ -417,6 +423,289 @@ export function explorerView(
               {row.isDir ? <Text weight="bold">{row.name}/</Text> : row.name}
               {!row.isDir && marks(row.path)}
             </Button>
+          ))}
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+const since = (ms: number) => {
+  const sec = Math.max(0, Math.round(ms / 1000))
+
+  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`
+}
+
+const JOB_MARK: Record<Job['status'], { mark: string; color: Color }> = {
+  running: { mark: '…', color: 'warning' },
+  ok: { mark: '✓', color: 'success' },
+  failed: { mark: '✗', color: 'error' },
+  stopped: { mark: '■', color: 'inactive' },
+}
+
+// A line of output's color: errors red, warnings yellow, the rest as is.
+const lineColor = (line: string): Color | undefined =>
+  /\b(error|fail(ed|ure)?|panic|exception)\b/i.test(line)
+    ? 'error'
+    : /\bwarn(ing)?\b/i.test(line)
+      ? 'warning'
+      : undefined
+
+// Commands you start from the pane: a field to type one, the recent ones to
+// run again, and the chosen one's output as it streams, to stop or hand to
+// Claude.
+export function runView(
+  { Box, Text, Button, Input }: Kit & { Input?: Elements['terminal']['Input'] },
+  data: {
+    jobs: Job[]
+    picked: string | null
+    now: number
+    onRun: (command: string) => () => void
+    onPick: (id: string) => () => void
+    onStop: (id: string) => () => void
+    onAsk: (job: Job) => () => void
+  },
+): RenderElement {
+  const job = data.jobs.find(one => one.id === data.picked) ?? data.jobs.at(-1)
+  const recent = [...new Set(data.jobs.map(one => one.command).reverse())].slice(0, 5)
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Box flexDirection="column">
+        {Input !== undefined && (
+          <Input
+            key="run-cmd"
+            placeholder="run a command: bun test, godot --headless --export-release …"
+            submitLabel="run"
+            onSubmit={value => {
+              if (value.trim() !== '') {
+                data.onRun(value.trim())()
+              }
+            }}
+          />
+        )}
+        {recent.length > 0 && (
+          <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+            <Text dimColor>again:</Text>
+            {recent.map((command, i) => (
+              <Button key={`run-again-${i}`} plain dimColor onPress={data.onRun(command)}>
+                {command.length > 40 ? command.slice(0, 39) + '…' : command}
+              </Button>
+            ))}
+          </Box>
+        )}
+      </Box>
+      {job === undefined ? (
+        <Text dimColor>Nothing run yet. Type a command above and press Enter; its output streams here.</Text>
+      ) : (
+        <Box flexDirection="column">
+          <Box flexDirection="column">
+            {data.jobs
+              .slice(-5)
+              .reverse()
+              .map(one => (
+                <Button key={`job-${one.id}`} plain dimColor={one.id !== job.id} onPress={data.onPick(one.id)}>
+                  <Text color={JOB_MARK[one.status].color}>{JOB_MARK[one.status].mark}</Text> {one.command}
+                  <Text dimColor>
+                    {' '}
+                    {since((one.end ?? data.now) - one.start)}
+                    {one.code === undefined || one.code === null || one.code === 0 ? '' : ` · exit ${one.code}`}
+                  </Text>
+                </Button>
+              ))}
+          </Box>
+          <Box flexDirection="row" gap={2}>
+            {job.status === 'running' && (
+              <Button key="run-stop" variant="secondary" hotkey="k" onPress={data.onStop(job.id)}>
+                ■ stop
+              </Button>
+            )}
+            <Button key="run-rerun" plain dimColor hotkey="e" onPress={data.onRun(job.command)}>
+              ↻ again
+            </Button>
+            <Button key="run-ask" plain dimColor hotkey="a" onPress={data.onAsk(job)}>
+              → ask Claude
+            </Button>
+            <Text dimColor>
+              {job.total} lines{job.total > job.output.length ? `, last ${job.output.length} kept` : ''}
+            </Text>
+          </Box>
+          <Box flexDirection="column">
+            {job.output.slice(-40).map((line, i) => (
+              <Text key={`out-${i}`} wrap="truncate-end" color={lineColor(line)}>
+                {line === '' ? ' ' : line}
+              </Text>
+            ))}
+          </Box>
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+// What git says of a file in a word, by its columns.
+const gitWord = (file: GitFile) => {
+  const code = file.index === '?' ? '?' : file.index !== ' ' ? file.index : file.worktree
+
+  return { M: 'modified', A: 'added', D: 'deleted', R: 'renamed', C: 'copied', U: 'conflict', '?': 'new' }[code] ?? code
+}
+
+// The working tree as git sees it: staged above, unstaged and new below;
+// press a file to stage or unstage it, ± for its diff, then commit and push.
+export function gitView(
+  { Box, Text, Button, Input }: Kit & { Input?: Elements['terminal']['Input'] },
+  data: {
+    state: GitState | null
+    onToggle: (file: GitFile) => () => void
+    onDiff: (path: string) => () => void
+    onStageAll: () => void
+    onUnstageAll: () => void
+    onCommit: (message: string) => () => void
+    onPush: () => void
+    onRefresh: () => void
+  },
+): RenderElement {
+  const state = data.state
+  if (state === null) {
+    return <Text dimColor>Not a git repository.</Text>
+  }
+  const staged = state.files.filter(file => file.index !== ' ' && file.index !== '?')
+  const unstaged = state.files.filter(file => file.worktree !== ' ' && file.index !== '?')
+  const fresh = state.files.filter(file => file.index === '?')
+  const row = (file: GitFile, isStaged: boolean) => (
+    <Box key={`git-${isStaged ? 's' : 'w'}-${file.path}`} flexDirection="row" gap={1}>
+      <Button key={`git-${isStaged ? 's' : 'w'}-${file.path}`} plain onPress={data.onToggle(file)}>
+        <Text color={isStaged ? 'success' : file.index === '?' ? 'suggestion' : 'warning'}>
+          {isStaged ? '●' : '○'}
+        </Text>{' '}
+        {file.path} <Text dimColor>{gitWord(file)}</Text>
+      </Button>
+      {file.index !== '?' && (
+        <Button key={`git-diff-${isStaged ? 's' : 'w'}-${file.path}`} plain dimColor onPress={data.onDiff(file.path)}>
+          ±
+        </Button>
+      )}
+    </Box>
+  )
+  const section = (title: string, files: GitFile[], isStaged: boolean) =>
+    files.length > 0 && (
+      <Box flexDirection="column">
+        <Text weight="bold">
+          {title} <Text dimColor>{files.length}</Text>
+        </Text>
+        {files.slice(0, 40).map(file => row(file, isStaged))}
+      </Box>
+    )
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+        <Text>
+          <Text color="claude" weight="bold">
+            ⎇ {state.branch || 'detached'}
+          </Text>
+          {state.ahead > 0 && <Text color="success"> ↑{state.ahead}</Text>}
+          {state.behind > 0 && <Text color="warning"> ↓{state.behind}</Text>}
+        </Text>
+        <Button key="git-all" plain dimColor hotkey="a" onPress={data.onStageAll}>
+          stage all
+        </Button>
+        <Button key="git-none" plain dimColor hotkey="z" onPress={data.onUnstageAll}>
+          unstage all
+        </Button>
+        {state.ahead > 0 && (
+          <Button key="git-push" plain dimColor hotkey="p" onPress={data.onPush}>
+            push
+          </Button>
+        )}
+        <Button key="git-refresh" plain dimColor hotkey="r" onPress={data.onRefresh}>
+          ↻
+        </Button>
+      </Box>
+      {state.note !== undefined && (
+        <Text color={state.isNoteError === true ? 'error' : 'success'} wrap="truncate-end">
+          {state.note}
+        </Text>
+      )}
+      {state.files.length === 0 ? (
+        <Text dimColor>Nothing to commit: the working tree is clean.</Text>
+      ) : (
+        <Box flexDirection="column" gap={1}>
+          {section('Staged', staged, true)}
+          {section('Changed', unstaged, false)}
+          {section('New', fresh, false)}
+        </Box>
+      )}
+      {staged.length > 0 && Input !== undefined && (
+        <Input
+          key="git-msg"
+          placeholder={`commit ${staged.length} staged file${staged.length === 1 ? '' : 's'}: message…`}
+          submitLabel="commit"
+          onSubmit={value => {
+            if (value.trim() !== '') {
+              data.onCommit(value.trim())()
+            }
+          }}
+        />
+      )}
+    </Box>
+  )
+}
+
+// A search of the project's text: the hits by file, each opening the file
+// at that line in the Explorer's preview.
+export function searchView(
+  { Box, Text, Button, Input }: Kit & { Input?: Elements['terminal']['Input'] },
+  data: {
+    search: Search | null
+    onSearch: (query: string) => () => void
+    onOpen: (file: string, line?: number) => () => void
+  },
+): RenderElement {
+  const found = data.search
+  const byFile = new Map<string, { line: number; text: string }[]>()
+  for (const hit of found?.hits ?? []) {
+    byFile.set(hit.file, [...(byFile.get(hit.file) ?? []), hit])
+  }
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Box flexDirection="column">
+        {Input !== undefined && (
+          <Input
+            key="search-q"
+            placeholder="search the project's text (regex, smart case)…"
+            value={found?.query ?? ''}
+            submitLabel="search"
+            onSubmit={value => data.onSearch(value)()}
+          />
+        )}
+        {found !== null && found.query !== '' && (
+          <Text dimColor>
+            {found.error !== undefined
+              ? found.error
+              : `${found.hits.length}${found.isCut ? '+' : ''} hits in ${byFile.size} file${byFile.size === 1 ? '' : 's'}`}
+          </Text>
+        )}
+      </Box>
+      {found === null || found.query === '' ? (
+        <Text dimColor>Type a word or a pattern and press Enter. A hit opens its file at that line.</Text>
+      ) : (
+        <Box flexDirection="column">
+          {[...byFile].slice(0, 40).map(([file, hits]) => (
+            <Box key={`hits-${file}`} flexDirection="column">
+              <Button key={`hit-file-${file}`} plain onPress={data.onOpen(file)}>
+                <Text color="suggestion" weight="bold">
+                  {file}
+                </Text>{' '}
+                <Text dimColor>{hits.length}</Text>
+              </Button>
+              {hits.slice(0, 8).map(hit => (
+                <Button key={`hit-${file}:${hit.line}`} plain dimColor onPress={data.onOpen(file, hit.line)}>
+                  <Text color="warning">{String(hit.line).padStart(5)}</Text> {hit.text}
+                </Button>
+              ))}
+            </Box>
           ))}
         </Box>
       )}

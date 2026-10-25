@@ -1078,3 +1078,105 @@ test('the Explorer walks the tree, filters, previews a file and mentions it', as
   expect(await ui.find({ type: 'Code' })).toBeUndefined()
   await ui.unmount()
 })
+
+import { parseGit, parseHits, plain } from '../hooks/explorer'
+
+test('git status, grep hits and coloured output are read plainly', () => {
+  expect(parseGit('## main [ahead 3]\n').branch).toBe('main')
+  expect(parseGit('## work...origin/work [ahead 2, behind 1]\nM  a.ts\n M b.ts\n?? c.ts\n')).toEqual({
+    branch: 'work',
+    ahead: 2,
+    behind: 1,
+    files: [
+      { path: 'a.ts', index: 'M', worktree: ' ' },
+      { path: 'b.ts', index: ' ', worktree: 'M' },
+      { path: 'c.ts', index: '?', worktree: '?' },
+    ],
+  })
+  expect(parseHits('a.ts:3:  const x = 1\nb/c.ts:10:x()\nnot a hit\n', 1)).toEqual({
+    hits: [{ file: 'a.ts', line: 3, text: 'const x = 1' }],
+    isCut: true,
+  })
+  expect(plain('\x1b[32m✓ ok\x1b[0m')).toBe('✓ ok')
+  expect(plain('10%\r50%\r100% done')).toBe('100% done')
+})
+
+test('the Run tab streams a command, keeps its tail and hands it to Claude', async ($, on) => {
+  const filled = engine(on)
+  const spawned: string[][] = []
+  on('process.spawn', async function* ($, e, next) {
+    spawned.push([...e.argv])
+    yield { stream: 'stdout' as const, text: 'building\n\x1b[31merror: x\x1b[0m\npart' }
+    yield { stream: 'stderr' as const, text: 'ial\n' }
+
+    return { value: { code: 1, signal: null } } as never
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-run' })
+  await ui.input({ key: 'run-cmd', text: 'make build', kind: 'submit' })
+  expect(spawned).toEqual([['bash', '-lc', 'make build']])
+  expect((await ui.find({ type: 'Button', text: /^. make build/ }))?.text).toMatch(/^✗ make build \d+s · exit 1$/)
+  expect((await ui.findAll({ type: 'Text', text: /building|error|partial/ })).map(one => [one.text, one.props.color])).toEqual([
+    ['building', undefined],
+    ['error: x', 'error'],
+    ['partial', undefined],
+  ])
+  await ui.press({ key: 'run-ask' })
+  expect(filled[0]).toBe('The output of `make build` (failed, exit 1):\n```\nbuilding\nerror: x\npartial\n```\n')
+  await ui.unmount()
+})
+
+test('the Git tab stages a file, commits with a message and shows what git said', async ($, on) => {
+  engine(on)
+  const ran: string[][] = []
+  let status = '## work\n M a.ts\n?? b.ts\n'
+  on('process.run', (_, e) => {
+    ran.push([...e.argv])
+    if (e.argv.includes('add')) {
+      status = '## work\nM  a.ts\n?? b.ts\n'
+    }
+    if (e.argv.includes('commit')) {
+      status = '## work [ahead 1]\n?? b.ts\n'
+    }
+    const stdout = e.argv.includes('--branch') ? status : e.argv.includes('commit') ? '[work 1234567] Fix a\n' : ''
+
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-git' })
+  expect((await ui.find({ type: 'Button', key: 'git-w-a.ts' }))?.text).toBe('○ a.ts modified')
+  expect(await ui.find({ type: 'Input', key: 'git-msg' })).toBeUndefined()
+  await ui.press({ key: 'git-w-a.ts' })
+  expect(ran.find(argv => argv.includes('add'))).toEqual(['git', '-C', '/proj', 'add', '--', 'a.ts'])
+  expect((await ui.find({ type: 'Button', key: 'git-s-a.ts' }))?.text).toBe('● a.ts modified')
+  await ui.input({ key: 'git-msg', text: 'Fix a', kind: 'submit' })
+  expect(ran.find(argv => argv.includes('commit'))).toEqual(['git', '-C', '/proj', 'commit', '-m', 'Fix a'])
+  expect((await ui.find({ type: 'Text', text: /^git commit/ }))?.text).toBe('git commit: [work 1234567] Fix a')
+  expect((await ui.find({ type: 'Text', text: /⎇/ }))?.text).toBe('⎇ work ↑1')
+  expect(await ui.find({ type: 'Button', key: 'git-push' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the Search tab finds text and a hit opens the file at that line', async ($, on) => {
+  engine(on)
+  on('process.run', (_, e) => {
+    const stdout = e.argv[0] === 'rg' ? 'hooks/a.ts:42:  jump()\nhooks/a.ts:50:jump(2)\nREADME.md:3:jump here\n' : ''
+
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.read', () => ({ value: Array.from({ length: 80 }, (_, i) => `line ${i + 1}`).join('\n') }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-search' })
+  await ui.input({ key: 'search-q', text: 'jump', kind: 'submit' })
+  expect((await ui.find({ type: 'Text', text: /hits in/ }))?.text).toBe('3 hits in 2 files')
+  expect((await ui.find({ type: 'Button', key: 'hit-hooks/a.ts:42' }))?.text).toBe('   42 jump()')
+  await ui.press({ key: 'hit-hooks/a.ts:42' })
+  const code = await ui.find({ type: 'Code' })
+  expect(code?.props).toMatchObject({ path: 'hooks/a.ts', startLine: 32 })
+  expect(code?.props.source).toMatch(/^line 32\n/)
+  expect((await ui.find({ type: 'Text', text: /line 42 of/ }))?.text).toBe('hooks/a.ts line 42 of 80')
+  await ui.unmount()
+})

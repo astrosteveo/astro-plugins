@@ -29,6 +29,9 @@ export type Tab =
   | 'files'
   | 'commits'
   | 'explorer'
+  | 'run'
+  | 'git'
+  | 'search'
 
 export type ActKind = 'read' | 'edit' | 'run' | 'search' | 'web' | 'agent' | 'tool'
 export type ActStatus = 'runs' | 'ok' | 'failed'
@@ -93,7 +96,47 @@ export type TestRun = {
 export type Touch = { file: string; reads: number; edits: number; at: number }
 
 /** A file open in the Explorer's preview. */
-export type Preview = { file: string; source: string; lines: number; isCut: boolean; isBinary: boolean }
+export type Preview = {
+  file: string
+  source: string
+  lines: number
+  isCut: boolean
+  isBinary: boolean
+  /** The file's line the preview starts at, when it opened at a search hit. */
+  start?: number
+  /** The line a search hit landed on. */
+  hit?: number
+}
+
+/** A command run from the Run tab, with the tail of its output. */
+export type Job = {
+  id: string
+  command: string
+  status: 'running' | 'ok' | 'failed' | 'stopped'
+  code?: number | null
+  start: number
+  end?: number
+  output: string[]
+  /** Lines written in all, kept or not. */
+  total: number
+}
+
+/** A file `git status` names: its index and worktree columns. */
+export type GitFile = { path: string; index: string; worktree: string }
+
+export type GitState = {
+  branch: string
+  ahead: number
+  behind: number
+  files: GitFile[]
+  /** What the last action from the tab came to. */
+  note?: string
+  isNoteError?: boolean
+}
+
+export type Hit = { file: string; line: number; text: string }
+
+export type Search = { query: string; hits: Hit[]; isCut: boolean; error?: string }
 
 /** A row of `git log --graph`: a commit, or a line of the graph alone. */
 export type CommitRow = {
@@ -161,6 +204,10 @@ declare module 'claude-code' {
       openDirs: Shaped<string[]>
       filter: string
       preview: Shaped<Preview | null>
+      jobs: Shaped<Job[]>
+      pickedJob: string | null
+      git: Shaped<GitState | null>
+      search: Shaped<Search | null>
       picked: string | null
       tab: Tab
       showEarlier: boolean
