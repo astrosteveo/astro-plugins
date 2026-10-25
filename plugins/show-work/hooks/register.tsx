@@ -576,21 +576,29 @@ export const register: Register = on => {
     return spawned
   })
 
-  // A foreground Agent call returns when its subagent is done; a background
-  // one returns at once, so its lane stays running.
+  // An Agent call may return as soon as its subagent starts, so its return
+  // only says the subagent failed; SubagentStop says when it is done.
   on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
     const ran = await next(e)
-    // This build's Agent input type leaves the flag out; the call may carry it.
-    const isBackground = (e as Record<string, unknown>).run_in_background === true
-    if (isBackground &&ran.deny === undefined && ran.isError !== true) {
-      return ran
+    if (ran.deny !== undefined || ran.isError === true) {
+      await update($, lanes, list =>
+        list.map(one =>
+          one.toolUseId === e.tool_use_id ? { ...one, status: 'failed' as const } : one,
+        ),
+      )
     }
-    const status: ActStatus = ran.deny !== undefined || ran.isError === true ? 'failed' : 'ok'
-    await update($, lanes, list =>
-      list.map(one => (one.toolUseId === e.tool_use_id ? { ...one, status } : one)),
-    )
 
     return ran
+  })
+
+  on('classic.SubagentStop', async ($, e, next) => {
+    await update($, lanes, list =>
+      list.map(one =>
+        one.id === e.agent_id && one.status === 'runs' ? { ...one, status: 'ok' as const } : one,
+      ),
+    )
+
+    return next(e)
   })
 
   on('tool.call', async ($, e, next) => {

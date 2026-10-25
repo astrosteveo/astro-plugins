@@ -482,9 +482,10 @@ test('a new file diffs against nothing', async ($, on) => {
   await ui.unmount()
 })
 
-test('a subagent gets a lane with its latest call, done when its Agent call returns', async ($, on) => {
+test('a subagent gets a lane with its latest call, done when it stops', async ($, on) => {
   engine(on)
   on('agent.spawn', () => ({ model: 'claude-opus-5-5', agentId: 'ag1' }))
+  on('classic.SubagentStop', () => ({}))
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.agent.spawn({
     tool_use_id: 'toolu_a1',
@@ -500,7 +501,10 @@ test('a subagent gets a lane with its latest call, done when its Agent call retu
     '… Find menu scene Explore · 1 call',
   )
   expect((await ui.find({ type: 'Text', text: /↳ read/ }))?.text).toBe('  ↳ read menu.tscn')
+  // The Agent call returns while the subagent still runs.
   await $.tool.call({ tool: 'Agent', description: 'Find menu scene', prompt: 'x', tool_use_id: 'toolu_a1' } as never)
+  expect((await ui.find({ type: 'Text', text: /^Agents/ }))?.text).toBe('Agents 1 running')
+  await $.classic.SubagentStop({ agent_id: 'ag1', agent_type: 'Explore' } as never)
   expect((await ui.find({ type: 'Text', text: /^Agents/ }))?.text).toBe('Agents 0 running')
   expect((await ui.find({ type: 'Text', text: /Find menu scene/ }))?.text).toMatch(/^✓/)
   await ui.unmount()
