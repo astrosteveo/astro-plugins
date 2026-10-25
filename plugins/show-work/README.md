@@ -2,12 +2,13 @@
 
 A pane beside the chat where Claude shows its work as it goes, so you can follow and steer it without reading every tool call.
 
-The pane has four tabs (hotkeys 1 to 4 while it has focus). **Now**, the default, holds only the plan, the questions waiting on you and the last three actions; the other tabs hold the rest. A plan with a new goal starts a new task, and the notes of earlier tasks hide behind a button on the Notes tab.
+The pane has four tabs (hotkeys 1 to 4 while it has focus). **Now**, the default, holds only the plan, the questions waiting on you, the subagents and the last three actions; the other tabs hold the rest. A plan with a new goal starts a new task, and the notes of earlier tasks hide behind a button on the Notes tab.
 
 - **Plan**: the goal as Claude understands it and its steps, with the current one marked. Claude posts it with the `plan` tool; a `TodoWrite` list shows here too.
 - **Notes**: each decision (with its reason), assumption, open question, finding and risk, posted with the `note` tool the moment it comes up. Each opens with a tag in Claude's voice ("I chose", "I assume", "I ask", "I found", "Risk") and ends with what to do about it ("veto?", "correct me?", "answer me", "FYI", "heads up"). Press a question to quote it into your prompt and answer it; it turns replied once you send text after the quote. Press any other note to open it: it shows Claude's reason and detail and two buttons, one that starts a reply (Veto, Correct it, Tell me more, What would you do?) and one that marks it read (OK, Right, Got it).
+- **Agents**: each subagent Claude starts gets a lane on the Now tab: its task, its type, a count of its calls and, while it runs, its latest call. A lane turns ✓ when the subagent stops, background ones included.
 - **Pictures**: every image Claude reads (a screenshot, a render) is copied here as it was at that moment; the list under it picks an older one.
-- **Activity**: every file read, file edited, command run and search, logged by the mod itself, with failures marked and a count of files changed. Repeated reads or edits of one file fold into that file's row, which shows a count (`×3`) and moves to the bottom.
+- **Activity**: every file read, file edited, command run and search, logged by the mod itself, with failures marked and a count of files changed. Repeated reads or edits of one file fold into that file's row, which shows a count (`×3`) and moves to the bottom. Above the log, each changed file is a button: press it to see its diff against git HEAD (a new file against nothing), added lines green and removed ones red; the diff refreshes when the file is edited again, and `x` closes it.
 
 Claude can also draw a picture in the chat itself with the `show` tool: an image file or SVG source, such as a mockup of a design before it builds it. The picture appears under the tool's row, in a terminal that draws images (kitty, Ghostty, iTerm2); other surfaces show its caption and path. Pictures are kept as PNGs in `~/.cache/show-work` (the newest 30), converted with `rsvg-convert` and ImageMagick's `magick`.
 
