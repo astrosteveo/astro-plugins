@@ -1,0 +1,34 @@
+# show-work
+
+A pane beside the chat where Claude shows its work as it goes, so you can follow and steer it without reading every tool call.
+
+The pane has three parts:
+
+- **Plan**: the goal as Claude understands it and its steps, with the current one marked. Claude posts it with the `plan` tool; a `TodoWrite` list shows here too.
+- **Notes**: each decision (with its reason), assumption, open question, finding and risk, posted with the `note` tool the moment it comes up. Press a note to quote it into your prompt and reply.
+- **Activity**: every file read, file edited, command run and search, logged by the mod itself, with failures marked and a count of files changed.
+
+A short section in the system prompt tells Claude when to post a plan and when to note something.
+
+## Use
+
+The pane opens by itself in a wide fullscreen terminal (144 columns or more). Otherwise:
+
+- `/work` opens the pane.
+- `/work clear` empties it.
+- ctrl+x tab focuses it; Tab walks the notes, Enter replies to one.
+
+## Install
+
+At the prompt of a terminal session:
+
+```
+/plugin install show-work --marketplace astrosteveo/astro-plugins
+```
+
+## Test
+
+```
+claude plugin validate plugins/show-work
+claude plugin test plugins/show-work
+```

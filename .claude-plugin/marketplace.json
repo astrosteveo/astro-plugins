@@ -6,5 +6,11 @@
     "name": "astrosteveo",
     "email": "smosleyjr@pm.me"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "show-work",
+      "source": "./plugins/show-work",
+      "description": "A pane where Claude shows its plan, decisions, assumptions, questions and the files and commands it touches."
+    }
+  ]
 }

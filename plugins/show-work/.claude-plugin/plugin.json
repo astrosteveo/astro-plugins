@@ -1,0 +1,10 @@
+{
+  "name": "show-work",
+  "version": "0.1.0",
+  "description": "A pane where Claude shows its plan, decisions, assumptions, questions and the files and commands it touches.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT"
+}
