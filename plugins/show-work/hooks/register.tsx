@@ -4,6 +4,10 @@ import type { Color, EngineInterface, Register, Timer } from 'claude-code'
 import type {
   Act,
   ActKind,
+  CommitRow,
+  Meter,
+  TestRun,
+  Touch,
   ActStatus,
   Diff,
   Lane,
@@ -16,6 +20,9 @@ import type {
   Tab,
   Turn,
 } from '../types'
+import { gantt, legend, parseLog, parseTests, pulse } from './charts'
+import type { Bar } from './charts'
+import { contextView, commitsView, filesView, testsView } from './views'
 
 const PANE = 'show-work'
 const TITLE = 'Show work'
@@ -48,6 +55,18 @@ const lanes = atom({ plugin: 'show-work', key: 'lanes' } as const, [], {
 const turns = atom({ plugin: 'show-work', key: 'turns' } as const, [], {
   shape: 'turns-1',
 })
+const meter = atom({ plugin: 'show-work', key: 'meter' } as const, null, {
+  shape: 'meter-1',
+})
+const tests = atom({ plugin: 'show-work', key: 'tests' } as const, [], {
+  shape: 'tests-1',
+})
+const touches = atom({ plugin: 'show-work', key: 'touches' } as const, [], {
+  shape: 'touches-1',
+})
+const commits = atom({ plugin: 'show-work', key: 'commits' } as const, [], {
+  shape: 'commits-1',
+})
 // The picture the pane shows; null shows the newest.
 const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
 const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
@@ -58,6 +77,14 @@ const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 const KEPT_PICTURES = 30
 const KEPT_LANES = 20
 const KEPT_TURNS = 50
+const KEPT_RUNS = 40
+const KEPT_TOUCHES = 200
+// A test command, by the runner or the word.
+const TEST_COMMAND = /\b(tests?|spec|pytest|jest|vitest|mocha|rspec|ctest|gut|gdunit\w*)\b/i
+// A git command that moves branches.
+const GIT_MOVE = /\bgit\b.*\b(commit|merge|rebase|cherry-pick|reset|checkout|switch|pull|am|revert)\b/
+// The pulse: a column per two seconds.
+const BEAT = 2000
 // How many turns the timeline draws, newest last.
 const GANTT_TURNS = 8
 const COLORS = {
@@ -343,115 +370,8 @@ export function divider(turn: Turn | undefined, n: number, now: number) {
   return `── turn ${n} · ${took} · ${calls}${failed} ──`
 }
 
-export type Bar = {
-  label: string
-  start: number
-  end?: number
-  color: number
-  isSub: boolean
-}
-
-const DEFAULT = 0x01000000
-const GRID = 0x3a3a3a
-const LABEL = 14
-const PULSE = 0xffe0b0
 // How often a running chart repaints, in ms.
 const FRAME = 250
-// Half-cell glyphs: a bar's ends land on half a column.
-const LEFT = 0x258c
-const RIGHT = 0x2590
-const FULL = 0x2588
-
-const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-
-// Padded base64; the module has neither btoa nor Buffer.
-export function base64(bytes: Uint8Array) {
-  let out = ''
-  for (let i = 0; i < bytes.length; i += 3) {
-    const n = ((bytes[i] ?? 0) << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0)
-    out += B64[(n >> 18) & 63]! + B64[(n >> 12) & 63]!
-    out += i + 1 < bytes.length ? B64[(n >> 6) & 63]! : '='
-    out += i + 2 < bytes.length ? B64[n & 63]! : '='
-  }
-
-  return out
-}
-
-// A Gantt chart as Raster cells: one row per bar, labels on the left, time
-// running left to right from the earliest start to now, with a faint grid.
-// A Raster takes one printable, single-width BMP character per cell: plain
-// ASCII and the arrow pass, anything else (emoji, CJK, controls) draws as ?.
-export function glyphs(text: string) {
-  return [...text].map(ch => {
-    const code = ch.codePointAt(0) ?? 0x3f
-
-    return (code >= 0x20 && code < 0x7f) || code === 0x21b3 ? code : 0x3f
-  })
-}
-
-// A running bar's leading cell pulses brighter on odd frames.
-export function gantt(bars: Bar[], now: number, wanted: number, frame = 0) {
-  const columns = Math.max(LABEL + 5, wanted)
-  const width = columns - LABEL - 1
-  const from = Math.min(now - 1000, ...bars.map(bar => bar.start))
-  const span = Math.max(1, now - from)
-  const words = new Uint32Array(columns * bars.length * 3)
-  const put = (row: number, col: number, glyph: number, fg: number) => {
-    const at = (row * columns + col) * 3
-    words[at] = glyph
-    words[at + 1] = fg
-    words[at + 2] = DEFAULT
-  }
-
-  bars.forEach((bar, row) => {
-    for (let col = 0; col < columns; col++) {
-      put(row, col, 0x20, DEFAULT)
-    }
-    const label = glyphs(bar.isSub ? '↳ ' + bar.label : bar.label).slice(0, LABEL)
-    label.forEach((code, col) => put(row, col, code, bar.isSub ? 0x8a8a8a : 0xd0d0d0))
-    for (let col = 0; col < width; col += 6) {
-      put(row, LABEL + 1 + col, 0x00b7, GRID)
-    }
-
-    // Half columns: a bar covers [a, b) and never less than one half.
-    const halves = width * 2
-    const a = Math.floor(((bar.start - from) / span) * halves)
-    const b = Math.max(a + 1, Math.ceil((((bar.end ?? now) - from) / span) * halves))
-    const head = Math.floor((Math.min(halves, b) - 1) / 2)
-    for (let half = Math.max(0, a); half < Math.min(halves, b); half += 1) {
-      const col = Math.floor(half / 2)
-      const hasLeft = col * 2 >= a && col * 2 < b
-      const hasRight = col * 2 + 1 >= a && col * 2 + 1 < b
-      const isPulse = bar.end === undefined && col === head && frame % 2 === 1
-      put(
-        row,
-        LABEL + 1 + col,
-        hasLeft && hasRight ? FULL : hasLeft ? LEFT : RIGHT,
-        isPulse ? PULSE : bar.color,
-      )
-    }
-  })
-
-  return {
-    columns,
-    rows: bars.length,
-    cells: base64(new Uint8Array(words.buffer)),
-    from,
-  }
-}
-
-// One row of swatches and names, in the very colors the chart draws.
-export function legend(entries: [number, string][]) {
-  const row: [number, number][] = entries.flatMap(([color, name], i) => [
-    ...(i === 0 ? [] : ([...'  '].map(ch => [ch.charCodeAt(0), DEFAULT]) as [number, number][])),
-    [FULL, color] as [number, number],
-    ...glyphs(` ${name}`).map(code => [code, 0x8a8a8a] as [number, number]),
-  ])
-  const words = Uint32Array.from(row.flatMap(([glyph, fg]) => [glyph, fg, DEFAULT]))
-
-  return { columns: row.length, cells: base64(new Uint8Array(words.buffer)) }
-}
-
 // The color of a diff line by its first character.
 export function diffColor(line: string): Color | undefined {
   if (line.startsWith('+++') || line.startsWith('---')) {
@@ -549,30 +469,87 @@ async function keep($: EngineInterface, picture: Picture) {
   }
 }
 
-// What the drawn timeline shows, for the timer that repaints its running
-// bars between redraws; the timer stops when nothing runs or it is gone.
-const ticker: {
-  live?: { bars: Bar[]; columns: number }
-  timer?: Timer
-  frame: number
-} = { frame: 0 }
+// The Rasters the pane drew that move on their own: the timer repaints each
+// while it is live, drops one whose paint is refused, and stops with none.
+type Paint = {
+  draw: (now: number, frame: number) => { columns: number; rows: number; cells: string }
+  isLive: (now: number) => boolean
+}
+const ticker: { paints: Map<string, Paint>; timer?: Timer; frame: number } = {
+  paints: new Map(),
+  frame: 0,
+}
 
 async function tick($: EngineInterface) {
-  const shown = ticker.live
-  if (shown === undefined || shown.bars.every(bar => bar.end !== undefined)) {
+  const now = await $.clock.now()
+  const live = [...ticker.paints].filter(([, paint]) => paint.isLive(now))
+  if (live.length === 0) {
     ticker.timer?.cancel()
     ticker.timer = undefined
 
     return
   }
   ticker.frame += 1
-  const chart = gantt(shown.bars, await $.clock.now(), shown.columns, ticker.frame)
-  // A refused or failed paint means the chart is gone: the next tick stops.
-  const painted = await $.ui
-    .blit({ requestId: PANE, key: 'gantt', columns: shown.columns, rows: chart.rows, cells: chart.cells })
-    .catch(() => ({ deny: 'failed' }))
-  if (painted.deny !== undefined) {
-    ticker.live = undefined
+  for (const [key, paint] of live) {
+    const cells = paint.draw(now, ticker.frame)
+    // A refused or failed paint means the Raster is gone.
+    const painted = await $.ui
+      .blit({ requestId: PANE, key, ...cells })
+      .catch(() => ({ deny: 'failed' }))
+    if (painted.deny !== undefined) {
+      ticker.paints.delete(key)
+    }
+  }
+}
+
+// The window, spend and rate limits as the session reports them now.
+async function loadMeter($: EngineInterface): Promise<Meter | null> {
+  const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
+  if (usage === undefined) {
+    return null
+  }
+  const categories = usage.context.breakdown?.categories ?? []
+
+  return {
+    ...(usage.context.tokens === undefined ? {} : { tokens: usage.context.tokens }),
+    window: usage.context.window,
+    ...(usage.context.percent === undefined ? {} : { percent: usage.context.percent }),
+    ...(usage.cost === undefined ? {} : { usd: usage.cost.usd }),
+    ...(() => {
+      const buffer = categories.find(one => one.kind === 'buffer')?.tokens
+
+      return buffer === undefined ? {} : { buffer }
+    })(),
+    categories: categories
+      .filter(one => one.kind === 'used' && one.tokens > 0)
+      .map(one => ({ name: one.name, tokens: one.tokens })),
+    limits: usage.rateLimits.map(one => ({ kind: one.kind, percentUsed: one.percentUsed })),
+    at: await $.clock.now(),
+  }
+}
+
+// This session's commits on every branch: those after the last commit made
+// before the session began.
+async function loadCommits($: EngineInterface, cwd: string): Promise<CommitRow[]> {
+  if (cwd === '') {
+    return []
+  }
+  try {
+    const { startedAt } = await $.session.usage()
+    const base = await $.process.run([
+      'git', '-C', cwd, 'rev-list', '-1', `--before=@${Math.floor(startedAt / 1000)}`, 'HEAD',
+    ])
+    const sha = base.stdout.trim()
+    const log = await $.process.run([
+      'git', '-C', cwd, 'log', '--graph', '--color=never', '--branches', '--shortstat',
+      '--format=%x1e%h%x1f%s%x1f%cr%x1f%D', '-n', '60',
+      ...(base.exitCode === 0 && sha !== '' ? [`^${sha}`] : []),
+    ])
+
+    return log.exitCode === 0 ? parseLog(log.stdout) : []
+  } catch {
+    // Not a repository, or no git: no commits to show.
+    return []
   }
 }
 
@@ -590,8 +567,14 @@ export const register: Register = on => {
       argumentHint: '[clear]',
     })
     void $.ui.open({ id: PANE, title: TITLE })
+    const started = await next(e)
+    const [shown, rows] = await Promise.all([loadMeter($), loadCommits($, cwd)])
+    if (shown !== null) {
+      await update($, meter, () => shown)
+    }
+    await update($, commits, () => rows)
 
-    return next(e)
+    return started
   })
 
   on('prompt.compose', async ($, e, next) => {
@@ -632,6 +615,8 @@ export const register: Register = on => {
       await update($, diff, () => null)
       await update($, lanes, () => [])
       await update($, turns, () => [])
+      await update($, tests, () => [])
+      await update($, touches, () => [])
 
       return { text: 'Show work cleared.' }
     }
@@ -738,13 +723,41 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The turn's end carries its tokens; the session then says how full the
+  // window is, which is the turn's mark on the context chart.
   on('turn.complete', async ($, e, next) => {
     const end = await $.clock.now()
+    const done = await next(e)
+    const isMain = (await read($, turns)).some(one => one.id === e.turnId)
+    const shown = isMain ? await loadMeter($) : null
+    const used = done.usage
     await update($, turns, list =>
-      list.map(one => (one.id === e.turnId ? { ...one, end, reason: e.reason } : one)),
+      list.map(one =>
+        one.id === e.turnId
+          ? {
+              ...one,
+              end,
+              reason: e.reason,
+              ...(shown?.tokens === undefined ? {} : { context: shown.tokens }),
+              ...(used === undefined
+                ? {}
+                : {
+                    usage: {
+                      input: used.input_tokens,
+                      output: used.output_tokens,
+                      cacheRead: used.cache_read_input_tokens,
+                      cacheWrite: used.cache_creation_input_tokens,
+                    },
+                  }),
+            }
+          : one,
+      ),
     )
+    if (shown !== null) {
+      await update($, meter, () => shown)
+    }
 
-    return next(e)
+    return done
   })
 
   // Each subagent gets a lane, keyed by the id its own tool calls carry.
@@ -836,6 +849,39 @@ export const register: Register = on => {
         ),
       )
     }
+    if (what.kind === 'read' || what.kind === 'edit') {
+      const at = act.at ?? 0
+      const isEdit = what.kind === 'edit' && status === 'ok'
+      await update($, touches, list => {
+        const old = list.find(one => one.file === what.label)
+        const touch: Touch = {
+          file: what.label,
+          reads: (old?.reads ?? 0) + (what.kind === 'read' ? 1 : 0),
+          edits: (old?.edits ?? 0) + (isEdit ? 1 : 0),
+          at,
+        }
+
+        return [...list.filter(one => one !== old), touch].slice(-KEPT_TOUCHES)
+      })
+    }
+    if (e.tool === 'Bash' && ran.deny === undefined) {
+      const command = asText(e.command)
+      const found = TEST_COMMAND.test(command) ? parseTests(ran.text ?? '') : undefined
+      if (found !== undefined) {
+        const run: TestRun = {
+          id: e.tool_use_id,
+          at: await $.clock.now(),
+          command: what.detail ?? what.label,
+          ...found,
+          isError: ran.isError === true,
+        }
+        await update($, tests, list => [...list, run].slice(-KEPT_RUNS))
+      }
+      if (status === 'ok' && GIT_MOVE.test(command)) {
+        const rows = await loadCommits($, cwd)
+        await update($, commits, () => rows)
+      }
+    }
     if (status === 'ok' && what.image !== undefined) {
       const made = await freeze($, { path: what.image }, act.id, what.label, 'read')
       if (typeof made !== 'string') {
@@ -913,9 +959,20 @@ export const register: Register = on => {
     const shownDiff = await read($, diff)
     const allLanes = await read($, lanes)
     const allTurns = await read($, turns)
+    const shownMeter = await read($, meter)
+    const runs = await read($, tests)
+    const touched = await read($, touches)
+    const commitRows = await read($, commits)
     const now = await $.clock.now()
+    // Only what this drawing holds can be repainted between drawings.
+    ticker.paints.clear()
+    const Raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : undefined
+    // The views draw a Raster only where the surface has one.
+    const kit = { Box, Text, Button, ...(Raster === undefined ? {} : { Raster }) }
+    const bodyColumns = Math.max(24, Math.min(512, e.props.bodyColumns))
 
-    if (shown === null && allNotes.length === 0 && acts.length === 0 && pics.length === 0 && allTurns.length === 0) {
+    const isEmpty = [allNotes, acts, pics, allTurns, runs, touched, commitRows].every(list => list.length === 0)
+    if (shown === null && isEmpty) {
       return (
         <Box flexDirection="column">
           <Text dimColor>
@@ -1108,10 +1165,10 @@ export const register: Register = on => {
       const { Raster } = $.ui.resolve(e)
       const columns = Math.max(24, Math.min(512, e.props.bodyColumns))
       const chart = gantt(bars, now, columns, ticker.frame)
-      ticker.live = { bars, columns }
-      if (ticker.timer === undefined && bars.some(bar => bar.end === undefined)) {
-        ticker.timer = $.clock.every(FRAME, () => void tick($))
-      }
+      ticker.paints.set('gantt', {
+        draw: (at, frame) => gantt(bars, at, columns, frame),
+        isLive: () => bars.some(bar => bar.end === undefined),
+      })
       const key = legend([
         [COLORS.turn, 'turn'],
         [COLORS.lane, 'subagent'],
@@ -1130,6 +1187,34 @@ export const register: Register = on => {
             <Text dimColor>{duration(now - chart.from)} now</Text>
           </Box>
           <Raster key="gantt-key" columns={key.columns} rows={1} cells={key.cells} />
+        </Box>
+      )
+    }
+
+    // Calls over the last stretch, newest on the right, with how full the
+    // context is: what Claude is doing at a glance.
+    const pulseView = () => {
+      const lastAt = acts.at(-1)?.at
+      const meterLine =
+        shownMeter?.percent === undefined ? '' : ` · context ${shownMeter.percent}%`
+      const usd = shownMeter?.usd === undefined ? '' : ` · $${shownMeter.usd.toFixed(2)}`
+      if (Raster === undefined || lastAt === undefined) {
+        return meterLine === '' ? undefined : <Text dimColor>{meterLine.slice(3) + usd}</Text>
+      }
+      const beats = acts.map(act => ({ at: act.at ?? 0, kind: act.kind, status: act.status }))
+      const span = bodyColumns * BEAT
+      ticker.paints.set('pulse', {
+        draw: at => pulse(beats, at, bodyColumns, BEAT),
+        isLive: at => at - lastAt < span,
+      })
+
+      return (
+        <Box flexDirection="column">
+          <Raster key="pulse" {...pulse(beats, now, bodyColumns, BEAT)} />
+          <Text dimColor>
+            calls · last {Math.round(span / 60_000)}m{meterLine}
+            {usd}
+          </Text>
         </Box>
       )
     }
@@ -1231,6 +1316,40 @@ export const register: Register = on => {
         )
     } else if (tab === 'timeline') {
       body = timelineView()
+    } else if (tab === 'context') {
+      body = contextView(
+        kit,
+        { shown: shownMeter, turns: allTurns, columns: bodyColumns },
+      )
+    } else if (tab === 'tests') {
+      body = testsView(
+        kit,
+        { runs, columns: bodyColumns, now },
+      )
+    } else if (tab === 'files') {
+      body = filesView(
+        kit,
+        {
+          list: touched,
+          columns: bodyColumns,
+          onOpen: file => async () => {
+            const loaded = await loadDiff($, absolute(file, cwd), file)
+            await update($, diff, () => loaded)
+            await update($, tabAtom, () => 'activity')
+          },
+        },
+      )
+    } else if (tab === 'commits') {
+      body = commitsView(
+        kit,
+        {
+          rows: commitRows,
+          onRefresh: async () => {
+            const rows = await loadCommits($, cwd)
+            await update($, commits, () => rows)
+          },
+        },
+      )
     } else if (tab === 'activity' && shownDiff !== null) {
       body = diffView(shownDiff)
     } else if (tab === 'activity') {
@@ -1272,6 +1391,7 @@ export const register: Register = on => {
     } else {
       body = (
         <Box flexDirection="column" gap={1}>
+          {pulseView()}
           {planView()}
           {open.length > 0 && (
             <Box flexDirection="column">
@@ -1304,11 +1424,20 @@ export const register: Register = on => {
 
     const TABS: { id: Tab; label: string; count?: number; hotkey: string }[] = [
       { id: 'now', label: 'Now', hotkey: '1' },
-      { id: 'notes', label: 'Notes', count: current.length, hotkey: '2' },
+      // A note replied to or OK'd is done: it greys out and stops counting.
+      { id: 'notes', label: 'Notes', count: current.filter(note => !note.isReplied && note.isOk !== true).length, hotkey: '2' },
       { id: 'pictures', label: 'Pictures', count: pics.length, hotkey: '3' },
       { id: 'activity', label: 'Activity', count: acts.length, hotkey: '4' },
       { id: 'timeline', label: 'Timeline', count: allTurns.length, hotkey: '5' },
+      { id: 'context', label: 'Context', hotkey: '6' },
+      { id: 'tests', label: 'Tests', count: runs.length, hotkey: '7' },
+      { id: 'files', label: 'Files', count: touched.length, hotkey: '8' },
+      { id: 'commits', label: 'Commits', count: commitRows.filter(row => row.sha !== undefined).length, hotkey: '9' },
     ]
+
+    if (ticker.timer === undefined && [...ticker.paints.values()].some(paint => paint.isLive(now))) {
+      ticker.timer = $.clock.every(FRAME, () => void tick($))
+    }
 
     return (
       <Box flexDirection="column" gap={1}>

@@ -18,7 +18,16 @@ export type Note = {
   isOk?: boolean
 }
 
-export type Tab = 'now' | 'notes' | 'pictures' | 'activity' | 'timeline'
+export type Tab =
+  | 'now'
+  | 'notes'
+  | 'pictures'
+  | 'activity'
+  | 'timeline'
+  | 'context'
+  | 'tests'
+  | 'files'
+  | 'commits'
 
 export type ActKind = 'read' | 'edit' | 'run' | 'search' | 'web' | 'agent' | 'tool'
 export type ActStatus = 'runs' | 'ok' | 'failed'
@@ -48,6 +57,49 @@ export type Turn = {
   reason?: 'answer' | 'aborted' | 'refusal' | 'error'
   calls: number
   failed: number
+  /** Tokens in the context window when it ended. */
+  context?: number
+  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
+}
+
+/** The context window and spend as the session last reported them. */
+export type Meter = {
+  tokens?: number
+  window: number
+  percent?: number
+  usd?: number
+  /** The autocompact buffer: compaction comes at window minus this. */
+  buffer?: number
+  categories: { name: string; tokens: number }[]
+  limits: { kind: string; percentUsed: number }[]
+  at: number
+}
+
+/** One test run read from a test command's output. */
+export type TestRun = {
+  id: string
+  at: number
+  command: string
+  passed: number
+  failed: number
+  /** The command itself failed. */
+  isError: boolean
+  /** Each test the output named, where it names them. */
+  names: { name: string; ok: boolean }[]
+}
+
+/** How often a file was read and edited. */
+export type Touch = { file: string; reads: number; edits: number; at: number }
+
+/** A row of `git log --graph`: a commit, or a line of the graph alone. */
+export type CommitRow = {
+  graph: string
+  sha?: string
+  subject?: string
+  when?: string
+  refs?: string
+  added?: number
+  removed?: number
 }
 
 /** A changed file's diff, as git gave it when the person pressed the file. */
@@ -96,6 +148,10 @@ declare module 'claude-code' {
       diff: Shaped<Diff | null>
       lanes: Shaped<Lane[]>
       turns: Shaped<Turn[]>
+      meter: Shaped<Meter | null>
+      tests: Shaped<TestRun[]>
+      touches: Shaped<Touch[]>
+      commits: Shaped<CommitRow[]>
       picked: string | null
       tab: Tab
       showEarlier: boolean

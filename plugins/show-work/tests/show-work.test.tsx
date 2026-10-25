@@ -18,7 +18,13 @@ const PANE = {
 const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 
 // Nothing sits beneath the plugin: each hook here stands for the engine.
-function engine(on: On, { isTicking = true } = {}) {
+function engine(
+  on: On,
+  {
+    isTicking = true,
+    bash,
+  }: { isTicking?: boolean; bash?: (command: string) => { text: string; isError?: boolean } | undefined } = {},
+) {
   const filled: string[] = []
   let now = 0
   if (isTicking) {
@@ -34,11 +40,18 @@ function engine(on: On, { isTicking = true } = {}) {
     return { isFilled: true }
   })
   on('prompt.submit', (_, e) => ({ text: e.text }))
-  on('tool.call', (_, e) =>
-    e.tool === 'Bash' && String(e.command).startsWith('false')
+  on('tool.call', (_, e) => {
+    const said = e.tool === 'Bash' ? bash?.(String(e.command)) : undefined
+    if (said !== undefined) {
+      return said.isError === true
+        ? { isError: true, result: said.text, text: said.text }
+        : { result: {}, text: said.text }
+    }
+
+    return e.tool === 'Bash' && String(e.command).startsWith('false')
       ? { isError: true, result: 'exit 1', text: 'exit 1' }
-      : { result: {} },
-  )
+      : { result: {} }
+  })
 
   return filled
 }
@@ -146,6 +159,7 @@ test('pressing another note opens it to its why, detail and actions', async ($, 
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-notes' })
+  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes 2')
   expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeUndefined()
 
   const decision = await ui.find({ type: 'Button', text: /CanvasLayer/ })
@@ -161,12 +175,15 @@ test('pressing another note opens it to its why, detail and actions', async ($, 
   expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeUndefined()
   await $.prompt.submit({ text: `${filled[0]}use a Control.` })
   expect((await ui.find({ type: 'Button', text: /CanvasLayer/ }))?.text).toMatch(/↩ replied$/)
+  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes 1')
 
   // Got it marks the finding read without a reply.
   const finding = await ui.find({ type: 'Button', text: /user:\/\// })
   await ui.press({ key: finding?.key ?? '' })
   await ui.press({ key: `ok-${finding?.key}` })
   expect((await ui.find({ type: 'Button', text: /user:\/\// }))?.text).toMatch(/✓ ok$/)
+  // Every note is done, so the tab shows no count.
+  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes')
   expect(filled).toHaveLength(1)
   await ui.unmount()
 })
@@ -512,7 +529,21 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
   await ui.unmount()
 })
 
-import { base64, divider, duration, gantt, glyphs, legend } from '../hooks/register'
+import { divider, duration } from '../hooks/register'
+import {
+  area,
+  base64,
+  flaky,
+  gantt,
+  gauge,
+  glyphs,
+  legend,
+  parseLog,
+  parseTests,
+  pulse,
+  scoreboard,
+  treemap,
+} from '../hooks/charts'
 
 const decode = (cells: string, columns: number, rows: number) => {
   const bin = atob(cells)
@@ -609,7 +640,7 @@ test('a running bar grows between redraws, repainted by blit, and stops when don
   const blits: { cells: string; columns: number; rows: number }[] = []
   on('ui.blit', (_, e) => {
     if ('cells' in e && e.cells !== undefined) {
-      blits.push({ cells: e.cells, columns: e.columns, rows: e.rows })
+      blits.push({ cells: e.cells, columns: e.columns ?? 0, rows: e.rows ?? 0 })
     }
 
     return { value: {} }
@@ -648,4 +679,240 @@ test('labels a Raster cannot draw turn to ?, and a narrow pane still fits', () =
   const { lines } = decode(chart.cells, chart.columns, chart.rows)
   expect(lines[0]?.slice(0, 9)).toBe('↳ ship ? ')
   expect(gantt([], 1_000, 40)).toMatchObject({ rows: 0, cells: '' })
+})
+
+test('test output from five runners is read for counts and names', () => {
+  expect(parseTests('(pass) adds [1ms]\n(fail) subtracts [2ms]\n\n 1 pass\n 1 fail\n')).toEqual({
+    passed: 1,
+    failed: 1,
+    names: [
+      { name: 'adds', ok: true },
+      { name: 'subtracts', ok: false },
+    ],
+  })
+  expect(parseTests(' ✓ renders (5 ms)\n ✕ clicks\nTests: 1 failed, 1 passed, 2 total')).toMatchObject({
+    passed: 1,
+    failed: 1,
+    names: [{ name: 'renders', ok: true }, { name: 'clicks', ok: false }],
+  })
+  expect(parseTests('tests/a.py::test_x PASSED  [ 50%]\n=== 1 passed in 0.1s ===')?.names).toEqual([
+    { name: 'tests/a.py::test_x', ok: true },
+  ])
+  expect(parseTests('test a::b ... ok\ntest result: ok. 1 passed; 0 failed')).toMatchObject({ passed: 1, failed: 0 })
+  expect(parseTests('--- FAIL: TestJump (0.00s)')).toMatchObject({ passed: 0, failed: 1 })
+  expect(parseTests('compiled fine')).toBeUndefined()
+})
+
+const run = (id: string, names: [string, boolean][], extra = {}) => ({
+  id,
+  at: 0,
+  command: 'bun test',
+  passed: names.filter(([, ok]) => ok).length,
+  failed: names.filter(([, ok]) => !ok).length,
+  isError: false,
+  names: names.map(([name, ok]) => ({ name, ok })),
+  ...extra,
+})
+
+test('the scoreboard puts failing tests first and flags flips as flaky', () => {
+  const runs = [
+    run('r1', [['jump', true], ['dash', true]]),
+    run('r2', [['jump', false], ['dash', true]]),
+    run('r3', [['jump', true], ['dash', false]]),
+  ]
+  expect([...flaky(runs)]).toEqual(['jump'])
+  const board = scoreboard(runs, 40, 10)
+  expect(board.names).toEqual(['dash', 'jump'])
+  const { lines, words } = decode(board.cells, board.columns, board.rows)
+  expect(lines).toEqual(['runs           █ █ █ ', 'dash           ▆ ▆ ▆ ', 'jump           ▆ ▆ ▆ '])
+  const fg = (row: number, col: number) => words[(row * board.columns + col) * 3 + 1]
+  expect([fg(0, 15), fg(0, 17), fg(0, 19)]).toEqual([0x6cc070, 0xe06c75, 0xe06c75])
+  expect([fg(1, 15), fg(1, 19)]).toEqual([0x6cc070, 0xe06c75])
+  expect(fg(2, 0)).toBe(0xe0a040)
+})
+
+test('the pulse stacks calls into buckets, newest on the right', () => {
+  const beats = [
+    { at: 9_500, kind: 'read', status: 'ok' },
+    { at: 9_800, kind: 'edit', status: 'ok' },
+    { at: 5_000, kind: 'run', status: 'failed' },
+  ]
+  const strip = pulse(beats, 10_000, 6, 1000)
+  const { lines, words } = decode(strip.cells, 6, 1)
+  // Two calls in the last second, one five seconds back; four fill a cell.
+  expect(lines[0]).toBe('▂▁▁▁▁▄')
+  expect(words[5 * 3 + 1]).toBe(0xe0a040)
+  expect(words[0 * 3 + 1]).toBe(0xe06c75)
+})
+
+test('the gauge fills by fraction, colors by level and marks compaction', () => {
+  const { lines, words } = decode(gauge(0.6, 10, 0.8).cells, 10, 1)
+  expect(lines[0]).toBe('██████░░┃░')
+  expect(words[1]).toBe(0xe0a040)
+})
+
+test('the area chart rises in eighths and draws the compaction line', () => {
+  const chart = area([0.25, 0.5, 1], 9, 4, 0.75)
+  expect(decode(chart.cells, 9, 4).lines).toEqual([
+    '──────██─',
+    '      ██ ',
+    '   ██ ██ ',
+    '██ ██ ██ ',
+  ])
+})
+
+test('the treemap covers the box and labels the tiles that fit', () => {
+  const map = treemap(
+    [
+      { label: 'player.gd', weight: 6, color: 0xb4532f },
+      { label: 'menu.gd', weight: 3, color: 0x2f5f80 },
+      { label: 'x', weight: 1, color: 0x2f5f80 },
+    ],
+    30,
+    6,
+  )
+  expect(map.placed.map(one => one.tile.label)).toEqual(['player.gd', 'menu.gd', 'x'])
+  const biggest = map.placed[0]!
+  expect(biggest.width * biggest.height).toBeGreaterThan(80)
+  const { lines, words } = decode(map.cells, 30, 6)
+  expect(lines[biggest.row]?.slice(biggest.col, biggest.col + 9)).toBe('player.gd')
+  expect(words[(biggest.row * 30 + biggest.col) * 3 + 2]).toBe(0xb4532f)
+})
+
+test('git log --graph reads into commits with stats and forks', () => {
+  const out = [
+    '* \x1e3d4035d\x1fadd timeline\x1f2 hours ago\x1fHEAD -> work',
+    '|  2 files changed, 418 insertions(+), 4 deletions(-)',
+    '| * \x1eabc1234\x1fside fix\x1f3 hours ago\x1f',
+    '|/  ',
+    '|  1 file changed, 1 deletion(-)',
+    '* \x1e0f88d45\x1freadme\x1f4 hours ago\x1f',
+  ].join('\n')
+  expect(parseLog(out)).toEqual([
+    { graph: '*', sha: '3d4035d', subject: 'add timeline', when: '2 hours ago', refs: 'HEAD -> work', added: 418, removed: 4 },
+    { graph: '| *', sha: 'abc1234', subject: 'side fix', when: '3 hours ago', added: 0, removed: 1 },
+    { graph: '|/' },
+    { graph: '*', sha: '0f88d45', subject: 'readme', when: '4 hours ago' },
+  ])
+})
+
+const USAGE = {
+  startedAt: 0,
+  context: {
+    tokens: 120_000,
+    window: 200_000,
+    percent: 60,
+    breakdown: {
+      categories: [
+        { name: 'System prompt', tokens: 20_000, color: 'promptBorder', isDeferred: false, kind: 'used' },
+        { name: 'Messages', tokens: 100_000, color: 'permission', isDeferred: false, kind: 'used' },
+        { name: 'Free space', tokens: 47_000, color: 'inactive', isDeferred: false, kind: 'free' },
+        { name: 'Autocompact buffer', tokens: 33_000, color: 'inactive', isDeferred: false, kind: 'buffer' },
+      ],
+    },
+  },
+  rateLimits: [{ kind: 'five_hour', percentUsed: 23 }],
+  cost: { usd: 4.2 },
+}
+
+test('the Context tab shows the gauge, what fills it and each turn', async ($, on) => {
+  engine(on)
+  on('session.usage', () => ({ value: USAGE }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({
+    text: '',
+    usage: { model: 'm', input_tokens: 12_300, output_tokens: 1_200, cache_read_input_tokens: 98_000, cache_creation_input_tokens: 3_100 },
+  }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'go', turnId: 'turn-a' } as never)
+  await $.turn.complete({ turnId: 'turn-a', reason: 'answer', answer: '', durationMs: 0, isAborted: false } as never)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-context' })
+  expect((await ui.find({ type: 'Text', text: /compacts at/ }))?.text).toBe(
+    'Context 60% 120k / 200k · compacts at 167k · $4.20 so far',
+  )
+  expect(await ui.find({ type: 'Raster', key: 'ctx-gauge' })).toBeDefined()
+  expect(await ui.find({ type: 'Raster', key: 'ctx-area' })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^turn 1:/ }))?.text).toBe(
+    'turn 1: 12.3k in · 1.2k out · 98.0k cache read · 3.1k cache write',
+  )
+  expect((await ui.find({ type: 'Text', text: /^limits/ }))?.text).toBe('limits: five hour 23%')
+  await ui.press({ key: 'tab-now' })
+  expect((await ui.find({ type: 'Text', text: /context 60%/ }))?.text).toMatch(/context 60% · \$4\.20$/)
+  await ui.unmount()
+
+  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await desk.press({ key: 'tab-context' })
+  expect((await desk.find({ type: 'Text', text: /^Messages/ }))?.text).toBe('Messages 100k')
+  await desk.unmount()
+})
+
+const BUN_OUT = (jump: boolean) =>
+  `(pass) dash [1ms]\n(${jump ? 'pass' : 'fail'}) jump [2ms]\n\n ${jump ? 2 : 1} pass\n ${jump ? 0 : 1} fail\n`
+
+test('test commands land on the Tests tab as runs', async ($, on) => {
+  let jump = true
+  engine(on, {
+    bash: command =>
+      command.startsWith('bun test') ? { text: BUN_OUT(jump), isError: !jump } : undefined,
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Bash', command: 'bun test', description: 'Run the suite' })
+  jump = false
+  await $.tool.call({ tool: 'Bash', command: 'bun test', description: 'Run the suite' })
+  await $.tool.call({ tool: 'Bash', command: 'ls', description: 'List' })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'tab-tests' })
+    expect((await ui.find({ type: 'Text', text: /pass · \d fail/ }))?.text).toMatch(/^✗ 1 pass · 1 fail bun test · \d+s ago$/)
+    expect((await ui.find({ type: 'Raster', key: 'tests-board' })) !== undefined).toBe(surface === 'terminal')
+    expect(await ui.find({ type: 'Text', text: /^✓\s+2 pass/ })).toBeDefined()
+    await ui.press({ key: 'tab-now' })
+    await ui.unmount()
+  }
+})
+
+test('files read and edited draw as tiles; pressing one opens its diff', async ($, on) => {
+  engine(on)
+  on('process.run', () => ({
+    value: { exitCode: 0, stdout: '@@ -1 +1 @@\n-a\n+b\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Read', file_path: '/proj/player.gd' })
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/player.gd', old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'Read', file_path: '/proj/menu.gd' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-files' })
+  expect(await ui.find({ type: 'Raster', key: 'files-map' })).toBeDefined()
+  expect((await ui.find({ type: 'Button', text: /player\.gd/ }))?.text).toBe('± player.gd 1 read · 1 edit')
+  await ui.press({ key: 'touch-player.gd' })
+  expect((await ui.find({ type: 'Text', text: '+b' }))?.props.color).toBe('success')
+  await ui.unmount()
+})
+
+test("the Commits tab draws this session's graph and refreshes after a commit", async ($, on) => {
+  let log = '* \x1e1111111\x1ffirst\x1f1 minute ago\x1fHEAD -> work\n|  1 file changed, 2 insertions(+)\n'
+  const asked: string[][] = []
+  engine(on)
+  on('session.usage', () => ({ value: { ...USAGE, startedAt: 1_700_000_000_000 } }))
+  on('process.run', (_, e) => {
+    asked.push([...e.argv])
+    const stdout = e.argv.includes('rev-list') ? 'basesha\n' : log
+
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  expect(asked[0]).toEqual(['git', '-C', '/proj', 'rev-list', '-1', '--before=@1700000000', 'HEAD'])
+  expect(asked[1]?.at(-1)).toBe('^basesha')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-commits' })
+  expect((await ui.find({ type: 'Text', text: /1111111/ }))?.text).toBe('● 1111111 first (HEAD -> work) +2 −0 1 minute ago')
+  log = '* \x1e2222222\x1fsecond\x1fnow\x1fHEAD -> work\n' + log.replace('HEAD -> work', '')
+  await $.tool.call({ tool: 'Bash', command: 'git commit -m second', description: 'Commit' })
+  expect((await ui.find({ type: 'Text', text: /^This session's commits/ }))?.text).toBe("This session's commits 2")
+  await ui.unmount()
 })
