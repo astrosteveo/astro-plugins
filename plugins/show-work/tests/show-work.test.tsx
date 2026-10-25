@@ -509,3 +509,83 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
   expect((await ui.find({ type: 'Text', text: /Find menu scene/ }))?.text).toMatch(/^✓/)
   await ui.unmount()
 })
+
+import { base64, divider, duration, gantt } from '../hooks/register'
+
+const decode = (cells: string, columns: number, rows: number) => {
+  const bin = atob(cells)
+  const bytes = Uint8Array.from(bin, ch => ch.charCodeAt(0))
+  const words = new Uint32Array(bytes.buffer)
+  const lines: string[] = []
+  for (let row = 0; row < rows; row++) {
+    let line = ''
+    for (let col = 0; col < columns; col++) {
+      line += String.fromCharCode(words[(row * columns + col) * 3] ?? 0)
+    }
+    lines.push(line)
+  }
+
+  return { lines, words }
+}
+
+test('base64 matches the standard padded form', () => {
+  const enc = (text: string) => base64(Uint8Array.from(text, ch => ch.charCodeAt(0)))
+  expect([enc(''), enc('f'), enc('fo'), enc('foo'), enc('foob')]).toEqual(['', 'Zg==', 'Zm8=', 'Zm9v', 'Zm9vYg=='])
+})
+
+test('durations and turn dividers read plainly', () => {
+  expect([duration(38_000), duration(252_000), duration(60_000)]).toEqual(['38s', '4m12s', '1m00s'])
+  const turn = { id: 't', n: 4, start: 0, end: 38_000, calls: 12, failed: 1 }
+  expect(divider(turn, 4, 99_000)).toBe('── turn 4 · 38s · 12 calls · 1 failed ──')
+  expect(divider({ ...turn, end: undefined, failed: 0 }, 4, 5_000)).toBe('── turn 4 · 5s… · 12 calls ──')
+})
+
+test('the gantt lays bars across time with half-cell ends', () => {
+  const columns = 35 // a 14-column label, a gap, 20 columns of bars
+  const chart = gantt(
+    [
+      { label: 'turn 1', start: 0, end: 10_000, color: 0xd97757, isSub: false },
+      { label: 'Find menu', start: 5_000, end: 7_500, color: 0x5fa8d3, isSub: true },
+      { label: 'turn 2', start: 15_000, color: 0xf0a070, isSub: false },
+    ],
+    20_000,
+    columns,
+  )
+  const { lines, words } = decode(chart.cells, columns, chart.rows)
+  // 20s over 20 columns: a column is a second, a half column half of one.
+  expect(lines).toEqual([
+    'turn 1         ██████████  ·     · ',
+    '↳ Find menu    ·    ██▌    ·     · ',
+    'turn 2         ·     ·     ·  █████',
+  ])
+  // A bar's cells carry its color; a label's do not.
+  expect(words[(0 * columns + 15) * 3 + 1]).toBe(0xd97757)
+})
+
+test('turns draw dividers in Activity and bars on the Timeline', async ($, on) => {
+  engine(on)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'fix it', turnId: 'turn-a' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/a.gd' })
+  await $.tool.call({ tool: 'Bash', command: 'false' })
+  await $.turn.complete({ turnId: 'turn-a', reason: 'answer', answer: '', durationMs: 0, isAborted: false } as never)
+  await $.turn.start({ text: 'again', turnId: 'turn-b' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/b.gd' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-activity' })
+  expect((await ui.find({ type: 'Text', text: /── turn 1/ }))?.text).toMatch(/^── turn 1 · \ds · 2 calls · 1 failed ──$/)
+  expect((await ui.find({ type: 'Text', text: /── turn 2/ }))?.text).toMatch(/^── turn 2 · \ds… · 1 call ──$/)
+  await ui.press({ key: 'tab-timeline' })
+  expect((await ui.find({ type: 'Text', text: /turns ·/ }))?.text).toMatch(/^2 turns · 1 running/)
+  const raster = await ui.find({ type: 'Raster' })
+  expect(raster?.props.rows).toBe(2)
+  await ui.unmount()
+
+  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await desk.press({ key: 'tab-timeline' })
+  expect((await desk.find({ type: 'Text', text: /^turn 2/ }))?.text).toMatch(/…$/)
+  await desk.unmount()
+})

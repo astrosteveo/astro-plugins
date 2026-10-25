@@ -14,6 +14,7 @@ import type {
   Step,
   StepStatus,
   Tab,
+  Turn,
 } from '../types'
 
 const PANE = 'show-work'
@@ -44,6 +45,9 @@ const diff = atom({ plugin: 'show-work', key: 'diff' } as const, null, {
 const lanes = atom({ plugin: 'show-work', key: 'lanes' } as const, [], {
   shape: 'lanes-1',
 })
+const turns = atom({ plugin: 'show-work', key: 'turns' } as const, [], {
+  shape: 'turns-1',
+})
 // The picture the pane shows; null shows the newest.
 const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
 const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
@@ -53,6 +57,15 @@ const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
 const KEPT_PICTURES = 30
 const KEPT_LANES = 20
+const KEPT_TURNS = 50
+// How many turns the timeline draws, newest last.
+const GANTT_TURNS = 8
+const COLORS = {
+  turn: 0xd97757,
+  live: 0xf0a070,
+  lane: 0x5fa8d3,
+  failed: 0xe06c75,
+}
 const DIFF_LINES = 300
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 
@@ -312,6 +325,99 @@ export function describe(
   }
 }
 
+export function duration(ms: number) {
+  const s = Math.max(0, Math.round(ms / 1000))
+
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
+}
+
+// The line between two turns in the activity log.
+export function divider(turn: Turn | undefined, n: number, now: number) {
+  if (turn === undefined) {
+    return `── turn ${n} ──`
+  }
+  const took = turn.end === undefined ? `${duration(now - turn.start)}…` : duration(turn.end - turn.start)
+  const calls = `${turn.calls} ${turn.calls === 1 ? 'call' : 'calls'}`
+  const failed = turn.failed > 0 ? ` · ${turn.failed} failed` : ''
+
+  return `── turn ${n} · ${took} · ${calls}${failed} ──`
+}
+
+export type Bar = {
+  label: string
+  start: number
+  end?: number
+  color: number
+  /** Drawn from its start alone, as a tick: a bar too short to see. */
+  isSub: boolean
+}
+
+const DEFAULT = 0x01000000
+const GRID = 0x3a3a3a
+const LABEL = 14
+// Half-cell glyphs: a bar's ends land on half a column.
+const LEFT = 0x258c
+const RIGHT = 0x2590
+const FULL = 0x2588
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+// Padded base64; the module has neither btoa nor Buffer.
+export function base64(bytes: Uint8Array) {
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const n = ((bytes[i] ?? 0) << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0)
+    out += B64[(n >> 18) & 63]! + B64[(n >> 12) & 63]!
+    out += i + 1 < bytes.length ? B64[(n >> 6) & 63]! : '='
+    out += i + 2 < bytes.length ? B64[n & 63]! : '='
+  }
+
+  return out
+}
+
+// A Gantt chart as Raster cells: one row per bar, labels on the left, time
+// running left to right from the earliest start to now, with a faint grid.
+export function gantt(bars: Bar[], now: number, columns: number) {
+  const width = Math.max(4, columns - LABEL - 1)
+  const from = Math.min(now - 1000, ...bars.map(bar => bar.start))
+  const span = Math.max(1, now - from)
+  const words = new Uint32Array(columns * bars.length * 3)
+  const put = (row: number, col: number, glyph: number, fg: number) => {
+    const at = (row * columns + col) * 3
+    words[at] = glyph
+    words[at + 1] = fg
+    words[at + 2] = DEFAULT
+  }
+
+  bars.forEach((bar, row) => {
+    for (let col = 0; col < columns; col++) {
+      put(row, col, 0x20, DEFAULT)
+    }
+    const label = (bar.isSub ? '↳ ' + bar.label : bar.label).slice(0, LABEL)
+    ;[...label].forEach((ch, col) => put(row, col, ch.charCodeAt(0), bar.isSub ? 0x8a8a8a : 0xd0d0d0))
+    for (let col = 0; col < width; col += 6) {
+      put(row, LABEL + 1 + col, 0x00b7, GRID)
+    }
+
+    // Half columns: a bar covers [a, b) and never less than one half.
+    const halves = width * 2
+    const a = Math.floor(((bar.start - from) / span) * halves)
+    const b = Math.max(a + 1, Math.ceil((((bar.end ?? now) - from) / span) * halves))
+    for (let half = Math.max(0, a); half < Math.min(halves, b); half += 1) {
+      const col = Math.floor(half / 2)
+      const hasLeft = col * 2 >= a && col * 2 < b
+      const hasRight = col * 2 + 1 >= a && col * 2 + 1 < b
+      put(row, LABEL + 1 + col, hasLeft && hasRight ? FULL : hasLeft ? LEFT : RIGHT, bar.color)
+    }
+  })
+
+  return {
+    rows: bars.length,
+    cells: base64(new Uint8Array(words.buffer)),
+    from,
+  }
+}
+
 // The color of a diff line by its first character.
 export function diffColor(line: string): Color | undefined {
   if (line.startsWith('+++') || line.startsWith('---')) {
@@ -464,6 +570,7 @@ export const register: Register = on => {
       await update($, picked, () => null)
       await update($, diff, () => null)
       await update($, lanes, () => [])
+      await update($, turns, () => [])
 
       return { text: 'Show work cleared.' }
     }
@@ -555,6 +662,30 @@ export const register: Register = on => {
     return ran
   })
 
+  // Each main-loop turn is a row of the timeline and a divider in the log.
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const start = await $.clock.now()
+      await update($, turns, list =>
+        [
+          ...list,
+          { id: e.turnId, n: (list.at(-1)?.n ?? 0) + 1, start, calls: 0, failed: 0 },
+        ].slice(-KEPT_TURNS),
+      )
+    }
+
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const end = await $.clock.now()
+    await update($, turns, list =>
+      list.map(one => (one.id === e.turnId ? { ...one, end, reason: e.reason } : one)),
+    )
+
+    return next(e)
+  })
+
   // Each subagent gets a lane, keyed by the id its own tool calls carry.
   on('agent.spawn', async ($, e, next) => {
     const spawned = await next(e)
@@ -592,9 +723,10 @@ export const register: Register = on => {
   })
 
   on('classic.SubagentStop', async ($, e, next) => {
+    const now = await $.clock.now()
     await update($, lanes, list =>
       list.map(one =>
-        one.id === e.agent_id && one.status === 'runs' ? { ...one, status: 'ok' as const } : one,
+        one.id === e.agent_id && one.status === 'runs' ? { ...one, status: 'ok' as const, end: now } : one,
       ),
     )
 
@@ -616,8 +748,11 @@ export const register: Register = on => {
       )
     }
 
+    const turn = (await read($, turns)).at(-1)
     const act: Act = {
       id: e.tool_use_id,
+      ...(turn === undefined ? {} : { turn: turn.n }),
+      at: await $.clock.now(),
       kind: what.kind,
       label: what.label,
       ...(what.detail === undefined ? {} : { detail: what.detail }),
@@ -631,6 +766,15 @@ export const register: Register = on => {
     await update($, activity, list =>
       list.map(one => (one.id === act.id ? { ...one, status } : one)),
     )
+    if (turn !== undefined && e.agentId === undefined) {
+      await update($, turns, list =>
+        list.map(one =>
+          one.id === turn.id
+            ? { ...one, calls: one.calls + 1, failed: one.failed + (status === 'failed' ? 1 : 0) }
+            : one,
+        ),
+      )
+    }
     if (status === 'ok' && what.image !== undefined) {
       const made = await freeze($, { path: what.image }, act.id, what.label, 'read')
       if (typeof made !== 'string') {
@@ -707,6 +851,8 @@ export const register: Register = on => {
     const openId = await read($, openNote)
     const shownDiff = await read($, diff)
     const allLanes = await read($, lanes)
+    const allTurns = await read($, turns)
+    const now = await $.clock.now()
 
     if (shown === null && allNotes.length === 0 && acts.length === 0 && pics.length === 0) {
       return (
@@ -853,6 +999,74 @@ export const register: Register = on => {
       </Box>
     )
 
+    // The last few turns, each followed by the subagents that started in it.
+    const timelineView = () => {
+      const shownTurns = allTurns.slice(-GANTT_TURNS)
+      const first = shownTurns[0]?.start
+      if (first === undefined) {
+        return <Text dimColor>No turns yet. Each prompt you send draws a bar here.</Text>
+      }
+      const bars: Bar[] = []
+      for (const turn of shownTurns) {
+        const isBad = turn.reason === 'error' || turn.reason === 'aborted' || turn.failed > 0
+        bars.push({
+          label: `turn ${turn.n}`,
+          start: turn.start,
+          ...(turn.end === undefined ? {} : { end: turn.end }),
+          color: isBad ? COLORS.failed : turn.end === undefined ? COLORS.live : COLORS.turn,
+          isSub: false,
+        })
+        const next = allTurns.find(one => one.n === turn.n + 1)?.start ?? Infinity
+        for (const lane of allLanes.filter(one => one.at >= turn.start && one.at < next)) {
+          bars.push({
+            label: lane.label,
+            start: lane.at,
+            ...(lane.end === undefined ? {} : { end: lane.end }),
+            color: lane.status === 'failed' ? COLORS.failed : COLORS.lane,
+            isSub: true,
+          })
+        }
+      }
+      const running = shownTurns.filter(one => one.end === undefined).length +
+        allLanes.filter(one => one.status === 'runs').length
+
+      if (e.surface !== 'terminal') {
+        return (
+          <Box flexDirection="column">
+            {bars.map(bar => (
+              <Text dimColor={bar.isSub}>
+                {bar.isSub ? '↳ ' : ''}
+                {bar.label} · {duration((bar.end ?? now) - bar.start)}
+                {bar.end === undefined ? '…' : ''}
+              </Text>
+            ))}
+          </Box>
+        )
+      }
+
+      const { Raster } = $.ui.resolve(e)
+      const columns = Math.max(24, Math.min(512, e.props.bodyColumns))
+      const chart = gantt(bars, now, columns)
+
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>
+            {shownTurns.length} turns · {running} running · each · is{' '}
+            {duration(((now - chart.from) / Math.max(1, columns - 15)) * 6)}
+          </Text>
+          <Raster key="gantt" columns={columns} rows={chart.rows} cells={chart.cells} />
+          <Box flexDirection="row" justifyContent="space-between">
+            <Text dimColor>{''.padEnd(15)}0s</Text>
+            <Text dimColor>{duration(now - chart.from)} now</Text>
+          </Box>
+          <Text dimColor>
+            <Text color="claude">█</Text> turn  <Text color="suggestion">█</Text> subagent{'  '}
+            <Text color="error">█</Text> failed
+          </Text>
+        </Box>
+      )
+    }
+
     const planView = () => {
       if (shown === null) {
         return <Text dimColor>No plan posted yet.</Text>
@@ -948,6 +1162,8 @@ export const register: Register = on => {
                 ))}
           </Box>
         )
+    } else if (tab === 'timeline') {
+      body = timelineView()
     } else if (tab === 'activity' && shownDiff !== null) {
       body = diffView(shownDiff)
     } else if (tab === 'activity') {
@@ -970,7 +1186,20 @@ export const register: Register = on => {
             {files.length} files changed
             {failed > 0 ? `, ${failed} failed` : ''}
           </Text>
-          {acts.slice(-40).map(actRow)}
+          {acts.slice(-40).flatMap((act, i, list) =>
+            act.turn !== undefined && act.turn !== list[i - 1]?.turn
+              ? [
+                  <Text key={`turn-${act.turn}-${act.id}`} color="claude" dimColor wrap="truncate-end">
+                    {divider(
+                      allTurns.find(one => one.n === act.turn),
+                      act.turn,
+                      now,
+                    )}
+                  </Text>,
+                  actRow(act),
+                ]
+              : [actRow(act)],
+          )}
         </Box>
       )
     } else {
@@ -1011,6 +1240,7 @@ export const register: Register = on => {
       { id: 'notes', label: 'Notes', count: current.length, hotkey: '2' },
       { id: 'pictures', label: 'Pictures', count: pics.length, hotkey: '3' },
       { id: 'activity', label: 'Activity', count: acts.length, hotkey: '4' },
+      { id: 'timeline', label: 'Timeline', count: allTurns.length, hotkey: '5' },
     ]
 
     return (

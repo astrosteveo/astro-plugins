@@ -18,7 +18,7 @@ export type Note = {
   isOk?: boolean
 }
 
-export type Tab = 'now' | 'notes' | 'pictures' | 'activity'
+export type Tab = 'now' | 'notes' | 'pictures' | 'activity' | 'timeline'
 
 export type ActKind = 'read' | 'edit' | 'run' | 'search' | 'web' | 'agent' | 'tool'
 export type ActStatus = 'runs' | 'ok' | 'failed'
@@ -32,6 +32,22 @@ export type Act = {
   isSubagent: boolean
   /** Calls folded into this row: repeated reads or edits of one file. */
   count?: number
+  /** The main-loop turn it ran in, by number. */
+  turn?: number
+  /** When it started. */
+  at?: number
+}
+
+/** A turn of the main loop: from the prompt to the answer. */
+export type Turn = {
+  id: string
+  /** Its number in the session, from 1. */
+  n: number
+  start: number
+  end?: number
+  reason?: 'answer' | 'aborted' | 'refusal' | 'error'
+  calls: number
+  failed: number
 }
 
 /** A changed file's diff, as git gave it when the person pressed the file. */
@@ -50,6 +66,8 @@ export type Lane = {
   /** Its latest call, as the activity log words it. */
   last?: string
   at: number
+  /** When it stopped. */
+  end?: number
 }
 
 /** An image frozen as a PNG in the cache, as it was when shown or read. */
@@ -77,6 +95,7 @@ declare module 'claude-code' {
       pictures: Shaped<Picture[]>
       diff: Shaped<Diff | null>
       lanes: Shaped<Lane[]>
+      turns: Shaped<Turn[]>
       picked: string | null
       tab: Tab
       showEarlier: boolean
