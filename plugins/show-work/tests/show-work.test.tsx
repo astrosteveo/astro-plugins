@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { across, blowUp, errorLines, fromHex, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { briefShow, cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
+import { briefNote, briefPlan, briefShow,cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -707,7 +707,28 @@ test('a brief show input keeps paths and URLs, and lists a sheet by its labels',
   expect(briefShow(undefined)).toEqual({})
 })
 
-test('pressing a tile of a sheet starts the prompt with the pick', async ($, on) => {
+test('a brief plan input counts its steps, and a brief note input sizes its reasons', () => {
+  expect(
+    briefPlan({
+      goal: 'Ship it',
+      steps: [
+        { text: 'Build', status: 'done' },
+        { text: 'Film the scene', status: 'doing' },
+        { text: 'Review', status: 'todo' },
+      ],
+    }),
+  ).toEqual({ goal: 'Ship it', steps: '1/3 done, doing: Film the scene' })
+  expect(briefPlan({ goal: 'x', steps: [{ text: 'a', status: 'done' }] })).toEqual({ goal: 'x', steps: '1/1 done' })
+  expect(briefPlan(undefined)).toEqual({ goal: undefined, steps: '0/0 done' })
+  expect(briefNote({ kind: 'decision', text: 'Use X.', why: 'Because.', detail: 'Longer.' })).toEqual({
+    kind: 'decision',
+    text: 'Use X.',
+    why: '8 characters',
+    detail: '7 characters',
+  })
+})
+
+test('pressing a tile of a sheet starts the prompt with the pick',async ($, on) => {
   const filled = engine(on)
   host(on, { answer: argv => (argv[0] === 'od' ? { stdout: PNG_HEAD } : undefined) })
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })

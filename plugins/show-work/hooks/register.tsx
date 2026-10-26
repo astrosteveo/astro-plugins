@@ -478,6 +478,31 @@ export function briefShow(input: unknown) {
   return brief
 }
 
+// A plan call's input as its row prints it: the goal, then the steps by
+// their count and status, where the engine would print every step.
+export function briefPlan(input: unknown) {
+  const given = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
+  const steps = (Array.isArray(given.steps) ? given.steps : []) as Array<Record<string, unknown> | null>
+  const done = steps.filter(step => step?.status === 'done').length
+  const doing = steps.find(step => step?.status === 'doing')
+  const progress = `${done}/${steps.length} done`
+  const now = asText(doing?.text)
+
+  return { goal: given.goal, steps: now === '' ? progress : `${progress}, doing: ${now}` }
+}
+
+// A note call's input as its row prints it: the kind and the sentence, with
+// the longer reasons by their size; the pane and ctrl+o hold them whole.
+export function briefNote(input: unknown) {
+  const given = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
+  const brief: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(given)) {
+    brief[key] = (key === 'why' || key === 'detail') && typeof value === 'string' ? `${value.length} characters` : value
+  }
+
+  return brief
+}
+
 // Rows a picture takes at a width, a terminal cell being `tall` times as
 // tall as it is wide: about twice, or as the terminal says (cellShape).
 export function rowsFor(picture: Pick<Picture, 'width' | 'height'>, columns: number, most: number, tall = 2) {
@@ -1868,11 +1893,17 @@ export const register: Register = on => {
     )
   })
 
-  // A show call's row names its source in a few words, where the engine would
-  // print the whole source; ctrl+o still shows all of it.
-  on('ui.render', { component: 'ToolUse', props: { tool: 'mcp__show-work__show' } }, async (_, e, next) =>
-    e.props.isExpanded === true ? next(e) : next({ ...e, props: { ...e.props, input: briefShow(e.props.input) } }),
-  )
+  // A call's row to this plugin's tools sums its input up in a few words,
+  // where the engine would print all of it; ctrl+o still shows all of it.
+  for (const [tool, brief] of [
+    ['mcp__show-work__show', briefShow],
+    ['mcp__show-work__plan', briefPlan],
+    ['mcp__show-work__note', briefNote],
+  ] as const) {
+    on('ui.render', { component: 'ToolUse', props: { tool } }, async (_, e, next) =>
+      e.props.isExpanded === true ? next(e) : next({ ...e, props: { ...e.props, input: brief(e.props.input) } }),
+    )
+  }
 
   // A shown picture draws in the chat, under its tool row.
   on(
