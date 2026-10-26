@@ -16,6 +16,11 @@
       "name": "inline-thinking",
       "source": "./plugins/inline-thinking",
       "description": "Draws Claude's thinking in the chat, above the reply or tool call it led to, in place of the folded \"Thought for 4s\"."
+    },
+    {
+      "name": "gates",
+      "source": "./plugins/gates",
+      "description": "Gates that refuse risky Bash commands (pkill, kill by pattern, git add -A, git commit -a) and tell Claude why and what to run instead."
     }
   ]
 }

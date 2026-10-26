@@ -1,0 +1,9 @@
+{
+  "name": "gates",
+  "version": "0.1.0",
+  "description": "Gates that refuse risky Bash commands (pkill, kill by pattern, git add -A, git commit -a) and tell Claude why and what to run instead.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT"
+}
