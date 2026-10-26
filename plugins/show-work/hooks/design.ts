@@ -177,3 +177,116 @@ export function errorLines(stderr: string) {
     .map(line => (line.length > 200 ? `${line.slice(0, 199)}…` : line))
     .join('\n')
 }
+
+// A picture fetched from the web: http or https only, redirects followed,
+// at most 20 MB in 30 seconds, under a name that says who asks.
+export function curlArgs(url: string, to: string) {
+  return [
+    'curl',
+    '-fsSL',
+    '--proto',
+    '=http,https',
+    '--max-filesize',
+    String(20 * 1024 * 1024),
+    '--max-time',
+    '30',
+    '-A',
+    'show-work (Claude Code plugin)',
+    '-o',
+    to,
+    url,
+  ]
+}
+
+export type Format = 'png' | 'jpeg' | 'gif' | 'webp' | 'bmp' | 'svg'
+
+// The format a file's first bytes say it is, so ImageMagick reads a fetched
+// file with that one coder and no other; undefined for anything else.
+export function sniff(head: string): Format | undefined {
+  if (head.startsWith('\x89PNG')) {
+    return 'png'
+  }
+  if (head.startsWith('\xff\xd8\xff')) {
+    return 'jpeg'
+  }
+  if (head.startsWith('GIF8')) {
+    return 'gif'
+  }
+  if (head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP') {
+    return 'webp'
+  }
+  if (head.startsWith('BM')) {
+    return 'bmp'
+  }
+  const text = head.replace(/^\xef\xbb\xbf/, '').trimStart()
+
+  return text.startsWith('<') && /<svg\b/i.test(text) ? 'svg' : undefined
+}
+
+// `od -An -tx1` output back to the bytes it shows, one char per byte.
+export function fromHex(dump: string) {
+  return (dump.match(/[0-9a-f]{2}/gi) ?? []).map(pair => String.fromCharCode(parseInt(pair, 16))).join('')
+}
+
+// The name a picture goes by: its file's name, or a URL's last part.
+export function nameOf(src: string) {
+  if (/^https?:\/\//i.test(src)) {
+    try {
+      const url = new URL(src)
+      const last = url.pathname.slice(url.pathname.lastIndexOf('/') + 1)
+
+      return decodeURIComponent(last) || url.host
+    } catch {
+      return src
+    }
+  }
+
+  return src.slice(src.lastIndexOf('/') + 1)
+}
+
+// The most pictures a sheet holds, and the longest side of each on it.
+export const SHEET_MOST = 9
+export const TILE = 480
+
+// How many pictures a sheet sets across: one row up to three, then rows of
+// two or three.
+export function across(count: number) {
+  return count <= 3 ? count : count === 4 ? 2 : 3
+}
+
+// The factor that brings a small picture, such as a sprite, up to half a
+// tile with whole pixels; 1 for a picture already that big.
+export function blowUp(width: number, height: number) {
+  const longest = Math.max(width, height)
+
+  return longest > 0 && longest < TILE / 2 ? Math.floor(TILE / 2 / longest) : 1
+}
+
+// A label as ImageMagick takes it literally: % starts an escape, and a
+// leading @ names a file to read.
+export function literal(label: string) {
+  return label.replaceAll('%', '%%').replace(/^@/, '\\@')
+}
+
+// Pictures side by side on the theme's paper, each over its label.
+export function sheetArgs(isLight: boolean, tiles: { file: string; label: string }[], to: string, font?: string) {
+  return [
+    'magick',
+    'montage',
+    ...tiles.flatMap(tile => ['-label', literal(tile.label), tile.file]),
+    '-tile',
+    `${across(tiles.length)}x`,
+    '-geometry',
+    `${TILE}x${TILE}>+16+16`,
+    '-background',
+    isLight ? PAPER.light : PAPER.dark,
+    '-fill',
+    isLight ? '#1f2328' : '#e8e8e6',
+    ...(font === undefined ? [] : ['-font', font]),
+    '-pointsize',
+    '20',
+    '-depth',
+    '8',
+    to,
+  ]
+}

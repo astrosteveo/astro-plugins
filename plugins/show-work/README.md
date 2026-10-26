@@ -29,7 +29,13 @@ Claude can also draw a design in the chat itself with the `show` tool, so you ca
 - **html** for a UI mockup (a screen, menu, dialog or HUD), laid out by headless Chrome or Chromium. A wireframe kit gives it classes for layout (`row`, `col`, `grid`, `grow`), parts (`box`, `window`, `btn`, `input`, `slider`, `tabs`, `list`, `img` placeholders), annotations (`note`, numbered `mark`) and game screens (`stage` or `screen`, children pinned by anchor: `tl` … `br`). The page fits its content, or takes the width and height Claude gives.
 - **svg** for a freeform drawing, and **path** for an image that exists.
 
-Each picture follows Claude Code's light or dark theme. A design Claude wrote comes back to it in the tool's result as the picture you see, so it can fix overlaps or cut text before you look; a source that won't parse comes back with the renderer's words. The picture appears under the tool's row, in a terminal that draws images (kitty, Ghostty, iTerm2); other surfaces show its caption and path. Pictures are kept as PNGs in `~/.cache/show-work` (the newest 30), converted with `rsvg-convert` and ImageMagick's `magick`.
+`show` shows you images too:
+
+- **path**: an image on disk (PNG, JPEG, GIF, WebP, BMP or SVG).
+- **url**: an image on the web, such as reference art, an asset or a screenshot in some docs. curl fetches it (http or https only, 20 MB in 30 seconds at most). ImageMagick then reads it only with the coder its first bytes name, so a hostile file can't reach ImageMagick's riskier coders. A web page is refused with a hint to give the image's own address.
+- **images**: two to nine paths or URLs side by side on one sheet, each numbered over its label (its file name if Claude gives none), for you to compare and pick from. ImageMagick's `montage` lays the sheet out, and a sprite under 240 pixels is blown up with whole pixels so it stays crisp.
+
+Each picture follows Claude Code's light or dark theme. A design Claude wrote, an image from the web and a sheet each come back to Claude in the tool's result as the picture you see, so it can fix overlaps or cut text, or catch the wrong picture, before you look; a source that won't parse comes back with the renderer's words. The picture appears under the tool's row, in a terminal that draws images (kitty, Ghostty, iTerm2); other surfaces show its caption and path. Pictures are kept as PNGs in `~/.cache/show-work` (the newest 30), converted with `rsvg-convert` and ImageMagick's `magick`.
 
 A ```mermaid block in Claude's reply draws as the diagram itself, in place, in such a terminal: its code shows while it renders and again, under mermaid's error, if it will not. Diagrams render once with mermaid-cli's `mmdc` (`npm i -g @mermaid-js/mermaid-cli`) in Claude Code's light or dark theme and are cached in `~/.cache/show-work` (the newest 40). Other surfaces draw the block as Claude Code does.
 

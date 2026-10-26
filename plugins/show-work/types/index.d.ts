@@ -202,6 +202,8 @@ declare module 'claude-code' {
       height?: number
       svg?: string
       path?: string
+      url?: string
+      images?: { src: string; label?: string }[]
     }
   }
   interface PluginState {

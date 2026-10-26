@@ -39,14 +39,21 @@ import { parseGit, parseHits, parseStatus, plain } from './explorer'
 import {
   FIND_BROWSER,
   LONGEST,
+  SHEET_MOST,
+  blowUp,
   browserArgs,
+  curlArgs,
   d2Args,
   dotArgs,
   errorLines,
   frame,
+  fromHex,
   measured,
   mermaidArgs,
+  nameOf,
   page,
+  sheetArgs,
+  sniff,
   svgSize,
 } from './design'
 import type { Drawn } from './design'
@@ -186,6 +193,7 @@ The person watches a "Show work" pane beside the chat. Keep it current so they c
 - Give each Bash call a description that says why you run it, not only what it does: the pane shows it as the reason above the command.
 - Notes are how you keep the person in the loop without stopping. Once the goal is clear, keep working until it is met; stop only for a question that blocks the work or a snag that needs their direction.
 - To show the person a design, call mcp__show-work__show and describe its structure; the tool lays it out. Use d2 for architecture, mermaid for flows, sequences and states, and html with the wireframe classes for a screen, menu or HUD; svg only for a freeform drawing. Show a design before you build it, so they can veto it. The result hands you the picture: fix overlaps and cut or crowded text, and show it again before you go on. Images you Read land in the pane by themselves.
+- To show the person an image, call mcp__show-work__show with a path, a url for one on the web (reference art, an asset, a screenshot in docs), or images to set several side by side for them to compare and pick from.
 - One short sentence per note, written to stand alone. The person presses a question to answer it, and opens any other note to read its "why" and "detail", then vetoes, corrects or asks more, or presses OK. So put in "detail" what they need to judge the note: what you saw and where, what it means, what you would do.
 - Notes do not replace your reply: still say what matters in chat, briefly.`
 
@@ -254,7 +262,9 @@ const SHOW_TOOL = {
   game screens: stage (a 16:9 view, --aspect to change) or screen (fills the picture), each child placed by an anchor class: tl tc tr ml mc mr bl bc br;
   colors: var(--paper --panel --ink --muted --line --fill --accent --good --bad).
 - svg: a freeform drawing; give it a background rect and a width of 800 or more.
-- path: an image file that already exists.`,
+- path: an image file that already exists.
+- url: an image on the web: the image's own address, not the page it sits on. The result hands you what came back, so check it is the picture you meant.
+- images: several images (paths or URLs) side by side on one sheet, numbered and labeled, to compare options.`,
   isDeferred: false,
   inputSchema: {
     type: 'object',
@@ -268,6 +278,20 @@ const SHOW_TOOL = {
       height: { type: 'number', description: 'html: the page height; leave it out to fit the content.' },
       svg: { type: 'string', description: 'SVG source.' },
       path: { type: 'string', description: 'An image file (PNG, JPEG, GIF, WebP, BMP or SVG), absolute or relative to the working directory.' },
+      url: { type: 'string', description: 'An image on the web (http or https): PNG, JPEG, GIF, WebP, BMP or SVG.' },
+      images: {
+        type: 'array',
+        description: `2 to ${SHEET_MOST} images to set side by side.`,
+        maxItems: SHEET_MOST,
+        items: {
+          type: 'object',
+          properties: {
+            src: { type: 'string', description: 'A path or an http(s) URL.' },
+            label: { type: 'string', description: 'A few words under it; its file name if left out.' },
+          },
+          required: ['src'],
+        },
+      },
     },
     required: ['caption'],
   },
@@ -350,8 +374,6 @@ export function isCurrent(note: Note, since: number | undefined) {
 export function absolute(path: string, cwd: string) {
   return path.startsWith('/') || cwd === '' ? path : `${cwd}/${path}`
 }
-
-const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1)
 
 // Rows a picture takes at a width, a terminal cell being about twice as tall
 // as it is wide.
@@ -496,7 +518,10 @@ async function loadDiff($: EngineInterface, path: string, label: string): Promis
   }
 }
 
-type Source = { path: string } | Drawn
+// An image at a path or a URL; several of them on one sheet; or a design.
+type Source = { src: string } | { sheet: { src: string; label?: string }[] } | Drawn
+
+const WEB = /^https?:\/\//i
 
 const cacheDir = async ($: EngineInterface) =>
   `${(await $.env.get('XDG_CACHE_HOME')) || `${await $.env.get('HOME')}/.cache`}/show-work`
@@ -595,6 +620,94 @@ async function render($: EngineInterface, source: Drawn, dir: string, id: string
   return shoot($, found, `${at}.html`, file, source.width, source.height)
 }
 
+// Fetches an image from the web into `${at}.web` and names its format from
+// its first bytes. Answers why when it can't.
+async function fetchImage($: EngineInterface, url: string, at: string) {
+  const file = `${at}.web`
+  const ran = await $.process.run(curlArgs(url, file), { timeoutMs: 40_000 }).catch((error: unknown) => String(error))
+  if (typeof ran === 'string') {
+    return /time|still running/i.test(ran) ? `Fetching ${url} took too long.` : 'curl would not start: is it installed?'
+  }
+  if (ran.exitCode !== 0) {
+    const said = firstLine(plain(ran.stderr)).replace(/^curl: \(\d+\)\s*/, '')
+
+    return `Could not fetch ${url}: ${said || `curl exited ${ran.exitCode}`}.`
+  }
+  const head = await $.process.run(['od', '-An', '-tx1', '-N512', file])
+  const bytes = fromHex(head.stdout)
+  const format = sniff(bytes)
+  if (format === undefined) {
+    await $.process.run(['rm', '-f', file])
+
+    return /<(!doctype )?html/i.test(bytes)
+      ? `${url} is a web page: give the address of the image itself.`
+      : `${url} is not a PNG, JPEG, GIF, WebP, BMP or SVG image.`
+  }
+
+  return { file, format }
+}
+
+// Converts the image at a path or URL into a PNG at `to`. Answers why when
+// it can't.
+async function bring($: EngineInterface, src: string, at: string, to: string) {
+  let argv: string[]
+  let fetched: string | undefined
+  if (WEB.test(src)) {
+    const got = await fetchImage($, src, at)
+    if (typeof got === 'string') {
+      return got
+    }
+    fetched = got.file
+    argv = got.format === 'svg' ? ['rsvg-convert', '-o', to, got.file] : ['magick', `${got.format}:${got.file}[0]`, to]
+  } else {
+    if (!(await $.fs.exists(src))) {
+      return `No image at ${src}.`
+    }
+    argv = /\.svg$/i.test(src) ? ['rsvg-convert', '-o', to, src] : /\.png$/i.test(src) ? ['cp', src, to] : ['magick', `${src}[0]`, to]
+  }
+  const made = await $.process.run(argv)
+  if (fetched !== undefined) {
+    await $.process.run(['rm', '-f', fetched])
+  }
+
+  return made.exitCode === 0 ? undefined : `Could not read the image: ${firstLine(made.stderr) || argv[0]}`
+}
+
+// The font a sheet's labels are set in: the system's sans; none leaves
+// ImageMagick's own.
+async function findFont($: EngineInterface) {
+  const found = await $.process.run(['fc-match', '-f', '%{file}', 'sans-serif:weight=medium']).catch(() => undefined)
+
+  return found?.exitCode === 0 ? firstLine(found.stdout) || undefined : undefined
+}
+
+// Sets several images side by side on one sheet at `to`, each numbered over
+// its label; a small one, such as a sprite, is blown up with whole pixels.
+// Answers why when it can't.
+async function sheet($: EngineInterface, items: { src: string; label?: string }[], at: string, to: string) {
+  const tiles: { file: string; label: string }[] = []
+  try {
+    for (const [n, item] of items.entries()) {
+      const file = `${at}-${n + 1}.png`
+      tiles.push({ file, label: `${n + 1}  ${item.label || nameOf(item.src)}` })
+      const why = await bring($, item.src, `${at}-${n + 1}`, file)
+      if (why !== undefined) {
+        return `Picture ${n + 1}: ${why}`
+      }
+      const size = await $.process.run(['magick', 'identify', '-format', '%w %h', file])
+      const [width = 0, height = 0] = size.stdout.split(' ').map(Number)
+      const factor = blowUp(width, height)
+      if (factor > 1) {
+        await $.process.run(['magick', file, '-filter', 'point', '-resize', `${factor * 100}%`, file])
+      }
+    }
+
+    return await draw($, sheetArgs(await isLightTheme($), tiles, to, await findFont($)))
+  } finally {
+    await $.process.run(['rm', '-f', ...tiles.map(tile => tile.file)])
+  }
+}
+
 // Copies or converts an image into the cache as a PNG, so a later write to
 // the same file leaves this picture as it was; a design is laid out into
 // one. Answers why when it can't.
@@ -609,21 +722,18 @@ async function freeze(
   const file = `${dir}/${id}.png`
   await $.process.run(['mkdir', '-p', dir])
 
-  if ('path' in source) {
-    if (source.path.startsWith(`${dir}/`)) {
+  if ('src' in source) {
+    if (source.src.startsWith(`${dir}/`)) {
       return 'That picture is already shown.'
     }
-    if (!(await $.fs.exists(source.path))) {
-      return `No image at ${source.path}.`
+    const why = await bring($, source.src, `${dir}/${id}`, file)
+    if (why !== undefined) {
+      return why
     }
-    const argv = /\.svg$/i.test(source.path)
-      ? ['rsvg-convert', '-o', file, source.path]
-      : /\.png$/i.test(source.path)
-        ? ['cp', source.path, file]
-        : ['magick', `${source.path}[0]`, file]
-    const made = await $.process.run(argv)
-    if (made.exitCode !== 0) {
-      return `Could not read the image: ${firstLine(made.stderr) || argv[0]}`
+  } else if ('sheet' in source) {
+    const why = await sheet($, source.sheet, `${dir}/${id}`, file)
+    if (why !== undefined) {
+      return why
     }
   } else {
     const why = await render($, source, dir, id, file)
@@ -1114,12 +1224,36 @@ export const register: Register = on => {
             : asText(e.svg)
               ? { svg: asText(e.svg) }
               : undefined
-    if (path === '' && drawn === undefined) {
-      return { deny: 'Give a source to draw (d2, mermaid, dot, html or svg) or the path of an image.' }
+    const url = asText(e.url)
+    const items = (Array.isArray(e.images) ? e.images : []).flatMap(item => {
+      const src = asText(item?.src)
+      const label = asText(item?.label)
+
+      return src === '' ? [] : [{ src: WEB.test(src) ? src : absolute(src, cwd), ...(label === '' ? {} : { label }) }]
+    })
+    if (items.length > SHEET_MOST) {
+      return { deny: `A sheet holds at most ${SHEET_MOST} images.` }
+    }
+    if (url !== '' && !WEB.test(url)) {
+      return { deny: 'Give url an http or https address; a file goes in path.' }
+    }
+    const source: Source | undefined =
+      drawn ??
+      (items.length > 1
+        ? { sheet: items }
+        : items.length === 1
+          ? { src: items[0]?.src ?? '' }
+          : url !== ''
+            ? { src: url }
+            : path !== ''
+              ? { src: absolute(path, cwd) }
+              : undefined)
+    if (source === undefined) {
+      return { deny: 'Give a source to draw (d2, mermaid, dot, html or svg), or an image: path, url or images.' }
     }
 
-    const source: Source = drawn ?? { path: absolute(path, cwd) }
-    const caption = asText(e.caption) || basename(path) || 'design'
+    const named = 'src' in source ? nameOf(source.src) : ''
+    const caption = asText(e.caption) || named || 'design'
     const id = e.tool_use_id ?? crypto.randomUUID()
     const made = await freeze($, source, id, caption, 'shown')
     if (typeof made === 'string') {
@@ -1127,18 +1261,17 @@ export const register: Register = on => {
     }
     await keep($, made)
     const said = `Shown in the chat and the pane: ${caption} (${made.width}x${made.height}).`
-    if (drawn === undefined) {
+    // A file on disk Claude can Read; anything else comes back as the
+    // picture the person sees.
+    if ('src' in source && !WEB.test(source.src)) {
       return { result: said }
     }
+    const check =
+      drawn === undefined
+        ? 'This is what the person sees: check it is the picture you meant.'
+        : 'This is what the person sees: fix overlaps and cut or crowded text, and show it again, before you go on.'
 
-    // A design Claude wrote comes back as the picture the person sees, so
-    // Claude can check its layout.
-    return {
-      result: [
-        { type: 'text', text: `${said} This is what the person sees: fix overlaps and cut or crowded text, and show it again, before you go on.` },
-        await lookAt($, made),
-      ],
-    }
+    return { result: [{ type: 'text', text: `${said} ${check}` }, await lookAt($, made)] }
   })
 
   // A TodoWrite list is a plan too: mirror it while no plan tool call wrote one.
@@ -1338,7 +1471,7 @@ export const register: Register = on => {
       }
     }
     if (status === 'ok' && what.image !== undefined) {
-      const made = await freeze($, { path: what.image }, act.id, what.label, 'read')
+      const made = await freeze($, { src: what.image }, act.id, what.label, 'read')
       if (typeof made !== 'string') {
         await keep($, made)
       }

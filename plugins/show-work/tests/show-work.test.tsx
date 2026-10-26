@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { errorLines, measured, page, svgSize } from '../hooks/design'
+import { across, blowUp, errorLines, fromHex, literal, measured, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
 import { fit } from '../hooks/register'
 
@@ -541,9 +541,150 @@ test('show refuses a missing image and an empty call', async ($, on) => {
   })
   expect(missing.deny).toBe('No image at /proj/missing.png.')
   const empty = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'x' })
-  expect(empty.deny).toBe('Give a source to draw (d2, mermaid, dot, html or svg) or the path of an image.')
+  expect(empty.deny).toBe('Give a source to draw (d2, mermaid, dot, html or svg), or an image: path, url or images.')
   const file = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'Menu', path: '/proj/menu.png' })
   expect(file.result).toBe('Shown in the chat and the pane: Menu (1600x900).')
+})
+
+// The first bytes `od` prints for a PNG and for a web page.
+const PNG_HEAD = ' 89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52\n'
+const HTML_HEAD = ' 3c 21 64 6f 63 74 79 70 65 20 68 74 6d 6c 3e 0a\n'
+
+test('an image from the web is fetched, read by the coder its bytes name, and handed back to Claude', async ($, on) => {
+  engine(on)
+  const { ran } = host(on, { answer: argv => (argv[0] === 'od' ? { stdout: PNG_HEAD } : undefined) })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const shown = await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_w',
+    caption: 'Godot logo',
+    url: 'https://example.com/art/logo.png?v=2',
+  })
+  const curl = ran.find(argv => argv[0] === 'curl') ?? []
+  expect(curl).toContain('=http,https')
+  expect(curl.slice(-3)).toEqual(['-o', '/home/u/.cache/show-work/toolu_w.web', 'https://example.com/art/logo.png?v=2'])
+  expect(ran).toContainEqual([
+    'magick',
+    'png:/home/u/.cache/show-work/toolu_w.web[0]',
+    '/home/u/.cache/show-work/toolu_w.png',
+  ])
+  expect(ran).toContainEqual(['rm', '-f', '/home/u/.cache/show-work/toolu_w.web'])
+  expect(shown.result).toEqual([
+    { type: 'text', text: 'Shown in the chat and the pane: Godot logo (1600x900). This is what the person sees: check it is the picture you meant.' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: ONE_PIXEL } },
+  ])
+
+  const chat = await $.ui.mount({ ...RESULT('toolu_w'), surface: 'terminal' })
+  expect((await chat.find({ type: 'Image' }))?.props).toMatchObject({ alt: 'Godot logo' })
+  await chat.unmount()
+})
+
+test('show refuses a web page, a failed fetch and a url that is no web address', async ($, on) => {
+  engine(on)
+  host(on, {
+    answer: argv =>
+      argv[0] === 'od'
+        ? { stdout: HTML_HEAD }
+        : argv[0] === 'curl' && argv.at(-1)?.includes('gone')
+          ? { exitCode: 22, stderr: 'curl: (22) The requested URL returned error: 404\n' }
+          : undefined,
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const page = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'x', url: 'https://example.com/wiki/Logo' })
+  expect(page.deny).toBe('https://example.com/wiki/Logo is a web page: give the address of the image itself.')
+  const gone = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'x', url: 'https://example.com/gone.png' })
+  expect(gone.deny).toBe('Could not fetch https://example.com/gone.png: The requested URL returned error: 404.')
+  const file = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'x', url: 'file:///etc/passwd' })
+  expect(file.deny).toBe('Give url an http or https address; a file goes in path.')
+})
+
+test('several images are set side by side on one sheet, numbered and labeled, a sprite blown up', async ($, on) => {
+  engine(on)
+  const { ran } = host(on, {
+    theme: 'light',
+    answer: argv =>
+      argv[0] === 'od'
+        ? { stdout: PNG_HEAD }
+        : argv[0] === 'fc-match'
+          ? { stdout: '/usr/share/fonts/noto/NotoSans-Medium.ttf' }
+          : argv[1] === 'identify' && argv.at(-1)?.endsWith('-2.png')
+            ? { stdout: '32 16' }
+            : undefined,
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const shown = await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_s',
+    caption: 'Two hero styles',
+    images: [
+      { src: 'art/hero-painted.jpg', label: 'Painted' },
+      { src: 'https://example.com/sprites/hero.png' },
+    ],
+  })
+  expect(ran).toContainEqual(['magick', '/proj/art/hero-painted.jpg[0]', '/home/u/.cache/show-work/toolu_s-1.png'])
+  expect(ran).toContainEqual([
+    'magick',
+    'png:/home/u/.cache/show-work/toolu_s-2.web[0]',
+    '/home/u/.cache/show-work/toolu_s-2.png',
+  ])
+  expect(ran).toContainEqual([
+    'magick',
+    '/home/u/.cache/show-work/toolu_s-2.png',
+    '-filter',
+    'point',
+    '-resize',
+    '700%',
+    '/home/u/.cache/show-work/toolu_s-2.png',
+  ])
+  expect(ran).toContainEqual(
+    sheetArgs(
+      true,
+      [
+        { file: '/home/u/.cache/show-work/toolu_s-1.png', label: '1  Painted' },
+        { file: '/home/u/.cache/show-work/toolu_s-2.png', label: '2  hero.png' },
+      ],
+      '/home/u/.cache/show-work/toolu_s.png',
+      '/usr/share/fonts/noto/NotoSans-Medium.ttf',
+    ),
+  )
+  expect(ran).toContainEqual(['rm', '-f', '/home/u/.cache/show-work/toolu_s-1.png', '/home/u/.cache/show-work/toolu_s-2.png'])
+  expect(Array.isArray(shown.result) && shown.result[1]).toMatchObject({ type: 'image' })
+})
+
+test('a sheet names the picture it could not read', async ($, on) => {
+  engine(on)
+  host(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const shown = await $.tool.call({
+    tool: 'mcp__show-work__show',
+    caption: 'x',
+    images: [{ src: '/proj/a.png' }, { src: '/proj/missing.png' }],
+  })
+  expect(shown.deny).toBe('Picture 2: No image at /proj/missing.png.')
+  const many = await $.tool.call({
+    tool: 'mcp__show-work__show',
+    caption: 'x',
+    images: Array.from({ length: 10 }, (_, n) => ({ src: `/proj/${n}.png` })),
+  })
+  expect(many.deny).toBe('A sheet holds at most 9 images.')
+})
+
+test('the image helpers name formats, files and layouts plainly', () => {
+  expect(sniff(fromHex(PNG_HEAD))).toBe('png')
+  expect(sniff('\xff\xd8\xff\xe0')).toBe('jpeg')
+  expect(sniff('GIF89a')).toBe('gif')
+  expect(sniff('RIFF\x00\x00\x00\x00WEBPVP8 ')).toBe('webp')
+  expect(sniff('BM6')).toBe('bmp')
+  expect(sniff('\xef\xbb\xbf<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg">')).toBe('svg')
+  expect(sniff(fromHex(HTML_HEAD))).toBeUndefined()
+  expect(sniff('push graphic-context')).toBeUndefined()
+  expect(nameOf('https://upload.wikimedia.org/a/b/Godot%20icon.svg?x=1')).toBe('Godot icon.svg')
+  expect(nameOf('https://example.com/')).toBe('example.com')
+  expect(nameOf('/proj/art/hero.png')).toBe('hero.png')
+  expect([1, 2, 3, 4, 5, 6, 7, 9].map(across)).toEqual([1, 2, 3, 2, 3, 3, 3, 3])
+  expect(blowUp(32, 16)).toBe(7)
+  expect(blowUp(300, 200)).toBe(1)
+  expect(literal('@secrets 100%')).toBe('\\@secrets 100%%')
 })
 
 test('the design helpers read sizes and errors plainly', () => {
