@@ -1,9 +1,9 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { across, blowUp, errorLines, fromHex, literal, measured, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
+import { across, blowUp, errorLines, fromHex, literal, markArgs, measured, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { briefShow, fit } from '../hooks/register'
+import { briefShow, fit, pickText, readMarks } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -598,7 +598,7 @@ test('show refuses a web page, a failed fetch and a url that is no web address',
   expect(file.deny).toBe('Give url an http or https address; a file goes in path.')
 })
 
-test('several images are set side by side on one sheet, numbered and labeled, a sprite blown up', async ($, on) => {
+test('several images are set side by side on one sheet, lettered and labeled, a sprite blown up', async ($, on) => {
   engine(on)
   const { ran } = host(on, {
     theme: 'light',
@@ -640,8 +640,8 @@ test('several images are set side by side on one sheet, numbered and labeled, a 
     sheetArgs(
       true,
       [
-        { file: '/home/u/.cache/show-work/toolu_s-1.png', label: '1  Painted' },
-        { file: '/home/u/.cache/show-work/toolu_s-2.png', label: '2  hero.png' },
+        { file: '/home/u/.cache/show-work/toolu_s-1.png', label: 'A  Painted' },
+        { file: '/home/u/.cache/show-work/toolu_s-2.png', label: 'B  hero.png' },
       ],
       '/home/u/.cache/show-work/toolu_s.png',
       '/usr/share/fonts/noto/NotoSans-Medium.ttf',
@@ -705,6 +705,92 @@ test('a brief show input keeps paths and URLs, and lists a sheet by its labels',
     briefShow({ caption: 'Pick', images: [{ src: '/p/a.png', label: 'Painted' }, { src: 'https://e.com/s/hero.png' }] }),
   ).toEqual({ caption: 'Pick', images: 'Painted, hero.png' })
   expect(briefShow(undefined)).toEqual({})
+})
+
+test('pressing a tile of a sheet starts the prompt with the pick', async ($, on) => {
+  const filled = engine(on)
+  host(on, { answer: argv => (argv[0] === 'od' ? { stdout: PNG_HEAD } : undefined) })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_p',
+    caption: 'Hero styles',
+    images: [{ src: '/proj/a.png', label: 'Painted' }, { src: '/proj/pixel.png' }],
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-pictures' })
+  const tile = await ui.find({ type: 'Button', key: 'tile-B' })
+  expect(tile?.text).toBe('B pixel.png')
+  expect(tile?.props).toMatchObject({ hotkey: 'b' })
+  await ui.press({ key: 'tile-B' })
+  expect(filled).toEqual(['I pick B (pixel.png) from "Hero styles". '])
+  await ui.unmount()
+})
+
+test('marks are drawn on a picture and the marked picture comes back to Claude', async ($, on) => {
+  engine(on)
+  const { ran } = host(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const shown = await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_k',
+    caption: 'Where it clips',
+    path: '/proj/shots/level2.png',
+    marks: [
+      { x: 100, y: 200, w: 300, h: 120, note: 'The slope' },
+      { x: 900, y: 40, note: 'Score jumps here' },
+      { x: 5, y: 5, note: ' ' },
+    ],
+  })
+  const drawn = ran.find(argv => argv[0] === 'magick' && argv.includes('-append')) ?? []
+  expect(drawn).toEqual(
+    markArgs(
+      '/home/u/.cache/show-work/toolu_k.png',
+      '/home/u/.cache/show-work/toolu_k.png',
+      [
+        { x: 100, y: 200, w: 300, h: 120, note: 'The slope' },
+        { x: 900, y: 40, note: 'Score jumps here' },
+      ],
+      { width: 1600, height: 900 },
+      false,
+      undefined,
+    ),
+  )
+  expect(shown.result).toEqual([
+    { type: 'text', text: expect.stringMatching(/check each mark sits on what its note names/) },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: ONE_PIXEL } },
+  ])
+  const many = await $.tool.call({
+    tool: 'mcp__show-work__show',
+    caption: 'x',
+    path: '/proj/a.png',
+    marks: Array.from({ length: 13 }, (_, n) => ({ x: n, y: n, note: `m${n}` })),
+  })
+  expect(many.deny).toBe('A picture takes at most 12 marks.')
+  // A picture already shown can be shown again, marked.
+  const again = await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_k2',
+    caption: 'Marked',
+    path: '/home/u/.cache/show-work/toolu_k.png',
+    marks: [{ x: 1, y: 2, note: 'here' }],
+  })
+  expect(again.deny).toBeUndefined()
+  expect(ran).toContainEqual(['cp', '/home/u/.cache/show-work/toolu_k.png', '/home/u/.cache/show-work/toolu_k2.png'])
+})
+
+test('marks read plainly, and badges stay inside the picture', () => {
+  expect(readMarks([{ x: '10', y: 20, w: 0, h: 5, note: 'ring' }, { x: 1, note: 'no y' }, 'junk'])).toEqual([
+    { x: 10, y: 20, note: 'ring' },
+  ])
+  expect(readMarks(undefined)).toEqual([])
+  const argv = markArgs('in.png', 'out.png', [{ x: 0, y: 0, w: 50, h: 50, note: '100% @here' }], { width: 600, height: 300 }, true)
+  // r is 12 for a 600-pixel picture: the badge at the corner moves in by it.
+  expect(argv).toContain('circle 12,12 24,12')
+  expect(argv).toContain('-288-138')
+  expect(argv).toContain('caption:1  100%% @here')
+  expect(briefShow({ caption: 'x', path: 'a.png', marks: [{}, {}] })).toEqual({ caption: 'x', path: 'a.png', marks: '2 marks' })
+  expect(pickText({ caption: 'Heroes', tiles: ['Painted'] }, 0)).toBe('I pick A (Painted) from "Heroes". ')
 })
 
 test('the image helpers name formats, files and layouts plainly', () => {

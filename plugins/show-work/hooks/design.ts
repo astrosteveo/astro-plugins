@@ -290,3 +290,75 @@ export function sheetArgs(isLight: boolean, tiles: { file: string; label: string
     to,
   ]
 }
+
+// A mark on a picture, in its own pixels: a box when it has a width and
+// height, a ring round a spot when it has neither. Its note goes under the
+// picture, after its number.
+export type Mark = { x: number; y: number; w?: number; h?: number; note: string }
+
+// The accent marks are drawn in, as the wireframe kit's.
+const ACCENT = { light: '#d97757', dark: '#e08a6a' }
+
+// An offset from the picture's center, as -annotate takes it under
+// -gravity Center.
+const offset = (dx: number, dy: number) =>
+  `${dx < 0 ? '-' : '+'}${Math.abs(Math.round(dx))}${dy < 0 ? '-' : '+'}${Math.abs(Math.round(dy))}`
+
+// Marks drawn on a picture, each numbered on a badge kept inside the
+// edges, and the notes set under it, wrapped to its width.
+export function markArgs(
+  from: string,
+  to: string,
+  marks: Mark[],
+  size: { width: number; height: number },
+  isLight: boolean,
+  font?: string,
+) {
+  const { width, height } = size
+  const accent = isLight ? ACCENT.light : ACCENT.dark
+  const paper = isLight ? PAPER.light : PAPER.dark
+  const longest = Math.max(width, height)
+  const stroke = Math.max(3, Math.round(longest / 300))
+  const r = Math.max(12, Math.round(longest / 60))
+  const inside = (value: number, most: number) => Math.round(Math.min(Math.max(value, r), most - r))
+  const typeface = font === undefined ? [] : ['-font', font]
+  const drawn = marks.flatMap((mark, n) => {
+    const isBox = (mark.w ?? 0) > 0 && (mark.h ?? 0) > 0
+    const ring = Math.round(r * 1.3)
+    const shape = isBox
+      ? `roundrectangle ${Math.round(mark.x)},${Math.round(mark.y)} ${Math.round(mark.x + (mark.w ?? 0))},${Math.round(mark.y + (mark.h ?? 0))} 8,8`
+      : `circle ${Math.round(mark.x)},${Math.round(mark.y)} ${Math.round(mark.x + ring)},${Math.round(mark.y)}`
+    const cx = inside(isBox ? mark.x : mark.x + ring * 0.7, width)
+    const cy = inside(isBox ? mark.y : mark.y - ring * 0.7, height)
+
+    return [
+      '-fill', 'none', '-stroke', accent, '-strokewidth', String(stroke), '-draw', shape,
+      '-fill', accent, '-stroke', paper, '-strokewidth', '2', '-draw', `circle ${cx},${cy} ${cx + r},${cy}`,
+      '-fill', 'white', '-stroke', 'none', ...typeface, '-pointsize', String(Math.round(r * 1.2)),
+      '-gravity', 'Center', '-annotate', offset(cx - width / 2, cy - height / 2), String(n + 1),
+    ]
+  })
+  const notes = marks.map((mark, n) => `${n + 1}  ${mark.note}`).join('\n')
+  const pad = 16
+
+  return [
+    'magick',
+    from,
+    ...drawn,
+    '(',
+    '-size', `${Math.max(1, width - pad * 2)}x`,
+    '-background', paper,
+    '-fill', isLight ? '#1f2328' : '#e8e8e6',
+    ...typeface,
+    '-pointsize', String(Math.max(18, Math.round(width / 50))),
+    '-gravity', 'NorthWest',
+    `caption:${literal(notes)}`,
+    '-bordercolor', paper,
+    '-border', `${pad}x12`,
+    ')',
+    '-gravity', 'West',
+    '-background', paper,
+    '-append',
+    to,
+  ]
+}

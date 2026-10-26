@@ -48,6 +48,7 @@ import {
   errorLines,
   frame,
   fromHex,
+  markArgs,
   measured,
   mermaidArgs,
   nameOf,
@@ -56,7 +57,7 @@ import {
   sniff,
   svgSize,
 } from './design'
-import type { Drawn } from './design'
+import type { Drawn, Mark } from './design'
 import { diagramColumns, hashOf, splitMermaid } from './mermaid'
 import { contextView, commitsView, explorerView, filesView, gitView, runView, searchView, testsView } from './views'
 
@@ -159,6 +160,8 @@ const COLORS = {
 }
 const DIFF_LINES = 300
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
+// The most marks one picture takes.
+const MARKS_MOST = 12
 
 const STEP_STATUSES: readonly StepStatus[] = ['todo', 'doing', 'done', 'dropped']
 const NOTE_KINDS: readonly NoteKind[] = [
@@ -193,7 +196,7 @@ The person watches a "Show work" pane beside the chat. Keep it current so they c
 - Give each Bash call a description that says why you run it, not only what it does: the pane shows it as the reason above the command.
 - Notes are how you keep the person in the loop without stopping. Once the goal is clear, keep working until it is met; stop only for a question that blocks the work or a snag that needs their direction.
 - To show the person a design, call mcp__show-work__show and describe its structure; the tool lays it out. Use d2 for architecture, mermaid for flows, sequences and states, and html with the wireframe classes for a screen, menu or HUD; svg only for a freeform drawing. Show a design before you build it, so they can veto it. The result hands you the picture: fix overlaps and cut or crowded text, and show it again before you go on. Images you Read land in the pane by themselves.
-- To show the person an image, call mcp__show-work__show with a path, a url for one on the web (reference art, an asset, a screenshot in docs), or images to set several side by side for them to compare and pick from.
+- To show the person an image, call mcp__show-work__show with a path, a url for one on the web (reference art, an asset, a screenshot in docs), or images to set several side by side for them to compare and pick from. Add marks to point at what matters in it: a bug in a screenshot, what changed in a mockup.
 - One short sentence per note, written to stand alone. The person presses a question to answer it, and opens any other note to read its "why" and "detail", then vetoes, corrects or asks more, or presses OK. So put in "detail" what they need to judge the note: what you saw and where, what it means, what you would do.
 - Notes do not replace your reply: still say what matters in chat, briefly.`
 
@@ -264,7 +267,8 @@ const SHOW_TOOL = {
 - svg: a freeform drawing; give it a background rect and a width of 800 or more.
 - path: an image file that already exists.
 - url: an image on the web: the image's own address, not the page it sits on. The result hands you what came back, so check it is the picture you meant.
-- images: several images (paths or URLs) side by side on one sheet, numbered and labeled, to compare options.`,
+- images: several images (paths or URLs) side by side on one sheet, lettered A, B, C… and labeled, to compare options. The person can press a tile's letter in the pane to pick it, which starts their prompt with "I pick B".
+Add marks to any of these to point things out: numbered boxes or rings in the picture's own pixels, with their notes listed under it.`,
   isDeferred: false,
   inputSchema: {
     type: 'object',
@@ -279,6 +283,22 @@ const SHOW_TOOL = {
       svg: { type: 'string', description: 'SVG source.' },
       path: { type: 'string', description: 'An image file (PNG, JPEG, GIF, WebP, BMP or SVG), absolute or relative to the working directory.' },
       url: { type: 'string', description: 'An image on the web (http or https): PNG, JPEG, GIF, WebP, BMP or SVG.' },
+      marks: {
+        type: 'array',
+        description: 'Numbered marks drawn on the picture, in its own pixels, each note listed under it by number.',
+        maxItems: MARKS_MOST,
+        items: {
+          type: 'object',
+          properties: {
+            x: { type: 'number', description: 'Left of the box, or the spot a ring circles.' },
+            y: { type: 'number', description: 'Top of the box, or the spot a ring circles.' },
+            w: { type: 'number', description: 'Box width; leave out for a ring.' },
+            h: { type: 'number', description: 'Box height; leave out for a ring.' },
+            note: { type: 'string', description: 'What the mark points out, in a few words.' },
+          },
+          required: ['x', 'y', 'note'],
+        },
+      },
       images: {
         type: 'array',
         description: `2 to ${SHEET_MOST} images to set side by side.`,
@@ -341,6 +361,14 @@ export function replyPrefix(note: Note) {
   return `About your ${note.kind} "${quote}": `
 }
 
+// A sheet's tiles go by letters, A first: the digits switch the pane's tabs.
+export const letterOf = (n: number) => String.fromCharCode(65 + n)
+
+// What pressing a sheet's tile starts the prompt with.
+export function pickText(picture: Pick<Picture, 'caption' | 'tiles'>, n: number) {
+  return `I pick ${letterOf(n)} (${picture.tiles?.[n] ?? ''}) from "${picture.caption}". `
+}
+
 // A prompt replies to a note when it quotes it and says something after.
 export function isReplyTo(note: Note, text: string) {
   const prefix = replyPrefix(note)
@@ -366,6 +394,25 @@ export function readSteps(value: unknown): Step[] {
   })
 }
 
+// The marks a show call asks for, each with a spot and a note; a box needs
+// both its width and height.
+export function readMarks(value: unknown): Mark[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  return value.flatMap(item => {
+    const note = asText(item?.note)
+    const [x, y, w, h] = [item?.x, item?.y, item?.w, item?.h].map(Number)
+    if (note === '' || !Number.isFinite(x) || !Number.isFinite(y)) {
+      return []
+    }
+    const isBox = Number.isFinite(w) && Number.isFinite(h) && (w ?? 0) > 0 && (h ?? 0) > 0
+
+    return [{ x: x ?? 0, y: y ?? 0, ...(isBox ? { w, h } : {}), note }]
+  })
+}
+
 // Whether a note belongs to the task the plan opened; with no plan, all do.
 export function isCurrent(note: Note, since: number | undefined) {
   return since === undefined || (note.at ?? -1) >= since
@@ -385,6 +432,8 @@ export function briefShow(input: unknown) {
     if (['d2', 'mermaid', 'dot', 'html', 'svg'].includes(key) && typeof value === 'string') {
       const lines = value.trim().split('\n').length
       brief[key] = lines > 1 ? `${lines} lines` : `${value.length} characters`
+    } else if (key === 'marks' && Array.isArray(value)) {
+      brief[key] = `${value.length} ${value.length === 1 ? 'mark' : 'marks'}`
     } else if (key === 'images' && Array.isArray(value)) {
       brief[key] = value.map(item => asText(item?.label) || nameOf(asText(item?.src))).join(', ')
     } else {
@@ -709,14 +758,13 @@ async function sheet($: EngineInterface, items: { src: string; label?: string }[
   try {
     for (const [n, item] of items.entries()) {
       const file = `${at}-${n + 1}.png`
-      tiles.push({ file, label: `${n + 1}  ${item.label || nameOf(item.src)}` })
+      tiles.push({ file, label: `${letterOf(n)}  ${item.label || nameOf(item.src)}` })
       const why = await bring($, item.src, `${at}-${n + 1}`, file)
       if (why !== undefined) {
         return `Picture ${n + 1}: ${why}`
       }
-      const size = await $.process.run(['magick', 'identify', '-format', '%w %h', file])
-      const [width = 0, height = 0] = size.stdout.split(' ').map(Number)
-      const factor = blowUp(width, height)
+      const size = await sizeOf($, file)
+      const factor = blowUp(size?.width ?? 0, size?.height ?? 0)
       if (factor > 1) {
         await $.process.run(['magick', file, '-filter', 'point', '-resize', `${factor * 100}%`, file])
       }
@@ -737,13 +785,16 @@ async function freeze(
   id: string,
   caption: string,
   origin: Picture['origin'],
+  marks: Mark[] = [],
 ): Promise<Picture | string> {
   const dir = await cacheDir($)
   const file = `${dir}/${id}.png`
   await $.process.run(['mkdir', '-p', dir])
 
   if ('src' in source) {
-    if (source.src.startsWith(`${dir}/`)) {
+    // Reading a picture from the cache adds no copy; showing one again, as
+    // to mark it, does.
+    if (origin === 'read' && source.src.startsWith(`${dir}/`)) {
       return 'That picture is already shown.'
     }
     const why = await bring($, source.src, `${dir}/${id}`, file)
@@ -765,13 +816,25 @@ async function freeze(
     }
   }
 
+  let size = await sizeOf($, file)
+  if (marks.length > 0 && size !== undefined) {
+    const why = await draw($, markArgs(file, file, marks, size, await isLightTheme($), await findFont($)))
+    if (why !== undefined) {
+      return `Could not draw the marks: ${why}`
+    }
+    size = await sizeOf($, file)
+  }
+  const tiles = 'sheet' in source ? { tiles: source.sheet.map(item => item.label || nameOf(item.src)) } : {}
+
+  return { id, file, ...(size ?? { width: 16, height: 9 }), caption, origin, ...tiles }
+}
+
+// A picture's size in pixels, as ImageMagick reads it.
+async function sizeOf($: EngineInterface, file: string) {
   const size = await $.process.run(['magick', 'identify', '-format', '%w %h', file])
   const [width = 0, height = 0] = size.stdout.split(' ').map(Number)
-  const isSized = width > 0 && height > 0
 
-  return isSized
-    ? { id, file, width, height, caption, origin }
-    : { id, file, width: 16, height: 9, caption, origin }
+  return width > 0 && height > 0 ? { width, height } : undefined
 }
 
 // The picture as the model reads it: scaled down past the side the API
@@ -1257,6 +1320,10 @@ export const register: Register = on => {
     if (url !== '' && !WEB.test(url)) {
       return { deny: 'Give url an http or https address; a file goes in path.' }
     }
+    const marks = readMarks(e.marks)
+    if (marks.length > MARKS_MOST) {
+      return { deny: `A picture takes at most ${MARKS_MOST} marks.` }
+    }
     const source: Source | undefined =
       drawn ??
       (items.length > 1
@@ -1275,7 +1342,7 @@ export const register: Register = on => {
     const named = 'src' in source ? nameOf(source.src) : ''
     const caption = asText(e.caption) || named || 'design'
     const id = e.tool_use_id ?? crypto.randomUUID()
-    const made = await freeze($, source, id, caption, 'shown')
+    const made = await freeze($, source, id, caption, 'shown', marks)
     if (typeof made === 'string') {
       return { deny: made }
     }
@@ -1283,13 +1350,15 @@ export const register: Register = on => {
     const said = `Shown in the chat and the pane: ${caption} (${made.width}x${made.height}).`
     // A file on disk Claude can Read; anything else comes back as the
     // picture the person sees.
-    if ('src' in source && !WEB.test(source.src)) {
+    if ('src' in source && !WEB.test(source.src) && marks.length === 0) {
       return { result: said }
     }
     const check =
-      drawn === undefined
-        ? 'This is what the person sees: check it is the picture you meant.'
-        : 'This is what the person sees: fix overlaps and cut or crowded text, and show it again, before you go on.'
+      drawn !== undefined
+        ? 'This is what the person sees: fix overlaps and cut or crowded text, and show it again, before you go on.'
+        : marks.length > 0
+          ? 'This is what the person sees: check each mark sits on what its note names, and show it again if one is off.'
+          : 'This is what the person sees: check it is the picture you meant.'
 
     return { result: [{ type: 'text', text: `${said} ${check}` }, await lookAt($, made)] }
   })
@@ -2096,6 +2165,20 @@ export const register: Register = on => {
           <Box flexDirection="column">
             {view ?? <Text dimColor>{picture.file}</Text>}
             <Text italic>{picture.caption}</Text>
+            {picture.tiles !== undefined && (
+              <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+                <Text dimColor>Pick:</Text>
+                {picture.tiles.map((label, n) => (
+                  <Button
+                    key={`tile-${letterOf(n)}`}
+                    hotkey={letterOf(n).toLowerCase()}
+                    onPress={() => $.prompt.fill({ text: pickText(picture, n), mode: 'insert' })}
+                  >
+                    <Text weight="bold">{letterOf(n)}</Text> {label}
+                  </Button>
+                ))}
+              </Box>
+            )}
             {pics.length > 1 &&
               pics
                 .slice(-8)
