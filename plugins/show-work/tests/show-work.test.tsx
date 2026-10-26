@@ -1,7 +1,9 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
+import { errorLines, measured, page, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
+import { fit } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -305,28 +307,62 @@ test('a TodoWrite list shows as the plan', async ($, on) => {
 })
 
 // The host beneath freeze: a cache under HOME, files that exist, and the
-// image tools answering as they would for a 1600x900 picture.
-function host(on: On) {
+// image tools answering as they would for a 1600x900 picture. `answer`
+// stands in for a renderer's own reply.
+function host(
+  on: On,
+  {
+    theme = 'dark',
+    answer,
+  }: {
+    theme?: string
+    answer?: (argv: readonly string[]) => { exitCode?: number; stdout?: string; stderr?: string } | 'absent' | undefined
+  } = {},
+) {
   const ran: string[][] = []
-  const written: string[] = []
+  const written: Record<string, string> = {}
   on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/u' : undefined }))
+  on('config.list', () => ({ value: [{ key: 'theme', value: theme }] as never }))
   on('fs.exists', (_, e) => ({ value: !String(e.path).includes('missing') }))
   on('fs.write', (_, e) => {
-    written.push(e.path)
+    written[e.path] = e.text
 
     return { value: undefined }
   })
+  on('fs.read', (_, e) =>
+    e.path.endsWith('.svg')
+      ? { value: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1225 400" width="1225" height="400"><svg>' }
+      : { value: { base64: ONE_PIXEL } },
+  )
   on('process.run', (_, e) => {
     ran.push([...e.argv])
-    const stdout = e.argv[1] === 'identify' ? '1600 900' : ''
+    const said = answer?.(e.argv)
+    if (said === 'absent') {
+      throw new Error(`spawn ${e.argv[0]} ENOENT`)
+    }
+    const stdout = said?.stdout ?? (e.argv[1] === 'identify' ? '1600 900' : '')
 
     return {
-      value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+      value: {
+        exitCode: said?.exitCode ?? 0,
+        stdout,
+        stderr: said?.stderr ?? '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
     }
   })
 
   return { ran, written }
 }
+
+// A browser on PATH that measures any page as 640 pixels tall.
+const CHROMIUM = (argv: readonly string[]) =>
+  argv[0] === 'sh'
+    ? { stdout: '/usr/bin/chromium\n' }
+    : argv.includes('--dump-dom')
+      ? { stdout: '<html data-theme="dark" data-height="640"><head>' }
+      : undefined
 
 const RESULT = (tool_use_id: string) =>
   ({
@@ -336,7 +372,7 @@ const RESULT = (tool_use_id: string) =>
     props: { tool_use_id, tool: 'mcp__show-work__show', output: '', isErrored: false },
   }) as const
 
-test('a shown SVG is converted and drawn in the chat', async ($, on) => {
+test('a shown SVG is converted, drawn in the chat and handed back to Claude', async ($, on) => {
   engine(on)
   const { ran, written } = host(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
@@ -346,13 +382,24 @@ test('a shown SVG is converted and drawn in the chat', async ($, on) => {
     caption: 'Pause menu layout',
     svg: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450"/>',
   })
-  expect(shown.result).toBe('Shown in the chat and the pane: Pause menu layout (1600x900).')
-  expect(written).toEqual(['/home/u/.cache/show-work/toolu_a.svg'])
+  expect(Object.keys(written)).toEqual(['/home/u/.cache/show-work/toolu_a.svg'])
   expect(ran).toContainEqual([
     'rsvg-convert',
     '-o',
     '/home/u/.cache/show-work/toolu_a.png',
     '/home/u/.cache/show-work/toolu_a.svg',
+  ])
+  // The picture comes back as Claude reads it, scaled to the API's side.
+  expect(shown.result).toEqual([
+    { type: 'text', text: expect.stringMatching(/^Shown in the chat and the pane: Pause menu layout \(1600x900\)\. This is what the person sees/) },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: ONE_PIXEL } },
+  ])
+  expect(ran).toContainEqual([
+    'magick',
+    '/home/u/.cache/show-work/toolu_a.png',
+    '-resize',
+    '1568x1568>',
+    '/home/u/.cache/show-work/toolu_a-look.png',
   ])
 
   const chat = await $.ui.mount({ ...RESULT('toolu_a'), surface: 'terminal' })
@@ -370,6 +417,119 @@ test('a shown SVG is converted and drawn in the chat', async ($, on) => {
   await desk.unmount()
 })
 
+test('an html mockup is laid out by a headless browser in the wireframe kit, as tall as its content', async ($, on) => {
+  engine(on)
+  const { ran, written } = host(on, { answer: CHROMIUM })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const shown = await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_h',
+    caption: 'Settings menu',
+    html: '<div class="row"><div class="box grow">Audio</div></div>',
+  })
+  expect(shown.deny).toBeUndefined()
+  const html = written['/home/u/.cache/show-work/toolu_h.html'] ?? ''
+  expect(html).toContain('<html data-theme="dark">')
+  expect(html).toContain('.row,.col{display:flex')
+  expect(html).toContain('<div class="row"><div class="box grow">Audio</div></div>')
+
+  const browser = ran.filter(argv => argv[0] === '/usr/bin/chromium')
+  expect(browser).toHaveLength(2)
+  expect(browser[0]).toContain('--dump-dom')
+  expect(browser[0]).toContain('--window-size=1280,100')
+  expect(browser[1]).toContain('--window-size=1280,640')
+  expect(browser[1]).toContain('--screenshot=/home/u/.cache/show-work/toolu_h.png')
+  expect(browser[1]).toContain('--user-data-dir=/home/u/.cache/show-work/toolu_h-chrome')
+  expect(browser[1]?.at(-1)).toBe('file:///home/u/.cache/show-work/toolu_h.html')
+  expect(ran).toContainEqual(['rm', '-rf', '/home/u/.cache/show-work/toolu_h-chrome'])
+})
+
+test('an html mockup with a height is one screenshot of that screen', async ($, on) => {
+  engine(on)
+  const { ran } = host(on, { answer: CHROMIUM })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_s',
+    caption: 'HUD',
+    html: '<div class="screen"><div class="tl bar"></div></div>',
+    width: 1920,
+    height: 1080,
+  })
+  const browser = ran.filter(argv => argv[0] === '/usr/bin/chromium')
+  expect(browser).toHaveLength(1)
+  expect(browser[0]).toContain('--window-size=1920,1080')
+})
+
+test('with no browser an html mockup says so', async ($, on) => {
+  engine(on)
+  host(on, { answer: argv => (argv[0] === 'sh' ? { exitCode: 1 } : undefined) })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const shown = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'x', html: '<p>hi</p>' })
+  expect(shown.deny).toBe('No Chrome or Chromium to lay out the page: install one.')
+})
+
+test('a d2 diagram becomes an SVG the browser draws at its own size', async ($, on) => {
+  engine(on)
+  const { ran, written } = host(on, { answer: CHROMIUM })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_d',
+    caption: 'Netcode',
+    d2: 'client -> server: UDP',
+  })
+  expect(written['/home/u/.cache/show-work/toolu_d.d2']).toBe('client -> server: UDP')
+  expect(ran).toContainEqual([
+    'd2',
+    '--theme=200',
+    '--pad=40',
+    '--scale=1',
+    '/home/u/.cache/show-work/toolu_d.d2',
+    '/home/u/.cache/show-work/toolu_d.svg',
+  ])
+  expect(written['/home/u/.cache/show-work/toolu_d.html']).toContain('<img src="toolu_d.svg">')
+  const browser = ran.filter(argv => argv[0] === '/usr/bin/chromium')
+  expect(browser).toHaveLength(1)
+  expect(browser[0]).toContain('--window-size=1225,400')
+})
+
+test('mermaid and dot draw in the light theme on its paper', async ($, on) => {
+  engine(on)
+  const { ran } = host(on, { theme: 'light' })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__show-work__show', tool_use_id: 'toolu_m', caption: 'Flow', mermaid: 'graph LR\n  A-->B' })
+  await $.tool.call({ tool: 'mcp__show-work__show', tool_use_id: 'toolu_g', caption: 'Deps', dot: 'digraph { a -> b }' })
+  const mmdc = ran.find(argv => argv[0] === 'mmdc') ?? []
+  expect(mmdc.slice(mmdc.indexOf('-t'), mmdc.indexOf('-t') + 4)).toEqual(['-t', 'default', '-b', '#ffffff'])
+  expect(mmdc).toContain('/home/u/.cache/show-work/toolu_m.mmd')
+  const dot = ran.find(argv => argv[0] === 'dot') ?? []
+  expect(dot).toContain('-Gbgcolor=#f6f5f1')
+  expect(dot).toContain('-Nshape=box')
+  expect(dot.slice(-3)).toEqual(['-o', '/home/u/.cache/show-work/toolu_g.png', '/home/u/.cache/show-work/toolu_g.dot'])
+})
+
+test("a source that won't parse comes back to Claude with the renderer's words", async ($, on) => {
+  engine(on)
+  host(on, {
+    answer: argv =>
+      argv[0] === 'dot'
+        ? { exitCode: 1, stderr: "Error: /home/u/.cache/show-work/x.dot: syntax error in line 2 near '->'\n" }
+        : undefined,
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const shown = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'x', dot: 'digraph { -> }' })
+  expect(shown.deny).toBe("Error: /home/u/.cache/show-work/x.dot: syntax error in line 2 near '->'")
+})
+
+test('a renderer that will not start asks whether it is installed', async ($, on) => {
+  engine(on)
+  host(on, { answer: argv => (argv[0] === 'd2' ? 'absent' : undefined) })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const shown = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'x', d2: 'a -> b' })
+  expect(shown.deny).toBe('d2 would not start: is it installed?')
+})
+
 test('show refuses a missing image and an empty call', async ($, on) => {
   engine(on)
   host(on)
@@ -381,7 +541,26 @@ test('show refuses a missing image and an empty call', async ($, on) => {
   })
   expect(missing.deny).toBe('No image at /proj/missing.png.')
   const empty = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'x' })
-  expect(empty.deny).toBe('Give the path of an image or SVG source.')
+  expect(empty.deny).toBe('Give a source to draw (d2, mermaid, dot, html or svg) or the path of an image.')
+  const file = await $.tool.call({ tool: 'mcp__show-work__show', caption: 'Menu', path: '/proj/menu.png' })
+  expect(file.result).toBe('Shown in the chat and the pane: Menu (1600x900).')
+})
+
+test('the design helpers read sizes and errors plainly', () => {
+  expect(measured('<html data-height="912">')).toBe(912)
+  expect(measured('<html data-height="99999">')).toBe(6000)
+  expect(measured('<html>')).toBeUndefined()
+  expect(svgSize('<?xml?><svg viewBox="0 0 10 10" width="1225.5" height="400"><svg width="1">')).toEqual({ width: 1226, height: 400 })
+  expect(svgSize('<svg viewBox="0 0 10 10">')).toBeUndefined()
+  expect(
+    errorLines('Error: Parse error on line 2:\ngraph TD A-->-B\n----------^\n    at Parser.parseError (x.js:1)\n[1025/191802.897872:WARNING:components/dbus/xdg/portal.cc:126] noise\n'),
+  ).toBe('Error: Parse error on line 2:\ngraph TD A-->-B\n----------^')
+  expect(page('<p>hi</p>', true)).toContain('<html data-theme="light">')
+})
+
+test('a tall picture narrows to keep its shape', () => {
+  expect(fit({ width: 1600, height: 900 }, 100, 40)).toEqual({ columns: 100, rows: 28 })
+  expect(fit({ width: 390, height: 844 }, 100, 40)).toEqual({ columns: 37, rows: 40 })
 })
 
 test('a screenshot Claude reads lands in the pane, and the list picks one', async ($, on) => {
@@ -844,7 +1023,8 @@ test('the Context tab shows the gauge, what fills it and each turn', async ($, o
   )
   expect((await ui.find({ type: 'Text', text: /^limits/ }))?.text).toBe('limits: five hour 23%')
   await ui.press({ key: 'tab-now' })
-  expect((await ui.find({ type: 'Text', text: /context 60%/ }))?.text).toMatch(/context 60% · \$4\.20$/)
+  // The status line shows the context and spend; the Now tab leaves them out.
+  expect(await ui.find({ type: 'Text', text: /context 60%|\$4\.20/ })).toBeUndefined()
   await ui.unmount()
 
   const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
@@ -993,7 +1173,7 @@ const BAND = (isWorking: boolean) =>
     props: { hasSurvey: false, isWorking, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 10 }, view: {} },
   }) as const
 
-test('the band shows the pulse, context and step while Claude works, and nothing idle', async ($, on) => {
+test('the band shows the pulse and step while Claude works, and nothing idle', async ($, on) => {
   engine(on)
   on('clock.every', () => ({ value: { cancel: () => {} } }))
   on('session.usage', () => ({ value: USAGE }))
@@ -1012,8 +1192,9 @@ test('the band shows the pulse, context and step while Claude works, and nothing
 
   const ui = await $.ui.mount({ ...BAND(true), surface: 'terminal' })
   expect(await ui.find({ type: 'Raster', key: 'hud-pulse' })).toBeDefined()
-  expect(await ui.find({ type: 'Raster', key: 'hud-gauge' })).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /▸/ }))?.text).toBe('60% · ▸ Write the band')
+  // The context is the status line's to show.
+  expect(await ui.find({ type: 'Raster', key: 'hud-gauge' })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: /▸/ }))?.text).toBe('▸ Write the band')
   await ui.unmount()
 })
 

@@ -192,7 +192,17 @@ declare module 'claude-code' {
   interface McpToolInputs {
     'mcp__show-work__plan': { goal: string; steps: Step[] }
     'mcp__show-work__note': { kind: NoteKind; text: string; why?: string; detail?: string }
-    'mcp__show-work__show': { caption: string; path?: string; svg?: string }
+    'mcp__show-work__show': {
+      caption: string
+      d2?: string
+      mermaid?: string
+      dot?: string
+      html?: string
+      width?: number
+      height?: number
+      svg?: string
+      path?: string
+    }
   }
   interface PluginState {
     'show-work': {

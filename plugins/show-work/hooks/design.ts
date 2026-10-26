@@ -1,0 +1,179 @@
+// Designs Claude describes by their structure, laid out by the tool that
+// reads each source: D2, mermaid or Graphviz for a diagram, a browser for an
+// HTML mockup dressed by the wireframe kit below.
+
+export type Drawn =
+  | { svg: string }
+  | { d2: string }
+  | { mermaid: string }
+  | { dot: string }
+  | { html: string; width: number; height?: number }
+
+// The page each design sits on, in Claude Code's light or dark theme.
+export const PAPER = { light: '#f6f5f1', dark: '#1d1e21' }
+
+// The wireframe kit: layout and parts as classes, colors as variables, so a
+// mockup says what goes where and the browser places it.
+export const KIT = `
+:root{--paper:${PAPER.light};--panel:#fff;--ink:#1f2328;--muted:#6e7781;--line:#c4c8cc;--fill:#e9eaec;--accent:#d97757;--accent-ink:#fff;--good:#2e9e5b;--bad:#d1453b;--gap:12px;--radius:8px;color-scheme:light}
+:root[data-theme=dark]{--paper:${PAPER.dark};--panel:#26282c;--ink:#e8e8e6;--muted:#9ba1a8;--line:#464a51;--fill:#33363b;--accent:#e08a6a;--accent-ink:#1d1e21;--good:#4cc27a;--bad:#ef6b60;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--paper);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:24px}
+h1,h2,h3,p{margin:0}h1{font-size:26px}h2{font-size:20px}h3{font-size:16px}
+.row,.col{display:flex;gap:var(--gap)}.col{flex-direction:column}
+.grid{display:grid;gap:var(--gap);grid-template-columns:repeat(var(--cols,3),minmax(0,1fr))}
+.grow{flex:1 1 0;min-width:0;min-height:0}.wrap{flex-wrap:wrap}
+.between{justify-content:space-between}.center{justify-content:center;align-items:center}.middle{align-items:center}.end{justify-content:flex-end}
+.tight{--gap:6px}.loose{--gap:24px}.pad{padding:14px}
+.box{background:var(--panel);border:1.5px solid var(--line);border-radius:var(--radius);padding:14px}
+.window{background:var(--panel);border:1.5px solid var(--line);border-radius:10px;overflow:hidden}
+.window::before{content:attr(data-title);display:block;padding:7px 12px;background:var(--fill);border-bottom:1.5px solid var(--line);color:var(--muted);font-size:13px;line-height:19px;height:34px;box-sizing:border-box}
+:is(.pad,.box).window::before{margin:-14px -14px 14px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:7px 16px;border:1.5px solid var(--line);border-radius:var(--radius);background:var(--panel);font-weight:500;white-space:nowrap}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}.btn.ghost{background:none;border-color:transparent}
+.input{display:flex;align-items:center;min-height:36px;padding:7px 12px;border:1.5px solid var(--line);border-radius:var(--radius);background:var(--paper);color:var(--muted)}
+.check::before{content:"";display:inline-block;width:15px;height:15px;margin-right:8px;vertical-align:-2px;border:1.5px solid var(--line);border-radius:4px}
+.check.on::before{background:var(--accent);border-color:var(--accent)}
+.slider,.bar{position:relative;height:8px;border-radius:4px;background:linear-gradient(to right,var(--color,var(--accent)) var(--value,50%),var(--fill) var(--value,50%))}
+.bar{height:12px;border-radius:6px}
+.slider::after{content:"";position:absolute;top:50%;left:var(--value,50%);width:18px;height:18px;transform:translate(-50%,-50%);border-radius:50%;background:var(--panel);border:2px solid var(--color,var(--accent))}
+.tabs{display:flex;gap:4px;border-bottom:1.5px solid var(--line)}.tabs>*{padding:8px 14px;color:var(--muted)}
+.tabs>.on{color:var(--ink);border-bottom:2.5px solid var(--accent);margin-bottom:-1.5px}
+.list{display:flex;flex-direction:column}.list>*{padding:10px 12px;border-bottom:1px solid var(--line)}.list>:last-child{border-bottom:0}.list>.on{background:var(--fill)}
+.img{display:flex;align-items:center;justify-content:center;min-height:80px;color:var(--muted);border:1.5px solid var(--line);border-radius:var(--radius);background:linear-gradient(to top right,transparent calc(50% - 1px),var(--line) 50%,transparent calc(50% + 1px)),linear-gradient(to bottom right,transparent calc(50% - 1px),var(--line) 50%,transparent calc(50% + 1px)),var(--fill)}
+.icon{flex:none;width:20px;height:20px;border-radius:5px;background:var(--fill);border:1.5px solid var(--line)}
+.avatar{flex:none;width:36px;height:36px;border-radius:50%;background:var(--fill);border:1.5px solid var(--line)}
+.lines{height:calc(var(--n,3) * 18px - 8px);background:repeating-linear-gradient(var(--fill) 0 10px,transparent 10px 18px);border-radius:3px}
+.tag{display:inline-flex;align-items:center;padding:2px 9px;border-radius:999px;background:var(--fill);color:var(--muted);font-size:12px}
+hr,.hr{align-self:stretch;margin:0;border:0;border-top:1.5px solid var(--line)}
+.muted{color:var(--muted)}.small{font-size:13px}.bold{font-weight:600}
+.note{padding:6px 10px;border:1.5px dashed var(--accent);border-radius:6px;color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent);font-size:13px}
+.mark{display:inline-flex;flex:none;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font-size:12px;font-weight:700}
+.stage,.screen{position:relative;overflow:hidden;background:linear-gradient(transparent 49px,color-mix(in srgb,var(--line) 35%,transparent) 50px) 0 0/50px 50px,linear-gradient(90deg,transparent 49px,color-mix(in srgb,var(--line) 35%,transparent) 50px) 0 0/50px 50px,linear-gradient(color-mix(in srgb,var(--accent) 10%,var(--paper)),var(--paper))}
+.stage{aspect-ratio:var(--aspect,16/9);border:1.5px solid var(--line);border-radius:var(--radius)}
+.screen{position:fixed;inset:0}
+:is(.stage,.screen)>:is(.tl,.tc,.tr,.ml,.mc,.mr,.bl,.bc,.br){position:absolute;margin:16px}
+:is(.stage,.screen)>:is(.tl,.tc,.tr){top:0}:is(.stage,.screen)>:is(.bl,.bc,.br){bottom:0}
+:is(.stage,.screen)>:is(.tl,.ml,.bl){left:0}:is(.stage,.screen)>:is(.tr,.mr,.br){right:0}
+:is(.stage,.screen)>:is(.tc,.bc,.mc){left:50%;translate:-50% 0}:is(.stage,.screen)>:is(.ml,.mr,.mc){top:50%;translate:0 -50%}
+:is(.stage,.screen)>.mc{translate:-50% -50%}
+`
+
+// Set once the page has loaded and its fonts are in: the height its content
+// takes, read back from the dumped DOM.
+const MEASURE =
+  '<script>addEventListener("load",()=>document.fonts.ready.then(()=>{document.documentElement.dataset.height=String(Math.ceil(document.documentElement.scrollHeight))}))</script>'
+
+// The page an HTML mockup is drawn from: the kit, then Claude's markup. A
+// whole document works too; the parser folds its html, head and body in.
+export function page(html: string, isLight: boolean) {
+  const theme = isLight ? 'light' : 'dark'
+
+  return `<!doctype html><html data-theme="${theme}"><head><meta charset="utf-8"><style>${KIT}</style></head><body>${html}${MEASURE}</body></html>`
+}
+
+// The page that frames an SVG at its own size, for the browser to draw.
+export function frame(svg: string) {
+  return `<!doctype html><style>html,body{margin:0}img{display:block}</style><img src="${svg}">`
+}
+
+// The content height MEASURE left in a dumped DOM, within what a picture
+// may take.
+export function measured(dom: string) {
+  const found = /data-height="(\d+)"/.exec(dom)
+
+  return found === null ? undefined : Math.max(1, Math.min(LONGEST, Number(found[1])))
+}
+
+// The size an SVG declares on its root element, as d2 writes it.
+export function svgSize(svg: string) {
+  const root = /<svg\b[^>]*>/.exec(svg)?.[0] ?? ''
+  const width = Number(/\swidth="([\d.]+)"/.exec(root)?.[1] ?? 0)
+  const height = Number(/\sheight="([\d.]+)"/.exec(root)?.[1] ?? 0)
+
+  return width > 0 && height > 0 ? { width: Math.ceil(width), height: Math.ceil(height) } : undefined
+}
+
+// The longest side a picture is drawn at; the API takes up to 8000.
+export const LONGEST = 6000
+
+// Where a browser that draws headless may be: on PATH, in macOS's
+// Applications, or the one puppeteer fetched for mermaid-cli.
+export const FIND_BROWSER = [
+  'for b in chromium chromium-browser google-chrome-stable google-chrome chrome microsoft-edge brave-browser; do command -v "$b" && exit 0; done',
+  'for b in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" "/Applications/Chromium.app/Contents/MacOS/Chromium" "$HOME"/.cache/puppeteer/chrome-headless-shell/*/*/chrome-headless-shell; do [ -x "$b" ] && echo "$b" && exit 0; done',
+  'exit 1',
+].join('; ')
+
+// A headless browser on its own throwaway profile, so it never joins a
+// browser the person has open.
+export function browserArgs(browser: string, profile: string) {
+  return [
+    browser,
+    '--headless',
+    '--disable-gpu',
+    '--hide-scrollbars',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--force-device-scale-factor=1',
+    '--virtual-time-budget=2000',
+    `--user-data-dir=${profile}`,
+  ]
+}
+
+// D2's own themes: Neutral default, and Dark Mauve.
+export function d2Args(isLight: boolean, from: string, to: string) {
+  return ['d2', `--theme=${isLight ? 0 : 200}`, '--pad=40', '--scale=1', from, to]
+}
+
+// Graphviz in the theme's colors, nodes as rounded boxes; what the source
+// sets wins over these defaults.
+export function dotArgs(isLight: boolean, from: string, to: string) {
+  const ink = isLight ? '#1f2328' : '#e8e8e6'
+  const line = isLight ? '#57606a' : '#9ba1a8'
+  const paper = isLight ? PAPER.light : PAPER.dark
+  const font = 'sans-serif'
+
+  return [
+    'dot',
+    '-Tpng',
+    '-Gdpi=144',
+    `-Gbgcolor=${paper}`,
+    `-Gcolor=${line}`,
+    `-Gfontcolor=${ink}`,
+    `-Gfontname=${font}`,
+    '-Gpad=0.3',
+    '-Nshape=box',
+    '-Nstyle=rounded',
+    `-Ncolor=${line}`,
+    `-Nfontcolor=${ink}`,
+    `-Nfontname=${font}`,
+    `-Ecolor=${line}`,
+    `-Efontcolor=${ink}`,
+    `-Efontname=${font}`,
+    '-Efontsize=11',
+    '-o',
+    to,
+    from,
+  ]
+}
+
+// mermaid-cli on the theme's paper, drawn at `scale` so it stays sharp.
+export function mermaidArgs(isLight: boolean, from: string, to: string, scale: number) {
+  const paper = isLight ? '#ffffff' : PAPER.dark
+
+  return ['mmdc', '-q', '-i', from, '-o', to, '-t', isLight ? 'default' : 'dark', '-b', paper, '-s', String(scale)]
+}
+
+// What a renderer said went wrong, short enough to read: its first lines,
+// past the noise of stack frames and browser warnings.
+export function errorLines(stderr: string) {
+  return stderr
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(line => line.trim() !== '' && !/^\s+at\s|^\[\d+\/\d+\.\d+:|^\s*\^?\s*$/.test(line))
+    .slice(0, 6)
+    .map(line => (line.length > 200 ? `${line.slice(0, 199)}…` : line))
+    .join('\n')
+}

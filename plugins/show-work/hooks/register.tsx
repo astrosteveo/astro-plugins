@@ -33,9 +33,23 @@ import type {
   Tab,
   Turn,
 } from '../types'
-import { GREEN, RED, gantt, gauge, legend, parseLog, parseTests, patchCounts, pulse, shareBar } from './charts'
+import { GREEN, RED, gantt, legend, parseLog, parseTests, patchCounts, pulse, shareBar } from './charts'
 import type { Bar } from './charts'
 import { parseGit, parseHits, parseStatus, plain } from './explorer'
+import {
+  FIND_BROWSER,
+  LONGEST,
+  browserArgs,
+  d2Args,
+  dotArgs,
+  errorLines,
+  frame,
+  measured,
+  mermaidArgs,
+  page,
+  svgSize,
+} from './design'
+import type { Drawn } from './design'
 import { diagramColumns, hashOf, splitMermaid } from './mermaid'
 import { contextView, commitsView, explorerView, filesView, gitView, runView, searchView, testsView } from './views'
 
@@ -105,6 +119,10 @@ const KEPT_PICTURES = 30
 const KEPT_DIAGRAMS = 40
 // mmdc draws at this many pixels per CSS pixel, so a diagram stays sharp.
 const DIAGRAM_SCALE = 2
+// The longest side of a picture handed to the model, as the API scales it.
+const MODEL_SIDE = 1568
+// The page width of an HTML mockup when Claude gives none.
+const PAGE_WIDTH = 1280
 // The most an Image takes as bytes: 2 MiB, as base64.
 const PNG_BYTES = Math.floor((2 * 1024 * 1024 * 4) / 3)
 const KEPT_LANES = 20
@@ -167,7 +185,7 @@ The person watches a "Show work" pane beside the chat. Keep it current so they c
   - learn something that changes the picture ("finding"), or see a hazard ("risk").
 - Give each Bash call a description that says why you run it, not only what it does: the pane shows it as the reason above the command.
 - Notes are how you keep the person in the loop without stopping. Once the goal is clear, keep working until it is met; stop only for a question that blocks the work or a snag that needs their direction.
-- To show the person a design, mockup, layout, diagram or screenshot, call mcp__show-work__show with an image path or SVG source: it draws the picture in the chat. Reach for it whenever a picture says it faster than words, and before building a visual design, so they can veto it. Give an SVG a background rect and a width of 800 or more. Images you Read land in the pane by themselves.
+- To show the person a design, call mcp__show-work__show and describe its structure; the tool lays it out. Use d2 for architecture, mermaid for flows, sequences and states, and html with the wireframe classes for a screen, menu or HUD; svg only for a freeform drawing. Show a design before you build it, so they can veto it. The result hands you the picture: fix overlaps and cut or crowded text, and show it again before you go on. Images you Read land in the pane by themselves.
 - One short sentence per note, written to stand alone. The person presses a question to answer it, and opens any other note to read its "why" and "detail", then vetoes, corrects or asks more, or presses OK. So put in "detail" what they need to judge the note: what you saw and where, what it means, what you would do.
 - Notes do not replace your reply: still say what matters in chat, briefly.`
 
@@ -225,15 +243,31 @@ const NOTE_TOOL = {
 
 const SHOW_TOOL = {
   name: 'show',
-  description:
-    'Draw a picture in the chat for the person: a design, mockup, diagram or screenshot. Give either the path of an image file (PNG, JPEG, GIF, WebP, BMP or SVG) or SVG source.',
+  description: `Draw a design in the chat for the person; the result hands you the picture to check. Give one source, and the tool lays it out:
+- d2: architecture and systems. Containers nest in braces: \`server: Server { api: API; db: Postgres {shape: cylinder} }\`, \`client -> server.api: HTTPS\`.
+- mermaid: flowcharts, sequence, state, class, ER and gantt diagrams.
+- dot: Graphviz, for big graphs such as dependencies or scene trees.
+- html: a UI mockup (screen, menu, dialog, HUD) laid out by a browser. Set width and height for a fixed screen; leave height out to fit the content. A wireframe kit is loaded, so classes do the styling:
+  layout: row, col, grid (style="--cols:4"), grow, wrap, between, center, middle, end, tight, loose, pad;
+  parts: box, window (data-title="…"), btn (+ primary or ghost), input, check (+ on), slider and bar (style="--value:60%"), tabs and list (child .on is selected), img (picture placeholder), icon, avatar, lines (text filler, style="--n:3"), tag, hr;
+  text: h1-h3, muted, small, bold; annotations: note (callout), mark (numbered pin);
+  game screens: stage (a 16:9 view, --aspect to change) or screen (fills the picture), each child placed by an anchor class: tl tc tr ml mc mr bl bc br;
+  colors: var(--paper --panel --ink --muted --line --fill --accent --good --bad).
+- svg: a freeform drawing; give it a background rect and a width of 800 or more.
+- path: an image file that already exists.`,
   isDeferred: false,
   inputSchema: {
     type: 'object',
     properties: {
       caption: { type: 'string', description: 'What the picture shows, a few words.' },
-      path: { type: 'string', description: 'An image file, absolute or relative to the working directory.' },
-      svg: { type: 'string', description: 'SVG source, in place of a path.' },
+      d2: { type: 'string', description: 'D2 source: an architecture or system diagram.' },
+      mermaid: { type: 'string', description: 'Mermaid source, without the fence.' },
+      dot: { type: 'string', description: 'Graphviz DOT source.' },
+      html: { type: 'string', description: 'HTML for a mockup, using the wireframe classes; a <style> of your own is welcome.' },
+      width: { type: 'number', description: 'html: the page width in CSS pixels. Default 1280.' },
+      height: { type: 'number', description: 'html: the page height; leave it out to fit the content.' },
+      svg: { type: 'string', description: 'SVG source.' },
+      path: { type: 'string', description: 'An image file (PNG, JPEG, GIF, WebP, BMP or SVG), absolute or relative to the working directory.' },
     },
     required: ['caption'],
   },
@@ -325,6 +359,17 @@ export function rowsFor(picture: Pick<Picture, 'width' | 'height'>, columns: num
   const rows = Math.round((columns * picture.height) / picture.width / 2)
 
   return Math.max(1, Math.min(most, rows))
+}
+
+// The box that shows a whole picture in at most `columns` by `rows`: as wide
+// as allowed, narrower when a tall picture would take more rows.
+export function fit(picture: Pick<Picture, 'width' | 'height'>, columns: number, rows: number) {
+  const tall = rowsFor(picture, columns, Number.POSITIVE_INFINITY)
+  if (tall <= rows) {
+    return { columns, rows: tall }
+  }
+
+  return { columns: Math.max(1, Math.min(columns, Math.round((rows * 2 * picture.width) / picture.height))), rows }
 }
 
 export function relative(path: string, cwd: string) {
@@ -451,10 +496,108 @@ async function loadDiff($: EngineInterface, path: string, label: string): Promis
   }
 }
 
-type Source = { path: string } | { svg: string }
+type Source = { path: string } | Drawn
+
+const cacheDir = async ($: EngineInterface) =>
+  `${(await $.env.get('XDG_CACHE_HOME')) || `${await $.env.get('HOME')}/.cache`}/show-work`
+
+const isLightTheme = async ($: EngineInterface) =>
+  /light/i.test(String((await $.config.list()).find(row => row.key === 'theme')?.value ?? ''))
+
+// Runs a renderer; answers what went wrong, or nothing when it drew.
+async function draw($: EngineInterface, argv: string[]) {
+  const ran = await $.process.run(argv, { timeoutMs: 30_000 }).catch((error: unknown) => String(error))
+  if (typeof ran === 'string') {
+    return /time|still running/i.test(ran) ? `${argv[0]} took too long.` : `${argv[0]} would not start: is it installed?`
+  }
+
+  return ran.exitCode === 0 ? undefined : errorLines(ran.stderr.split('\n').map(plain).join('\n')) || `${argv[0]} failed.`
+}
+
+// The headless browser, looked for each time so one installed later is found.
+async function findBrowser($: EngineInterface) {
+  const found = await $.process.run(['sh', '-c', FIND_BROWSER]).catch(() => undefined)
+
+  return found?.exitCode === 0 ? firstLine(found.stdout) || undefined : undefined
+}
+
+// Screenshots a page with a headless browser, `height` tall or as tall as
+// its content.
+async function shoot(
+  $: EngineInterface,
+  found: string,
+  from: string,
+  file: string,
+  width: number,
+  height?: number,
+) {
+  const profile = `${file.replace(/\.png$/, '')}-chrome`
+  const argv = browserArgs(found, profile)
+  const url = `file://${encodeURI(from)}`
+  try {
+    let tall = height
+    if (tall === undefined) {
+      const dom = await $.process.run([...argv, `--window-size=${width},100`, '--dump-dom', url], {
+        timeoutMs: 30_000,
+      })
+      tall = measured(dom.stdout) ?? 800
+    }
+
+    return await draw($, [...argv, `--window-size=${width},${tall}`, `--screenshot=${file}`, url])
+  } finally {
+    await $.process.run(['rm', '-rf', profile])
+  }
+}
+
+// Lays a design out from its source into `file`, with the tool that reads
+// it. Answers why when it can't.
+async function render($: EngineInterface, source: Drawn, dir: string, id: string, file: string) {
+  const isLight = await isLightTheme($)
+  const at = `${dir}/${id}`
+  if ('svg' in source) {
+    await $.fs.write(`${at}.svg`, source.svg)
+
+    return draw($, ['rsvg-convert', '-o', file, `${at}.svg`])
+  }
+  if ('mermaid' in source) {
+    await $.fs.write(`${at}.mmd`, source.mermaid)
+
+    return draw($, mermaidArgs(isLight, `${at}.mmd`, file, DIAGRAM_SCALE))
+  }
+  if ('dot' in source) {
+    await $.fs.write(`${at}.dot`, source.dot)
+
+    return draw($, dotArgs(isLight, `${at}.dot`, file))
+  }
+  if ('d2' in source) {
+    // D2 writes an SVG that only a browser draws whole (rsvg drops its
+    // label masks); rsvg stands in where there is none.
+    await $.fs.write(`${at}.d2`, source.d2)
+    const why = await draw($, d2Args(isLight, `${at}.d2`, `${at}.svg`))
+    if (why !== undefined) {
+      return why
+    }
+    const size = svgSize(await $.fs.read(`${at}.svg`))
+    const found = await findBrowser($)
+    if (size === undefined || found === undefined) {
+      return draw($, ['rsvg-convert', '-o', file, `${at}.svg`])
+    }
+    await $.fs.write(`${at}.html`, frame(`${id}.svg`))
+
+    return shoot($, found, `${at}.html`, file, Math.min(LONGEST, size.width), Math.min(LONGEST, size.height))
+  }
+  const found = await findBrowser($)
+  if (found === undefined) {
+    return 'No Chrome or Chromium to lay out the page: install one.'
+  }
+  await $.fs.write(`${at}.html`, page(source.html, isLight))
+
+  return shoot($, found, `${at}.html`, file, source.width, source.height)
+}
 
 // Copies or converts an image into the cache as a PNG, so a later write to
-// the same file leaves this picture as it was. Answers why when it can't.
+// the same file leaves this picture as it was; a design is laid out into
+// one. Answers why when it can't.
 async function freeze(
   $: EngineInterface,
   source: Source,
@@ -462,28 +605,34 @@ async function freeze(
   caption: string,
   origin: Picture['origin'],
 ): Promise<Picture | string> {
-  const cache = (await $.env.get('XDG_CACHE_HOME')) || `${await $.env.get('HOME')}/.cache`
-  const dir = `${cache}/show-work`
+  const dir = await cacheDir($)
   const file = `${dir}/${id}.png`
   await $.process.run(['mkdir', '-p', dir])
 
-  const from = 'path' in source ? source.path : `${dir}/${id}.svg`
-  if (from.startsWith(`${dir}/`) && 'path' in source) {
-    return 'That picture is already shown.'
-  }
-  if ('svg' in source) {
-    await $.fs.write(from, source.svg)
-  } else if (!(await $.fs.exists(from))) {
-    return `No image at ${from}.`
-  }
-  const argv = /\.svg$/i.test(from)
-    ? ['rsvg-convert', '-o', file, from]
-    : /\.png$/i.test(from)
-      ? ['cp', from, file]
-      : ['magick', `${from}[0]`, file]
-  const made = await $.process.run(argv)
-  if (made.exitCode !== 0) {
-    return `Could not read the image: ${firstLine(made.stderr) || argv[0]}`
+  if ('path' in source) {
+    if (source.path.startsWith(`${dir}/`)) {
+      return 'That picture is already shown.'
+    }
+    if (!(await $.fs.exists(source.path))) {
+      return `No image at ${source.path}.`
+    }
+    const argv = /\.svg$/i.test(source.path)
+      ? ['rsvg-convert', '-o', file, source.path]
+      : /\.png$/i.test(source.path)
+        ? ['cp', source.path, file]
+        : ['magick', `${source.path}[0]`, file]
+    const made = await $.process.run(argv)
+    if (made.exitCode !== 0) {
+      return `Could not read the image: ${firstLine(made.stderr) || argv[0]}`
+    }
+  } else {
+    const why = await render($, source, dir, id, file)
+    if (why !== undefined) {
+      return why
+    }
+    if (!(await $.fs.exists(file))) {
+      return 'The design drew nothing.'
+    }
   }
 
   const size = await $.process.run(['magick', 'identify', '-format', '%w %h', file])
@@ -495,7 +644,22 @@ async function freeze(
     : { id, file, width: 16, height: 9, caption, origin }
 }
 
-// Keeps the newest pictures and deletes the files of the rest.
+// The picture as the model reads it: scaled down past the side the API
+// would scale it to anyway, so less crosses the wire.
+async function lookAt($: EngineInterface, picture: Picture) {
+  let file = picture.file
+  if (Math.max(picture.width, picture.height) > MODEL_SIDE) {
+    file = picture.file.replace(/\.png$/, '-look.png')
+    const made = await $.process.run(['magick', picture.file, '-resize', `${MODEL_SIDE}x${MODEL_SIDE}>`, file])
+    file = made.exitCode === 0 ? file : picture.file
+  }
+  const png = await $.fs.read(file, { as: 'bytes' })
+
+  return { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png.base64 } } as const
+}
+
+// Keeps the newest pictures and deletes the files of the rest, with the
+// sources and pages they were drawn from.
 async function keep($: EngineInterface, picture: Picture) {
   let dropped: Picture[] = []
   await update($, pictures, list => {
@@ -506,7 +670,9 @@ async function keep($: EngineInterface, picture: Picture) {
   })
   await update($, picked, () => null)
   if (dropped.length > 0) {
-    const files = dropped.flatMap(one => [one.file, one.file.replace(/\.png$/, '.svg')])
+    const files = dropped.flatMap(one =>
+      ['.png', '-look.png', '.svg', '.d2', '.mmd', '.dot', '.html'].map(end => one.file.replace(/\.png$/, end)),
+    )
     await $.process.run(['rm', '-f', ...files])
   }
 }
@@ -514,8 +680,7 @@ async function keep($: EngineInterface, picture: Picture) {
 // Renders a mermaid block to a PNG in the cache with mmdc, in the person's
 // theme, and keeps the newest. A block that will not render keeps why.
 async function drawDiagram($: EngineInterface, source: string, id: string) {
-  const cache = (await $.env.get('XDG_CACHE_HOME')) || `${await $.env.get('HOME')}/.cache`
-  const dir = `${cache}/show-work`
+  const dir = await cacheDir($)
   const file = `${dir}/mermaid-${id}.png`
   const made = await $.process
     .run(['mkdir', '-p', dir])
@@ -523,8 +688,7 @@ async function drawDiagram($: EngineInterface, source: string, id: string) {
       if (await $.fs.exists(file)) {
         return undefined
       }
-      const theme = (await $.config.list()).find(row => row.key === 'theme')
-      const isLight = /light/i.test(String(theme?.value ?? ''))
+      const isLight = await isLightTheme($)
       await $.fs.write(`${dir}/mermaid-${id}.mmd`, source)
       const argv = ['mmdc', '-q', '-i', `${dir}/mermaid-${id}.mmd`, '-o', file]
       const style = ['-t', isLight ? 'default' : 'dark', '-b', 'transparent', '-s', String(DIAGRAM_SCALE)]
@@ -937,12 +1101,24 @@ export const register: Register = on => {
 
   on('tool.call', { tool: 'mcp__show-work__show' }, async ($, e) => {
     const path = asText(e.path)
-    const svg = asText(e.svg)
-    if (path === '' && svg === '') {
-      return { deny: 'Give the path of an image or SVG source.' }
+    const width = Math.round(Math.min(LONGEST, Math.max(200, Number(e.width) || PAGE_WIDTH)))
+    const height = Number(e.height) > 0 ? Math.round(Math.min(LONGEST, Math.max(50, Number(e.height)))) : undefined
+    const drawn: Drawn | undefined = asText(e.d2)
+      ? { d2: asText(e.d2) }
+      : asText(e.mermaid)
+        ? { mermaid: asText(e.mermaid) }
+        : asText(e.dot)
+          ? { dot: asText(e.dot) }
+          : asText(e.html)
+            ? { html: asText(e.html), width, ...(height === undefined ? {} : { height }) }
+            : asText(e.svg)
+              ? { svg: asText(e.svg) }
+              : undefined
+    if (path === '' && drawn === undefined) {
+      return { deny: 'Give a source to draw (d2, mermaid, dot, html or svg) or the path of an image.' }
     }
 
-    const source: Source = svg !== '' ? { svg } : { path: absolute(path, cwd) }
+    const source: Source = drawn ?? { path: absolute(path, cwd) }
     const caption = asText(e.caption) || basename(path) || 'design'
     const id = e.tool_use_id ?? crypto.randomUUID()
     const made = await freeze($, source, id, caption, 'shown')
@@ -950,9 +1126,18 @@ export const register: Register = on => {
       return { deny: made }
     }
     await keep($, made)
+    const said = `Shown in the chat and the pane: ${caption} (${made.width}x${made.height}).`
+    if (drawn === undefined) {
+      return { result: said }
+    }
 
+    // A design Claude wrote comes back as the picture the person sees, so
+    // Claude can check its layout.
     return {
-      result: `Shown in the chat and the pane: ${caption} (${made.width}x${made.height}).`,
+      result: [
+        { type: 'text', text: `${said} This is what the person sees: fix overlaps and cut or crowded text, and show it again, before you go on.` },
+        await lookAt($, made),
+      ],
     }
   })
 
@@ -1322,15 +1507,15 @@ export const register: Register = on => {
     )
   })
 
-  // While Claude works, a strip above the prompt: the pulse, the context, the
-  // step it is on, its agents and what waits on you.
+  // While Claude works, a strip above the prompt: the pulse, the step it is
+  // on, its agents and what waits on you. The context stays in the status
+  // line, which shows it already.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const acts = await read($, activity)
     const shownPlan = await read($, plan)
     const allLanes = await read($, lanes)
     const allNotes = await read($, notes)
     const runs = await read($, tests)
-    const shownMeter = await read($, meter)
     const running = allLanes.filter(lane => lane.status === 'runs').length
     const open = allNotes.filter(
       note => note.kind === 'question' && !note.isReplied && isCurrent(note, shownPlan?.startedAt),
@@ -1345,7 +1530,6 @@ export const register: Register = on => {
     const step = shownPlan?.steps.find(one => one.status === 'doing')?.text
     const last = runs.at(-1)
     const bits = [
-      ...(shownMeter?.percent === undefined ? [] : [`${shownMeter.percent}%`]),
       ...(step === undefined ? [] : [`▸ ${step}`]),
       ...(running === 0 ? [] : [`${running} agent${running === 1 ? '' : 's'}`]),
       ...(last === undefined ? [] : [last.failed === 0 && !last.isError ? `✓ ${last.passed}` : `✗ ${last.failed} failing`]),
@@ -1365,12 +1549,10 @@ export const register: Register = on => {
       isLive: () => true,
     })
     startTicking($, now)
-    const fraction = (shownMeter?.tokens ?? 0) / Math.max(1, shownMeter?.window ?? 1)
 
     return (
       <Box flexDirection="row" gap={1}>
         <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
-        {shownMeter !== null && <Raster key="hud-gauge" {...gauge(fraction, 10)} />}
         <Text wrap="truncate-end" dimColor>
           {bits.join(' · ')}
         </Text>
@@ -1401,16 +1583,11 @@ export const register: Register = on => {
       }
 
       const { Box, Image, Text } = $.ui.resolve(e)
-      const columns = Math.max(1, Math.min(100, (e.viewport?.columns ?? 84) - 4))
+      const box = fit(picture, Math.max(1, Math.min(100, (e.viewport?.columns ?? 84) - 4)), 40)
 
       return (
         <Box flexDirection="column">
-          <Image
-            source={{ file: picture.file, format: 'png' }}
-            columns={columns}
-            rows={rowsFor(picture, columns, 40)}
-            alt={picture.caption}
-          />
+          <Image source={{ file: picture.file, format: 'png' }} {...box} alt={picture.caption} />
           <Text dimColor>
             {picture.caption} <Text dimColor>{picture.width}x{picture.height}</Text>
           </Text>
@@ -1664,15 +1841,12 @@ export const register: Register = on => {
       )
     }
 
-    // Calls over the last stretch, newest on the right, with how full the
-    // context is: what Claude is doing at a glance.
+    // Calls over the last stretch, newest on the right: what Claude is doing
+    // at a glance. The context and spend stay in the status line.
     const pulseView = () => {
       const lastAt = acts.at(-1)?.at
-      const meterLine =
-        shownMeter?.percent === undefined ? '' : ` · context ${shownMeter.percent}%`
-      const usd = shownMeter?.usd === undefined ? '' : ` · $${shownMeter.usd.toFixed(2)}`
       if (Raster === undefined || lastAt === undefined) {
-        return meterLine === '' ? undefined : <Text dimColor>{meterLine.slice(3) + usd}</Text>
+        return undefined
       }
       const beats = acts.map(act => ({ at: act.at ?? 0, kind: act.kind, status: act.status }))
       const span = bodyColumns * BEAT
@@ -1687,8 +1861,7 @@ export const register: Register = on => {
         <Box flexDirection="column">
           <Raster key="pulse" {...pulse(beats, now, bodyColumns, BEAT)} />
           <Text dimColor>
-            calls · last {Math.round(span / 60_000)}m{meterLine}
-            {usd}
+            calls · last {Math.round(span / 60_000)}m
           </Text>
         </Box>
       )
@@ -1754,15 +1927,8 @@ export const register: Register = on => {
       let view
       if (picture !== undefined && e.surface === 'terminal') {
         const { Image } = $.ui.resolve(e)
-        const columns = Math.max(1, Math.min(255, e.props.bodyColumns))
-        view = (
-          <Image
-            source={{ file: picture.file, format: 'png' }}
-            columns={columns}
-            rows={rowsFor(picture, columns, 20)}
-            alt={picture.caption}
-          />
-        )
+        const box = fit(picture, Math.max(1, Math.min(255, e.props.bodyColumns)), 20)
+        view = <Image source={{ file: picture.file, format: 'png' }} {...box} alt={picture.caption} />
       }
       body =
         picture === undefined ? (
