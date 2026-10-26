@@ -276,8 +276,9 @@ export function sheetArgs(isLight: boolean, tiles: { file: string; label: string
     ...tiles.flatMap(tile => ['-label', literal(tile.label), tile.file]),
     '-tile',
     `${across(tiles.length)}x`,
+    // Each picture already fits a tile; a cell takes the biggest's size.
     '-geometry',
-    `${TILE}x${TILE}>+16+16`,
+    '+16+16',
     '-background',
     isLight ? PAPER.light : PAPER.dark,
     '-fill',

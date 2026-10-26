@@ -40,6 +40,7 @@ import {
   FIND_BROWSER,
   LONGEST,
   SHEET_MOST,
+  TILE,
   blowUp,
   browserArgs,
   curlArgs,
@@ -794,11 +795,12 @@ async function sheet($: EngineInterface, items: { src: string; label?: string }[
       if (why !== undefined) {
         return `Picture ${n + 1}: ${why}`
       }
+      // A sprite is blown up with whole pixels; anything bigger than a tile
+      // shrinks to fit one, so the sheet's cells take the pictures' shape.
       const size = await sizeOf($, file)
       const factor = blowUp(size?.width ?? 0, size?.height ?? 0)
-      if (factor > 1) {
-        await $.process.run(['magick', file, '-filter', 'point', '-resize', `${factor * 100}%`, file])
-      }
+      const resize = factor > 1 ? ['-filter', 'point', '-resize', `${factor * 100}%`] : ['-resize', `${TILE}x${TILE}>`]
+      await $.process.run(['magick', file, ...resize, file])
     }
 
     return await draw($, sheetArgs(await isLightTheme($), tiles, to, await findFont($)))
