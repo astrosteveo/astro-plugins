@@ -33,7 +33,7 @@ const indexLine = (name: string, title: string, description: string) =>
 
 // An index line is "- [title](name.md) — description": the name is read from the line's start,
 // so a description that mentions another memory's link does not stand for that memory.
-const ENTRY = /^- \[([^\]]*)\]\(([a-z0-9-]+)\.md\)/
+const ENTRY = /^\s*[-*] \[([^\]]*)\]\(([a-z0-9-]+)\.md\)/
 
 const entryName = (line: string) => ENTRY.exec(line)?.[2]
 
@@ -45,20 +45,57 @@ export const MAX_ENTRIES = 200
 export const hasEntry = (index: string, name: string) => index.split('\n').some(l => entryName(l) === name)
 
 // The index with the entry's line added, or replaced where the entry is already listed.
-// A blank title keeps the title of the line it replaces, else the name.
+// A blank title keeps the title of the line it replaces, else the name. A later line for the
+// same name is a duplicate, and goes.
 export function withEntry(index: string, name: string, title: string, description: string) {
   const lines = index.split('\n').filter(l => l !== '')
   const at = lines.findIndex(l => entryName(l) === name)
   const kept = ENTRY.exec(lines[at] ?? '')?.[1]
   const line = indexLine(name, plainTitle(title) || kept || name, description)
-  if (at < 0) lines.push(line)
-  else lines[at] = line
-  return `${lines.join('\n')}\n`
+  const out =
+    at < 0 ? [...lines, line] : lines.flatMap((l, i) => (i === at ? [line] : entryName(l) === name ? [] : [l]))
+  return `${out.join('\n')}\n`
 }
 
 export function withoutEntry(index: string, name: string) {
   const lines = index.split('\n').filter(l => l !== '' && entryName(l) !== name)
   return lines.length === 0 ? '' : `${lines.join('\n')}\n`
+}
+
+// A title, a description and a body have a size, as every index line is in every session's system
+// prompt, and a file over 4 MiB cannot be read back.
+export const LIMITS = { title: 80, description: 400, body: 20_000 } as const
+
+// What is too long about a memory, in words for the model; undefined when nothing is.
+export function overLimit(entry: { title: string; description: string; body: string }) {
+  const sizes = {
+    title: plainTitle(entry.title).length,
+    description: oneLine(entry.description).length,
+    body: entry.body.trim().length,
+  }
+  const field = (Object.keys(LIMITS) as (keyof typeof LIMITS)[]).find(key => sizes[key] > LIMITS[key])
+  return field === undefined
+    ? undefined
+    : `The ${field} is ${sizes[field]} characters long; the most is ${LIMITS[field]}. Shorten it.`
+}
+
+// What the person is asked before a memory is saved: all of what will be stored, the body in part.
+export function saveQuestion(entry: {
+  name: string
+  title: string
+  description: string
+  type: MemoryType
+  body: string
+  replacing: boolean
+}) {
+  const body = entry.body.trim()
+  const title = plainTitle(entry.title)
+  return [
+    `${entry.replacing ? 'Replace' : 'Save'} global memory "${entry.name}" (${entry.type})?`,
+    ...(title === '' ? [] : [`Title: ${title}`]),
+    `Index line: ${oneLine(entry.description)}`,
+    `Body: ${body.length > 300 ? `${body.slice(0, 300)}…` : body}`,
+  ].join('\n')
 }
 
 // What the system prompt adds to the memory section.

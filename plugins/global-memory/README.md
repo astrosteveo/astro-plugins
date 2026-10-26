@@ -7,11 +7,12 @@ Global memories live in `~/.claude/memory/`, one file per fact, with a `MEMORY.m
 - The index joins the system prompt's memory section at the start of each session. A memory saved mid-session reaches the next session, so the conversation's prompt cache is kept.
 - When you correct Claude, or state a preference that holds in every repo, it saves a global memory. A fact about one project goes to that project's memory.
 - It opens a full memory with `global_memory_read` when an index line looks relevant, and changes memories with `global_memory_write` and `global_memory_delete`. These tools keep the index in step.
-- Writes and deletes go through Claude Code's permission check like any other tool: your rules and mode decide, and where they ask, you are asked. Reads need no permission. Allow `mcp__global-memory__global_memory_write` in your settings if you would rather not be asked.
+- Writes and deletes are checked against your permission rules and mode: a rule or mode that denies refuses them. Where they would ask, this mod asks you itself with a plain Allow or Refuse question. It shows what will be stored (the title, the index line, the start of the body, and whether the save replaces a memory). It is not Claude Code's own permission dialog, so PreToolUse hooks and the auto-mode classifier do not see these calls, and it has no "always allow". Allow `mcp__global-memory__global_memory_write` in your settings if you would rather not be asked. Reads need no permission, and a deny rule does not stop them.
 - Sessions in other projects share the folder. A lock directory (`~/.claude/memory/.lock`) makes their changes take turns, so no index line is lost; a lock a minute old is taken to be left by a dead session.
-- The index holds at most 200 memories. At that point Claude must delete or fold one before it saves another.
+- The index holds at most 200 memories. At that point Claude must delete or fold one before it saves another. A title may be 80 characters, an index line's description 400 and a body 20,000, as every index line joins every session's system prompt.
+- Each file is written to a temp file beside it and moved into place, so another session never reads a half-written index.
 
-Needs a POSIX shell: the lock and delete use `mkdir`, `rmdir`, `find` and `rm`.
+No shell is used, but these commands must be on the path: `mkdir`, `rmdir`, `mv`, `rm` and a `find` that takes `-mmin` (GNU and BSD do; POSIX does not define it).
 
 ## Install
 

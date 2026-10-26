@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
+import { saveQuestion } from '../hooks/memory'
 
 const DIR = '/home/u/.claude/memory'
 const INDEX = `${DIR}/MEMORY.md`
@@ -12,12 +13,18 @@ type Disk = {
   lockBusy?: number
   // Whether the held lock is a minute old.
   lockStale?: boolean
+  // The exit status of the `mkdir -p` that makes the folder.
+  mkdirExit?: number
+  // Whether the move of a temp file over the index fails.
+  indexMoveFails?: boolean
 }
 
 // An in-memory disk under the plugin; the engine's memory section reads "core memory".
 function engine(on: On, disk: Disk = {}) {
   const files = new Map<string, string>()
   const log: string[] = []
+  // Where each temp file was moved to.
+  const moves: string[] = []
   on('tool.check', () => ({ decision: disk.verdict ?? 'allow' }))
   on('env.get', () => ({ value: '/home/u' }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__global-memory__${e.name}` } }))
@@ -61,7 +68,16 @@ function engine(on: On, disk: Disk = {}) {
       held = false
       return ran(0)
     }
-    if (cmd === 'mkdir') return ran(0)
+    if (cmd === 'mkdir') return disk.mkdirExit ? ran(disk.mkdirExit, '', 'mkdir: cannot create directory') : ran(0)
+    if (cmd === 'mv') {
+      const from = String(e.argv[3])
+      const to = String(e.argv[4])
+      if (disk.indexMoveFails && to === INDEX) return ran(1, '', 'mv: cannot move: Permission denied')
+      files.set(to, files.get(from) ?? '')
+      files.delete(from)
+      moves.push(to)
+      return ran(0)
+    }
     const exitCode = disk.rmExit ?? 0
     if (exitCode === 0) files.delete(String(e.argv[2]))
     return ran(exitCode, '', exitCode === 0 ? '' : 'rm: cannot remove: Permission denied')
@@ -70,7 +86,7 @@ function engine(on: On, disk: Disk = {}) {
     busy--
     return { value: undefined }
   })
-  return Object.assign(files, { log })
+  return Object.assign(files, { log, moves })
 }
 
 const start = ($: any) => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -235,7 +251,10 @@ test('a rule that denies the call refuses it, and nothing is written', async ($,
   expect(saved.deny).toContain('not permitted')
   expect(files.has(`${DIR}/short-answers.md`)).toBe(false)
   expect(files.has(INDEX)).toBe(false)
-  expect((await remove($, 'short-answers')).deny).toBeDefined()
+
+  files.set(`${DIR}/kept.md`, 'x')
+  expect((await remove($, 'kept')).deny).toContain('not permitted')
+  expect(files.has(`${DIR}/kept.md`)).toBe(true)
 })
 
 // The kit has no person to answer $.ui.ask, so an ask is one nobody can answer: it refuses.
@@ -296,4 +315,99 @@ test('a full index takes no new memory, but replaces one it holds', async ($, on
   expect((await write($, 'one-more')).deny).toContain('200 memories')
   expect(files.has(`${DIR}/one-more.md`)).toBe(false)
   expect((await write($, 'm7')).result).toBe('Saved global memory m7.')
+})
+
+test('memory files and the index are moved into place whole, and no temp file is left', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  await write($, 'a')
+  expect(files.moves).toEqual([`${DIR}/a.md`, INDEX])
+  await remove($, 'a')
+  expect(files.moves).toEqual([`${DIR}/a.md`, INDEX, INDEX])
+  expect([...files.keys()].filter(path => path.endsWith('.tmp'))).toEqual([])
+})
+
+test('a save whose index cannot be updated says the file was written', async ($, on) => {
+  const disk: Disk = { indexMoveFails: true }
+  const files = engine(on, disk)
+  await start($)
+  const saved = await write($, 'a')
+  expect(saved.deny).toContain('Wrote a.md but could not update the index')
+  expect(saved.deny).toContain('Permission denied')
+  expect(files.has(`${DIR}/a.md`)).toBe(true)
+  expect(files.has(INDEX)).toBe(false)
+})
+
+test('a delete whose index cannot be updated says the file is gone, and a second delete clears the line', async ($, on) => {
+  const disk: Disk = {}
+  const files = engine(on, disk)
+  await start($)
+  await write($, 'a')
+  disk.indexMoveFails = true
+  const failed = await remove($, 'a')
+  expect(failed.deny).toContain('Deleted a.md but could not clear its index line')
+  expect(files.has(`${DIR}/a.md`)).toBe(false)
+  expect(files.get(INDEX)).toContain('(a.md)')
+
+  disk.indexMoveFails = false
+  expect((await remove($, 'a')).result).toBe('Deleted global memory a.')
+  expect(files.get(INDEX)).toBe('')
+})
+
+test('a title, a description and a body have a size', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  expect((await write($, 'a', { title: 'x'.repeat(81) })).deny).toContain('The title is 81 characters long; the most is 80')
+  expect((await write($, 'a', { description: 'x'.repeat(401) })).deny).toContain('The description is 401 characters')
+  expect((await write($, 'a', { body: 'x'.repeat(20_001) })).deny).toContain('The body is 20001 characters')
+  expect(files.size).toBe(0)
+  const atLimit = await write($, 'a', { title: 'x'.repeat(80), description: 'x'.repeat(400), body: 'x'.repeat(20_000) })
+  expect(atLimit.result).toBe('Saved global memory a.')
+})
+
+test('a folder that cannot be made refuses the change at once', async ($, on) => {
+  const files = engine(on, { mkdirExit: 1 })
+  await start($)
+  const saved = await write($, 'a')
+  expect(saved.deny).toContain('was not changed')
+  expect(saved.deny).toContain('could not make /home/u/.claude/memory')
+  expect(files.size).toBe(0)
+})
+
+// The kit has no person to answer $.ui.ask, and does not pass it on to a hook: an ask that is made
+// comes back as "was not approved", and one that is not made comes back as a refusal of the call.
+test('a delete asks about a memory that is there, not one that is not', async ($, on) => {
+  const files = engine(on, { verdict: 'ask' })
+  await start($)
+  expect((await remove($, 'zzz')).deny).toBe('No global memory is named "zzz".')
+  files.set(`${DIR}/a.md`, 'x')
+  expect((await remove($, 'a')).deny).toContain('was not approved')
+  files.delete(`${DIR}/a.md`)
+  files.set(INDEX, '- [a](a.md) — x\n')
+  expect((await remove($, 'a')).deny).toContain('was not approved')
+})
+
+test('the question shows what is stored, the body in part, and whether it replaces a memory', () => {
+  const entry = { name: 'short-answers', title: ' Short [answers] ', description: 'The user\nwants answers short', type: 'feedback' as const }
+  const body = `Keep answers short. ${'y'.repeat(400)}`
+  const shown = saveQuestion({ ...entry, body, replacing: false })
+  expect(shown.split('\n')).toEqual([
+    'Save global memory "short-answers" (feedback)?',
+    'Title: Short answers',
+    'Index line: The user wants answers short',
+    `Body: ${body.slice(0, 300)}…`,
+  ])
+  expect(saveQuestion({ ...entry, title: '', body: 'Short.', replacing: true })).toBe(
+    'Replace global memory "short-answers" (feedback)?\nIndex line: The user wants answers short\nBody: Short.',
+  )
+})
+
+test('an index line with a bullet or an indent is an entry, and a duplicate goes when its memory is saved again', async ($, on) => {
+  const files = engine(on)
+  files.set(INDEX, '  - [x](x.md) — old\n* [y](y.md) — y\n- [x](x.md) — duplicate\n')
+  await start($)
+  await write($, 'x', { description: 'new' })
+  expect(files.get(INDEX)).toBe('- [x](x.md) — new\n* [y](y.md) — y\n')
+  await remove($, 'y')
+  expect(files.get(INDEX)).toBe('- [x](x.md) — new\n')
 })
