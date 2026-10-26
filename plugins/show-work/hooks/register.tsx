@@ -1853,7 +1853,8 @@ export const register: Register = on => {
       // its detail.
       const tiles = picture.tiles ?? []
       const marks = picture.marks ?? []
-      const room = Math.max(20, Math.min(100, (e.viewport?.columns ?? 84) - 4))
+      // The transcript's width, less the row's margin; an Image takes 255 at most.
+      const room = Math.max(20, Math.min(255, (e.viewport?.columns ?? 84) - 4))
       const width = cardWidth(picture, room)
       // Inside the border and padding.
       const inner = width - 4
@@ -1931,7 +1932,8 @@ export const register: Register = on => {
       }
 
       const { Image } = $.ui.resolve(e)
-      const box = fit(picture, Math.max(1, Math.min(100, (e.viewport?.columns ?? 84) - 4)), 40)
+      // As wide as the transcript, and at most a screen tall.
+      const box = fit(picture, room, Math.max(40, Math.min(255, (e.viewport?.rows ?? 40) - 4)))
       // Each mark's spot on the picture, the biggest first, so where two
       // overlap the smaller, drawn on top, takes the pointer. Pointing at a
       // spot, or at its row, lays the mark's lit copy over the whole picture;

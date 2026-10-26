@@ -248,10 +248,10 @@ export function nameOf(src: string) {
 export const SHEET_MOST = 9
 export const TILE = 480
 
-// How many pictures a sheet sets across: one row up to three, then rows of
-// two or three.
+// How many pictures a sheet sets across: one row up to four, so a sheet is
+// wide and fills the chat's width; then rows of three or four.
 export function across(count: number) {
-  return count <= 3 ? count : count === 4 ? 2 : 3
+  return count <= 4 ? count : count <= 6 || count === 9 ? 3 : 4
 }
 
 // The factor that brings a small picture, such as a sprite, up to half a

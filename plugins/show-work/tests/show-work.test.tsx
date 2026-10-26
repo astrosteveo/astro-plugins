@@ -947,7 +947,7 @@ test('the image helpers name formats, files and layouts plainly', () => {
   expect(nameOf('https://upload.wikimedia.org/a/b/Godot%20icon.svg?x=1')).toBe('Godot icon.svg')
   expect(nameOf('https://example.com/')).toBe('example.com')
   expect(nameOf('/proj/art/hero.png')).toBe('hero.png')
-  expect([1, 2, 3, 4, 5, 6, 7, 9].map(across)).toEqual([1, 2, 3, 2, 3, 3, 3, 3])
+  expect([1, 2, 3, 4, 5, 6, 7, 8, 9].map(across)).toEqual([1, 2, 3, 4, 3, 3, 4, 4, 3])
   expect(blowUp(32, 16)).toBe(7)
   expect(blowUp(300, 200)).toBe(1)
   expect(literal('@secrets 100%')).toBe('\\@secrets 100%%')
