@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { across, blowUp, errorLines, fromHex, litArgs, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
+import { across, blowUp, errorLines, fromHex, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
 import { briefShow, cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
 
@@ -797,7 +797,7 @@ test("hovering a mark's spot on the chat's picture lights its card row and shows
   await ui.unmount()
 })
 
-test('each mark gets a whole lit copy, laid under the spots, and smaller spots sit on top', async ($, on) => {
+test('smaller spots sit on top, and nothing is laid over the picture', async ($, on) => {
   engine(on)
   const { ran } = host(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
@@ -809,21 +809,14 @@ test('each mark gets a whole lit copy, laid under the spots, and smaller spots s
   expect(Array.isArray(shown.result) && shown.result[0]).toMatchObject({
     text: expect.stringContaining('Marks 1 and 2 overlap; where they do, pointing lands on the smaller one.'),
   })
-  const lighting = ran.filter(argv => argv[0] === 'magick' && argv.at(-1) === 'null:')
-  expect(lighting).toHaveLength(1)
-  expect(lighting[0]?.[1]).toBe('/home/u/.cache/show-work/toolu_l1.png')
-  expect(lighting[0]).toContain('/home/u/.cache/show-work/toolu_l1-lit-2.png')
+  // kitty leaves a revealed picture drawn once the chat scrolls, so no lit
+  // copies are made or laid over it.
+  expect(ran.some(argv => argv.some(arg => arg.includes('-lit-')))).toBe(false)
 
   const chat = await $.ui.mount({ ...RESULT('toolu_l1'), surface: 'terminal' })
-  const lit = await chat.find({ type: 'Box', key: 'lit-toolu_l1-2' })
-  expect(lit?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, display: 'none' })
-  expect(lit?.children[0]).toMatchObject({
-    type: 'Image',
-    props: { source: { file: '/home/u/.cache/show-work/toolu_l1-lit-2.png' }, columns: 80, rows: 23 },
-  })
-  // The copies first, then the spots, the big one before the small.
-  const tree = JSON.stringify(await chat.find({ type: 'Box', key: 'pic-toolu_l1' }))
-  expect(tree.indexOf('lit-toolu_l1-2')).toBeLessThan(tree.indexOf('spot-toolu_l1-1'))
+  const picture = await chat.find({ type: 'Box', key: 'pic-toolu_l1' })
+  expect(JSON.stringify(picture).match(/"type":"Image"/g)).toHaveLength(1)
+  const tree = JSON.stringify(picture)
   expect(tree.indexOf('spot-toolu_l1-1')).toBeLessThan(tree.indexOf('spot-toolu_l1-2'))
   await chat.unmount()
 })
@@ -835,7 +828,7 @@ test("a card is as wide as its longest line, so a revealed detail never widens i
   expect(cardWidth({ tiles: ['Logo', 'Bug page'] }, 100)).toBe('Pick: [ A Logo ] [ B Bug page ]'.length + 4)
 })
 
-test('overlapping marks are found, lit copies are whole, and details wrap to the card', () => {
+test('overlapping marks are found, and details wrap to the card', () => {
   const size = { width: 1280, height: 600 }
   const marks = [
     { x: 665, y: 250, w: 360, h: 75, note: 'a' },
@@ -843,10 +836,6 @@ test('overlapping marks are found, lit copies are whole, and details wrap to the
     { x: 1060, y: 308, w: 200, h: 272, note: 'd' },
   ]
   expect(overlaps(marks, size)).toEqual([[2, 3]])
-  const argv = litArgs('in.png', marks, size, ['o1.png', 'o2.png', 'o3.png'], false)
-  expect(argv.filter(arg => arg === '-write')).toHaveLength(3)
-  expect(argv.includes('-crop')).toBe(false)
-  expect(argv.at(-1)).toBe('null:')
   expect(wrap('No contact shadow under it, so it reads as floating.', 20)).toEqual([
     'No contact shadow',
     'under it, so it',
@@ -963,6 +952,20 @@ test('the design helpers read sizes and errors plainly', () => {
     errorLines('Error: Parse error on line 2:\ngraph TD A-->-B\n----------^\n    at Parser.parseError (x.js:1)\n[1025/191802.897872:WARNING:components/dbus/xdg/portal.cc:126] noise\n'),
   ).toBe('Error: Parse error on line 2:\ngraph TD A-->-B\n----------^')
   expect(page('<p>hi</p>', true)).toContain('<html data-theme="light">')
+})
+
+test("pictures are sized to the terminal's real cell shape, read once at the start", async ($, on) => {
+  engine(on)
+  const { ran } = host(on, { answer: argv => (argv[0] === 'python3' ? { stdout: '2.5\n' } : undefined) })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  expect(ran.filter(argv => argv[0] === 'python3')).toHaveLength(1)
+  await $.tool.call({ tool: 'mcp__show-work__show', tool_use_id: 'toolu_t1', caption: 'Wide', path: '/proj/w.png' })
+  const chat = await $.ui.mount({ ...RESULT('toolu_t1'), surface: 'terminal' })
+  // 1600x900 across 80 columns of cells 2.5 times taller than wide: 18 rows.
+  expect((await chat.find({ type: 'Image' }))?.props).toMatchObject({ columns: 80, rows: 18 })
+  await chat.unmount()
+  expect(fit({ width: 1600, height: 900 }, 100, 40, 2.5)).toEqual({ columns: 100, rows: 23 })
+  expect(fit({ width: 390, height: 844 }, 100, 40, 2.5)).toEqual({ columns: 46, rows: 40 })
 })
 
 test('a tall picture narrows to keep its shape', () => {

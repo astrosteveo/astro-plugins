@@ -397,44 +397,6 @@ export function markCells(
   }
 }
 
-// Each mark lit on a whole copy of the picture, written to `outs` in order:
-// its shape washed with the accent and outlined white, its badge turned
-// white. A whole copy is fitted to its cells as the picture is, so laid over
-// it, it lines up whatever shape the terminal's cells are.
-export function litArgs(
-  from: string,
-  marks: Mark[],
-  size: { width: number; height: number },
-  outs: string[],
-  isLight: boolean,
-  font?: string,
-) {
-  const { width, height } = size
-  const accent = isLight ? ACCENT.light : ACCENT.dark
-  const { stroke, r, ring } = markSizes(size)
-  const inside = (value: number, most: number) => Math.round(Math.min(Math.max(value, r), most - r))
-  const typeface = font === undefined ? [] : ['-font', font]
-  const lit = marks.flatMap((mark, n) => {
-    const isBox = (mark.w ?? 0) > 0 && (mark.h ?? 0) > 0
-    const shape = isBox
-      ? `roundrectangle ${Math.round(mark.x)},${Math.round(mark.y)} ${Math.round(mark.x + (mark.w ?? 0))},${Math.round(mark.y + (mark.h ?? 0))} 8,8`
-      : `circle ${Math.round(mark.x)},${Math.round(mark.y)} ${Math.round(mark.x + ring)},${Math.round(mark.y)}`
-    const cx = inside(isBox ? mark.x : mark.x + ring * 0.7, width)
-    const cy = inside(isBox ? mark.y : mark.y - ring * 0.7, height)
-
-    return [
-      '(', '+clone',
-      '-fill', `${accent}38`, '-stroke', 'white', '-strokewidth', String(Math.round(stroke * 1.5)), '-draw', shape,
-      '-fill', 'white', '-stroke', accent, '-strokewidth', '2', '-draw', `circle ${cx},${cy} ${cx + r},${cy}`,
-      '-fill', accent, '-stroke', 'none', ...typeface, '-pointsize', String(Math.round(r * 1.2)),
-      '-gravity', 'Center', '-annotate', offset(cx - width / 2, cy - height / 2), String(n + 1),
-      '-write', outs[n] ?? 'null:', '+delete', ')',
-    ]
-  })
-
-  return ['magick', from, ...lit, 'null:']
-}
-
 // Text broken into lines of at most `width` cells, at spaces where it can.
 export function wrap(text: string, width: number) {
   const lines: string[] = []

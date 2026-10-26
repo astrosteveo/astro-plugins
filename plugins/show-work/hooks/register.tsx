@@ -49,7 +49,6 @@ import {
   errorLines,
   frame,
   fromHex,
-  litArgs,
   markArgs,
   markCells,
   measured,
@@ -121,6 +120,9 @@ const jobs = atom({ plugin: 'show-work', key: 'jobs' } as const, [], { shape: 'j
 const pickedJob = atom({ plugin: 'show-work', key: 'pickedJob' } as const, null)
 const git = atom({ plugin: 'show-work', key: 'git' } as const, null, { shape: 'git-1' })
 const search = atom({ plugin: 'show-work', key: 'search' } as const, null, { shape: 'search-1' })
+// How many times taller than wide the terminal's cells are, as read from its
+// tty; 2 where the terminal will not say, 0 until read.
+const cellTall = atom({ plugin: 'show-work', key: 'cellTall' } as const, 0)
 // The picture the pane shows; null shows the newest.
 const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
 const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
@@ -476,23 +478,24 @@ export function briefShow(input: unknown) {
   return brief
 }
 
-// Rows a picture takes at a width, a terminal cell being about twice as tall
-// as it is wide.
-export function rowsFor(picture: Pick<Picture, 'width' | 'height'>, columns: number, most: number) {
-  const rows = Math.round((columns * picture.height) / picture.width / 2)
+// Rows a picture takes at a width, a terminal cell being `tall` times as
+// tall as it is wide: about twice, or as the terminal says (cellShape).
+export function rowsFor(picture: Pick<Picture, 'width' | 'height'>, columns: number, most: number, tall = 2) {
+  const rows = Math.round((columns * picture.height) / picture.width / tall)
 
   return Math.max(1, Math.min(most, rows))
 }
 
 // The box that shows a whole picture in at most `columns` by `rows`: as wide
-// as allowed, narrower when a tall picture would take more rows.
-export function fit(picture: Pick<Picture, 'width' | 'height'>, columns: number, rows: number) {
-  const tall = rowsFor(picture, columns, Number.POSITIVE_INFINITY)
-  if (tall <= rows) {
-    return { columns, rows: tall }
+// as allowed, narrower when a tall picture would take more rows. Sized to
+// the cells' real shape, the picture fills it, so a mark's cells sit on it.
+export function fit(picture: Pick<Picture, 'width' | 'height'>, columns: number, rows: number, tall = 2) {
+  const down = rowsFor(picture, columns, Number.POSITIVE_INFINITY, tall)
+  if (down <= rows) {
+    return { columns, rows: down }
   }
 
-  return { columns: Math.max(1, Math.min(columns, Math.round((rows * 2 * picture.width) / picture.height))), rows }
+  return { columns: Math.max(1, Math.min(columns, Math.round((rows * tall * picture.width) / picture.height))), rows }
 }
 
 export function relative(path: string, cwd: string) {
@@ -626,6 +629,49 @@ const WEB = /^https?:\/\//i
 
 const cacheDir = async ($: EngineInterface) =>
   `${(await $.env.get('XDG_CACHE_HOME')) || `${await $.env.get('HOME')}/.cache`}/show-work`
+
+// Reads the terminal's size in pixels from the tty of the nearest process
+// above this one that has one, and answers its cells' height over width;
+// undefined where there is no /proc or the terminal gives no pixels.
+const CELL_SHAPE = `
+import fcntl, os, struct, termios
+pid = os.getppid()
+for _ in range(16):
+    tty = next((t for t in (os.readlink(f'/proc/{pid}/fd/{n}') for n in (0, 1, 2) if os.path.exists(f'/proc/{pid}/fd/{n}')) if t.startswith(('/dev/pts/', '/dev/tty'))), None)
+    if tty:
+        with open(tty, 'rb') as f:
+            rows, cols, x, y = struct.unpack('HHHH', fcntl.ioctl(f.fileno(), termios.TIOCGWINSZ, bytes(8)))
+        if rows and cols and x and y:
+            print((y / rows) / (x / cols))
+        break
+    pid = int(open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()[1])
+    if pid <= 1:
+        break
+`
+
+async function cellShape($: EngineInterface) {
+  const ran = await $.process.run(['python3', '-I', '-c', CELL_SHAPE], { timeoutMs: 5000 }).catch(() => undefined)
+  const tall = Number(firstLine(ran?.stdout ?? ''))
+
+  return ran?.exitCode === 0 && tall >= 1 && tall <= 4 ? tall : undefined
+}
+
+// The cells' shape for sizing a picture. Unread, as after a reload of the
+// plugin mid-session, it is read now and the picture drawn again; 2 till then.
+let isReadingCell = false
+async function shapeOf($: EngineInterface) {
+  const tall = await read($, cellTall)
+  if (tall === 0 && !isReadingCell) {
+    isReadingCell = true
+    void cellShape($)
+      .then(found => update($, cellTall, () => found ?? 2))
+      .finally(() => {
+        isReadingCell = false
+      })
+  }
+
+  return tall === 0 ? 2 : tall
+}
 
 const isLightTheme = async ($: EngineInterface) =>
   /light/i.test(String((await $.config.list()).find(row => row.key === 'theme')?.value ?? ''))
@@ -850,24 +896,15 @@ async function freeze(
   }
 
   const size = await sizeOf($, file)
-  let lit: string[] = []
   if (marks.length > 0 && size !== undefined) {
-    const isLight = await isLightTheme($)
-    const font = await findFont($)
-    const why = await draw($, markArgs(file, file, marks, size, isLight, font))
+    const why = await draw($, markArgs(file, file, marks, size, await isLightTheme($), await findFont($)))
     if (why !== undefined) {
       return `Could not draw the marks: ${why}`
     }
-    // Each mark lit on a whole copy, laid over the picture while pointed at;
-    // without them the marks still work, unlit.
-    const outs = marks.map((_, n) => file.replace(/\.png$/, `-lit-${n + 1}.png`))
-    lit = (await draw($, litArgs(file, marks, size, outs, isLight, font))) === undefined ? outs : []
   }
   const tiles = 'sheet' in source ? { tiles: source.sheet.map(item => item.label || nameOf(item.src)) } : {}
 
-  const marked = marks.length > 0 ? { marks, ...(lit.length > 0 ? { lit } : {}) } : {}
-
-  return { id, file, ...(size ?? { width: 16, height: 9 }), caption, origin, ...tiles, ...marked }
+  return { id, file, ...(size ?? { width: 16, height: 9 }), caption, origin, ...tiles, ...(marks.length > 0 ? { marks } : {}) }
 }
 
 // A picture's size in pixels, as ImageMagick reads it.
@@ -906,7 +943,6 @@ async function keep($: EngineInterface, picture: Picture) {
   if (dropped.length > 0) {
     const files = dropped.flatMap(one => [
       ...['.png', '-look.png', '.svg', '.d2', '.mmd', '.dot', '.html'].map(end => one.file.replace(/\.png$/, end)),
-      ...(one.lit ?? []),
     ])
     await $.process.run(['rm', '-f', ...files])
   }
@@ -1237,6 +1273,8 @@ export const register: Register = on => {
     if (shown !== null) {
       await update($, meter, () => shown)
     }
+    const tall = await cellShape($)
+    await update($, cellTall, () => tall ?? 2)
     await update($, commits, () => rows)
     await update($, tree, () => files)
     await update($, gitStatus, () => codes)
@@ -1668,6 +1706,7 @@ export const register: Register = on => {
     }
     const { Box, Image, Markdown, Text } = $.ui.resolve(e)
     const room = Math.max(1, (e.viewport?.columns ?? 84) - 6)
+    const tall = await shapeOf($)
 
     // Laid out as the engine's reply row: a blank line above, the reply's
     // bullet, the body two columns in.
@@ -1702,7 +1741,7 @@ export const register: Register = on => {
                 key={`mmd-${n}`}
                 source={bytes.get(id) ? { png: bytes.get(id) ?? '' } : { file: diagram.file, format: 'png' }}
                 columns={columns}
-                rows={rowsFor(diagram, columns, 60)}
+                rows={rowsFor(diagram, columns, 60, tall)}
                 alt={`mermaid diagram: ${firstLine(part.source)}`}
               />
             )
@@ -1935,11 +1974,12 @@ export const register: Register = on => {
 
       const { Image } = $.ui.resolve(e)
       // As wide as the transcript, and at most a screen tall.
-      const box = fit(picture, room, Math.max(40, Math.min(255, (e.viewport?.rows ?? 40) - 4)))
+      const box = fit(picture, room, Math.max(40, Math.min(255, (e.viewport?.rows ?? 40) - 4)), await shapeOf($))
       // Each mark's spot on the picture, the biggest first, so where two
-      // overlap the smaller, drawn on top, takes the pointer. Pointing at a
-      // spot, or at its row, lays the mark's lit copy over the whole picture;
-      // the copies sit under the spots, which keep the pointer.
+      // overlap the smaller, drawn on top, takes the pointer. Pointing at one
+      // lights its row in the card and shows its detail. Nothing is laid over
+      // the picture itself: kitty leaves a revealed picture drawn once the
+      // chat scrolls.
       const spots = marks
         .map((mark, n) => ({ n, cells: markCells(mark, picture, box) }))
         .sort((a, b) => b.cells.width * b.cells.height - a.cells.width * a.cells.height)
@@ -1948,18 +1988,6 @@ export const register: Register = on => {
         <Box flexDirection="column">
           <Box key={`pic-${picture.id}`} width={box.columns} height={box.rows}>
             <Image source={{ file: picture.file, format: 'png' }} {...box} alt={picture.caption} />
-            {(picture.lit ?? []).map((file, n) => (
-              <Box
-                key={`lit-${picture.id}-${n + 1}`}
-                position="absolute"
-                top={0}
-                left={0}
-                display="none"
-                hover={{ scope: markScope(picture, n), display: 'flex' }}
-              >
-                <Image source={{ file, format: 'png' }} {...box} alt={picture.caption} />
-              </Box>
-            ))}
             {spots.map(({ n, cells }) => (
               <Box
                 key={`spot-${picture.id}-${n + 1}`}
@@ -2309,7 +2337,7 @@ export const register: Register = on => {
       let view
       if (picture !== undefined && e.surface === 'terminal') {
         const { Image } = $.ui.resolve(e)
-        const box = fit(picture, Math.max(1, Math.min(255, e.props.bodyColumns)), 20)
+        const box = fit(picture, Math.max(1, Math.min(255, e.props.bodyColumns)), 20, await shapeOf($))
         view = <Image source={{ file: picture.file, format: 'png' }} {...box} alt={picture.caption} />
       }
       body =

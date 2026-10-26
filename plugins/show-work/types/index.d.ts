@@ -181,8 +181,6 @@ export type Picture = {
   tiles?: string[]
   /** The marks drawn on it, in its own pixels, in their numbered order. */
   marks?: { x: number; y: number; w?: number; h?: number; note: string; detail?: string }[]
-  /** Whole copies of the picture, each with one mark lit, in mark order. */
-  lit?: string[]
 }
 
 /** A ```mermaid block of a reply, rendered once; `error` when it would not. */
@@ -232,6 +230,8 @@ declare module 'claude-code' {
       status: Shaped<Record<string, string>>
       openDirs: Shaped<string[]>
       filter: string
+      /** How many times taller than wide the terminal's cells are. */
+      cellTall: number
       preview: Shaped<Preview | null>
       jobs: Shaped<Job[]>
       pickedJob: string | null
