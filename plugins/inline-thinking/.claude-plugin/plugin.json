@@ -1,0 +1,10 @@
+{
+  "name": "inline-thinking",
+  "version": "0.1.0",
+  "description": "Draws Claude's thinking in the chat, above the reply or tool call it led to, in place of the folded \"Thought for 4s\".",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT"
+}
