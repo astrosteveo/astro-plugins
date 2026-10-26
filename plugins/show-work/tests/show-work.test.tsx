@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { across, blowUp, errorLines, fromHex, literal, measured, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { fit } from '../hooks/register'
+import { briefShow, fit } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -667,6 +667,44 @@ test('a sheet names the picture it could not read', async ($, on) => {
     images: Array.from({ length: 10 }, (_, n) => ({ src: `/proj/${n}.png` })),
   })
   expect(many.deny).toBe('A sheet holds at most 9 images.')
+})
+
+test("a show call's row names its source by size, and ctrl+o shows it whole", async ($, on) => {
+  engine(on)
+  // The engine's row, standing in: it prints the input it is handed.
+  on('ui.render', (_, e) => ({ type: 'Text', props: {}, children: [JSON.stringify((e.props as { input?: unknown }).input)] }) as never)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const html = '<div class="window">\n  <p>hi</p>\n</div>'
+  const row = (isExpanded: boolean) =>
+    ({
+      plugin: 'show-work',
+      component: 'ToolUse',
+      requestId: 'toolu_u',
+      props: {
+        tool_use_id: 'toolu_u',
+        tool: 'mcp__show-work__show',
+        input: { caption: 'Dashboard', width: 1280, html },
+        isRunning: false,
+        isErrored: false,
+        isInterrupted: false,
+        isExpanded,
+      },
+    }) as const
+  const compact = await $.ui.mount({ ...row(false), surface: 'terminal' })
+  expect((await compact.find({ type: 'Text' }))?.text).toBe('{"caption":"Dashboard","width":1280,"html":"3 lines"}')
+  await compact.unmount()
+  const full = await $.ui.mount({ ...row(true), surface: 'terminal' })
+  expect((await full.find({ type: 'Text' }))?.text).toContain('<p>hi</p>')
+  await full.unmount()
+})
+
+test('a brief show input keeps paths and URLs, and lists a sheet by its labels', () => {
+  expect(briefShow({ caption: 'Logo', url: 'https://example.com/a.svg' })).toEqual({ caption: 'Logo', url: 'https://example.com/a.svg' })
+  expect(briefShow({ caption: 'x', svg: '<svg width="800"/>' })).toEqual({ caption: 'x', svg: '18 characters' })
+  expect(
+    briefShow({ caption: 'Pick', images: [{ src: '/p/a.png', label: 'Painted' }, { src: 'https://e.com/s/hero.png' }] }),
+  ).toEqual({ caption: 'Pick', images: 'Painted, hero.png' })
+  expect(briefShow(undefined)).toEqual({})
 })
 
 test('the image helpers name formats, files and layouts plainly', () => {

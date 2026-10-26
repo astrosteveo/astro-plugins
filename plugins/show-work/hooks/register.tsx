@@ -375,6 +375,26 @@ export function absolute(path: string, cwd: string) {
   return path.startsWith('/') || cwd === '' ? path : `${cwd}/${path}`
 }
 
+// A show call's input as its row prints it: the caption, then each source by
+// its size, where the engine would print the source itself. A path or URL
+// is short, so it stays; a sheet lists its labels.
+export function briefShow(input: unknown) {
+  const given = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
+  const brief: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(given)) {
+    if (['d2', 'mermaid', 'dot', 'html', 'svg'].includes(key) && typeof value === 'string') {
+      const lines = value.trim().split('\n').length
+      brief[key] = lines > 1 ? `${lines} lines` : `${value.length} characters`
+    } else if (key === 'images' && Array.isArray(value)) {
+      brief[key] = value.map(item => asText(item?.label) || nameOf(asText(item?.src))).join(', ')
+    } else {
+      brief[key] = value
+    }
+  }
+
+  return brief
+}
+
 // Rows a picture takes at a width, a terminal cell being about twice as tall
 // as it is wide.
 export function rowsFor(picture: Pick<Picture, 'width' | 'height'>, columns: number, most: number) {
@@ -1692,6 +1712,12 @@ export const register: Register = on => {
       </Box>
     )
   })
+
+  // A show call's row names its source in a few words, where the engine would
+  // print the whole source; ctrl+o still shows all of it.
+  on('ui.render', { component: 'ToolUse', props: { tool: 'mcp__show-work__show' } }, async (_, e, next) =>
+    e.props.isExpanded === true ? next(e) : next({ ...e, props: { ...e.props, input: briefShow(e.props.input) } }),
+  )
 
   // A shown picture draws in the chat, under its tool row.
   on(
