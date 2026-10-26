@@ -9,10 +9,14 @@ type Disk = {
   rmExit?: number
   indexUnreadable?: boolean
   verdict?: 'allow' | 'ask' | 'deny'
-  // Attempts at the lock that fail before one succeeds, as another session holds it.
+  // Another session holds the lock, and lets go of it after this many waits.
   lockBusy?: number
-  // Whether the held lock is a minute old.
+  // Another session holds a lock that is a minute old, and is gone.
   lockStale?: boolean
+  // Another session breaks the stale lock and makes it anew while this one waits for the breaker.
+  lockRenewed?: boolean
+  // Another session takes the lock from this one while it changes the files.
+  lockStolen?: boolean
   // The exit status of the `mkdir -p` that makes the folder.
   mkdirExit?: number
   // Whether the move of a temp file over the index fails.
@@ -23,6 +27,16 @@ type Disk = {
 function engine(on: On, disk: Disk = {}) {
   const files = new Map<string, string>()
   const log: string[] = []
+  const NOW = 1_000_000
+  const LOCK = `${DIR}/.lock`
+  // The lock directory, if there is one: when it was made, and whether this session made it.
+  let lock: { mtime: number; ours: boolean } | undefined = disk.lockStale
+    ? { mtime: NOW - 60_000, ours: false }
+    : disk.lockBusy
+      ? { mtime: NOW, ours: false }
+      : undefined
+  let waits = disk.lockBusy ?? 0
+  let breaker = false
   // Where each temp file was moved to.
   const moves: string[] = []
   on('tool.check', () => ({ decision: disk.verdict ?? 'allow' }))
@@ -45,27 +59,52 @@ function engine(on: On, disk: Disk = {}) {
   on('fs.write', async (_, e) => {
     await Promise.resolve()
     files.set(String(e.path), String(e.text))
+    // Another session breaks this one's lock and makes its own, which holds no token of ours.
+    if (disk.lockStolen && String(e.path) === `${INDEX}.tmp`) {
+      for (const path of [...files.keys()]) if (path.startsWith(`${LOCK}/`)) files.delete(path)
+      lock = { mtime: NOW, ours: false }
+      files.set(`${LOCK}/owner`, 'another-session')
+      waits = Infinity
+    }
     return { value: undefined }
   })
   const ran = (exitCode: number, stdout = '', stderr = '') => ({
     value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false },
   })
-  let busy = disk.lockBusy ?? 0
-  let held = false
+  on('fs.stat', (_, e) => {
+    const path = String(e.path)
+    const mtimeMs = path === LOCK && lock ? lock.mtime : path === `${LOCK}.break` && breaker ? NOW : undefined
+    if (mtimeMs === undefined) throw new Error('ENOENT')
+    return { value: { kind: 'dir' as const, size: 0, mtimeMs, isLink: false } }
+  })
+  on('clock.now', () => ({ value: NOW }))
   on('process.run', (_, e) => {
     const [cmd] = e.argv
-    const isLock = e.argv.includes(`${DIR}/.lock`)
-    if (cmd === 'mkdir' && isLock) {
-      if (busy > 0 || held) return ran(1, '', 'File exists')
-      held = true
+    const target = String(e.argv.at(-1))
+    if (cmd === 'mkdir' && target === LOCK) {
+      if (lock) return ran(1, '', 'File exists')
+      lock = { mtime: NOW, ours: true }
       log.push('lock')
       return ran(0)
     }
-    if (cmd === 'find') return ran(0, disk.lockStale ? `${DIR}/.lock\n` : '')
-    if (cmd === 'rmdir') {
-      if (held) log.push('unlock')
-      else busy = 0
-      held = false
+    if (cmd === 'mkdir' && target === `${LOCK}.break`) {
+      if (breaker) return ran(1, '', 'File exists')
+      breaker = true
+      // The lock is fresh by the time the breaker looks again.
+      if (disk.lockRenewed && lock) {
+        lock.mtime = NOW
+        waits = 2
+      }
+      return ran(0)
+    }
+    if (cmd === 'rmdir' && target === `${LOCK}.break`) {
+      breaker = false
+      return ran(0)
+    }
+    if (cmd === 'rm' && e.argv[1] === '-rf') {
+      if (lock) log.push(lock.ours ? 'unlock' : 'broken')
+      lock = undefined
+      for (const path of [...files.keys()]) if (path.startsWith(`${LOCK}/`)) files.delete(path)
       return ran(0)
     }
     if (cmd === 'mkdir') return disk.mkdirExit ? ran(disk.mkdirExit, '', 'mkdir: cannot create directory') : ran(0)
@@ -83,7 +122,7 @@ function engine(on: On, disk: Disk = {}) {
     return ran(exitCode, '', exitCode === 0 ? '' : 'rm: cannot remove: Permission denied')
   })
   on('clock.sleep', () => {
-    busy--
+    if (lock && !lock.ours && --waits <= 0) lock = undefined
     return { value: undefined }
   })
   return Object.assign(files, { log, moves })
@@ -293,11 +332,26 @@ test('a lock another session holds is waited for', async ($, on) => {
   expect(files.log).toEqual(['lock', 'unlock'])
 })
 
-test('a lock a minute old is broken', async ($, on) => {
-  const files = engine(on, { lockBusy: 1, lockStale: true })
+test('a lock gone stale is broken, once, and the change goes on', async ($, on) => {
+  const files = engine(on, { lockStale: true })
+  await start($)
+  expect((await write($, 'short-answers')).result).toBe('Saved global memory short-answers.')
+  expect(files.log).toEqual(['broken', 'lock', 'unlock'])
+})
+
+test('a lock another session has made anew since is not broken', async ($, on) => {
+  const files = engine(on, { lockStale: true, lockRenewed: true })
   await start($)
   expect((await write($, 'short-answers')).result).toBe('Saved global memory short-answers.')
   expect(files.log).toEqual(['lock', 'unlock'])
+})
+
+test('a lock another session took from this one is left to it', async ($, on) => {
+  const files = engine(on, { lockStolen: true })
+  await start($)
+  expect((await write($, 'short-answers')).result).toBe('Saved global memory short-answers.')
+  expect(files.log).toEqual(['lock'])
+  expect(files.get(`${DIR}/.lock/owner`)).toBe('another-session')
 })
 
 test('a lock that is never freed refuses the change and writes nothing', async ($, on) => {
@@ -306,6 +360,19 @@ test('a lock that is never freed refuses the change and writes nothing', async (
   const saved = await write($, 'short-answers')
   expect(saved.deny).toContain('another session holds the memory lock')
   expect(files.has(INDEX)).toBe(false)
+})
+
+test('a compaction asks for the memory section again', async ($, on) => {
+  engine(on)
+  const invalidated: string[] = []
+  on('ui.invalidate', (_, e) => {
+    invalidated.push(e.event)
+    return { value: undefined }
+  })
+  on('session.compact', (_, e) => ({ messages: e.messages }))
+  await start($)
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+  expect(invalidated).toEqual(['prompt.section'])
 })
 
 test('a full index takes no new memory, but replaces one it holds', async ($, on) => {

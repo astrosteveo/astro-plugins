@@ -86,43 +86,67 @@ async function put($: EngineInterface, path: string, text: string) {
 type Answer = { result: string } | { deny: string }
 
 // Sessions in other projects share this folder. A directory is the lock: mkdir makes one or fails,
-// in one step. A lock a minute old belongs to a session that died.
+// in one step. A change takes a moment, so a lock older than STALE_MS belongs to a session that died.
 const LOCK_TRIES = 100
 const LOCK_WAIT_MS = 50
+const STALE_MS = 15_000
+
+const isOld = async ($: EngineInterface, path: string) => {
+  const [stat, now] = await Promise.all([$.fs.stat(path).catch(() => undefined), $.clock.now()])
+  return stat !== undefined && now - stat.mtimeMs > STALE_MS
+}
+
+// Only one session at a time breaks a lock, by holding the breaker, and it looks again once it
+// does: a lock another session has broken and made anew is fresh, and stays.
+async function breakStale($: EngineInterface, lock: string) {
+  const breaker = `${lock}.break`
+  if ((await $.process.run(['mkdir', '--', breaker])).exitCode !== 0) {
+    if (await isOld($, breaker)) await $.process.run(['rmdir', '--', breaker])
+    return
+  }
+  try {
+    if (await isOld($, lock)) await $.process.run(['rm', '-rf', '--', lock])
+  } finally {
+    await $.process.run(['rmdir', '--', breaker])
+  }
+}
 
 async function withLock<T>($: EngineInterface, dir: string, job: () => Promise<T>) {
   const lock = `${dir}/.lock`
+  const owner = `${lock}/owner`
   const made = await $.process.run(['mkdir', '-p', '--', dir])
   if (made.exitCode !== 0) throw new Error(`could not make ${dir}: ${made.stderr.trim() || `mkdir exited ${made.exitCode}`}`)
   for (let tries = 1; ; tries++) {
     if ((await $.process.run(['mkdir', '--', lock])).exitCode === 0) break
-    if (tries >= LOCK_TRIES) throw new Error('another session holds the memory lock')
-    const stale = await $.process.run(['find', lock, '-maxdepth', '0', '-mmin', '+1'])
-    if (stale.stdout.trim() !== '') await $.process.run(['rmdir', '--', lock])
+    if (tries >= LOCK_TRIES) throw new Error('another session holds the memory lock: try again shortly')
+    if (await isOld($, lock)) await breakStale($, lock)
     else await $.clock.sleep(LOCK_WAIT_MS)
   }
+  const token = `${await $.clock.now()}-${Math.random().toString(36).slice(2)}`
   try {
+    await $.fs.write(owner, token)
     return await job()
   } finally {
-    // A lock that will not come off must not turn a change that was made into an error.
-    await $.process.run(['rmdir', '--', lock]).catch(() => undefined)
+    // The lock comes off only if it is still ours: one held past STALE_MS may have been broken
+    // and made anew by another session. A lock that will not come off must not turn a change
+    // that was made into an error.
+    const held = await $.fs.read(owner).catch(() => undefined)
+    if (held === token) await $.process.run(['rm', '-rf', '--', lock]).catch(() => undefined)
   }
 }
 
+type Call = { tool: string; input: Record<string, unknown>; what: string; question?: string }
+
 // The engine's permission decision for the call, since a hook that answers it skips the check.
 // A rule or mode that denies refuses; an ask goes to the person, and where none can be asked, refuses.
-async function permitted(
-  $: EngineInterface,
-  tool: string,
-  input: Record<string, unknown>,
-  what: string,
-  question = `${what}?`,
-) {
-  const verdict = await $.tool.check({ tool: `${OWN}${tool}`, input })
+async function permitted($: EngineInterface, call: Call) {
+  const verdict = await $.tool.check({ tool: `${OWN}${call.tool}`, input: call.input })
   if (verdict.decision === 'allow') return undefined
-  if (verdict.decision === 'deny') return { deny: verdict.reason ?? `${what} is not permitted.` }
-  const answer = await $.ui.ask(question, { options: ['Allow', 'Refuse'], header: 'Memory' }).catch(() => undefined)
-  return answer === 'Allow' ? undefined : { deny: `${what} was not approved.` }
+  if (verdict.decision === 'deny') return { deny: verdict.reason ?? `${call.what} is not permitted.` }
+  const answer = await $.ui
+    .ask(call.question ?? `${call.what}?`, { options: ['Allow', 'Refuse'], header: 'Memory' })
+    .catch(() => undefined)
+  return answer === 'Allow' ? undefined : { deny: `${call.what} was not approved.` }
 }
 
 // Calls that change the files take turns, and hold the lock, as each reads the index and writes
@@ -135,6 +159,88 @@ function change($: EngineInterface, dir: string, job: () => Promise<Answer>): Pr
   return run.catch((error: unknown) => ({
     deny: `The global memory was not changed: ${why(error)}`,
   }))
+}
+
+// A change the permission check allows, made alone and under the lock.
+async function changeWith($: EngineInterface, dir: string, call: Call, job: () => Promise<Answer>) {
+  return (await permitted($, call)) ?? change($, dir, job)
+}
+
+// What a hook answers when it overran its budget: the job it queued may still land.
+const unfinished = (verb: string, check: string) => ({
+  deny: `global-memory: the ${verb} did not finish, so it may or may not have been made. ${check}`,
+})
+
+type Args = Record<string, unknown>
+
+async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
+  const name = nameOf(e.name)
+  const type = asText(e.type)
+  const description = asText(e.description)
+  const body = asText(e.body)
+  const title = asText(e.title)
+  if (dir === '') return { deny: 'HOME is not set, so there is no place for a global memory.' }
+  if (!isName(name))
+    return { deny: `"${name}" is not a name: use lowercase letters, digits and hyphens, such as "no-gui-tools" ("memory" is reserved).` }
+  if (!TYPES.includes(type as MemoryType)) return { deny: `type must be one of ${TYPES.join(', ')}.` }
+  if (description.trim() === '' || body.trim() === '') return { deny: 'A memory needs a description and a body.' }
+  const tooLong = overLimit({ title, description, body })
+  if (tooLong !== undefined) return { deny: tooLong }
+
+  // The person is shown all of what is stored, and whether it replaces a memory, as the title and
+  // description join every future system prompt and the body is what a later read hands the model.
+  const file = `${dir}/${name}.md`
+  const call = {
+    tool: 'global_memory_write',
+    input: { name, title, description, type, body },
+    what: `Save global memory "${name}"`,
+    question: saveQuestion({ name, title, description, type: type as MemoryType, body, replacing: await $.fs.exists(file) }),
+  }
+
+  // The index joins the system prompt at the next session, not this one: a changed prompt would
+  // throw away the cache of the conversation.
+  return changeWith($, dir, call, async () => {
+    const index = await readIndex($, dir)
+    if (!hasEntry(index, name) && entryCount(index) >= MAX_ENTRIES)
+      return { deny: `The index holds ${MAX_ENTRIES} memories, the most it can: delete or fold one first.` }
+    const existed = await $.fs.exists(file)
+    await put($, file, memoryFile({ name, description, type: type as MemoryType, body }))
+    try {
+      await put($, `${dir}/MEMORY.md`, withEntry(index, name, title, description))
+    } catch (error) {
+      return { deny: `Wrote ${name}.md but could not update the index (${why(error)}), so it is not listed. Save it again to list it.` }
+    }
+    return { result: `${existed ? 'Replaced' : 'Saved'} global memory ${name}.` }
+  })
+}
+
+async function remove($: EngineInterface, dir: string, e: Args): Promise<Answer> {
+  const name = nameOf(e.name)
+  if (!isName(name) || dir === '') return noMemory(name)
+  const file = `${dir}/${name}.md`
+  // Ask about a memory that is there: its file, or the index line a file once had.
+  const listed = (await $.fs.exists(file)) || hasEntry(await readIndex($, dir).catch(() => ''), name)
+  if (!listed) return noMemory(name)
+
+  const call = { tool: 'global_memory_delete', input: { name }, what: `Delete global memory "${name}"` }
+  return changeWith($, dir, call, async () => {
+    const index = await readIndex($, dir)
+    // A line the index keeps for a file that is gone is cleared too, or nothing could.
+    const onDisk = await $.fs.exists(file)
+    if (!onDisk && !hasEntry(index, name)) return noMemory(name)
+    if (onDisk) {
+      const removed = await $.process.run(['rm', '--', file])
+      if (removed.exitCode !== 0)
+        return { deny: `Could not delete global memory ${name}: ${removed.stderr.trim() || `rm exited ${removed.exitCode}`}.` }
+    }
+    try {
+      await put($, `${dir}/MEMORY.md`, withoutEntry(index, name))
+    } catch (error) {
+      const done = onDisk ? `Deleted ${name}.md` : `${name}.md was already gone`
+      return { deny: `${done} but could not clear its index line (${why(error)}). Delete it again to clear the line.` }
+    }
+    return { result: `Deleted global memory ${name}.` }
+  })
 }
 
 export const register: Register = on => {
@@ -158,46 +264,17 @@ export const register: Register = on => {
     return index === undefined ? core : { text: `${core.text}\n\n${guide(dir, index)}` }
   })
 
-  on('tool.call', { tool: `${OWN}global_memory_write` }, async ($, e) => {
-    const name = nameOf(e.name)
-    const type = asText(e.type)
-    const description = asText(e.description)
-    const body = asText(e.body)
-    const title = asText(e.title)
-    if (dir === '') return { deny: 'HOME is not set, so there is no place for a global memory.' }
-    if (!isName(name))
-      return { deny: `"${name}" is not a name: use lowercase letters, digits and hyphens, such as "no-gui-tools" ("memory" is reserved).` }
-    if (!TYPES.includes(type as MemoryType)) return { deny: `type must be one of ${TYPES.join(', ')}.` }
-    if (description.trim() === '' || body.trim() === '') return { deny: 'A memory needs a description and a body.' }
-    const tooLong = overLimit({ title, description, body })
-    if (tooLong !== undefined) return { deny: tooLong }
+  // The prompt section is cached for the session, so a memory saved since it was read is missing
+  // from it. A compaction rebuilds the conversation anyway: read the index again then.
+  on('session.compact', async ($, e, next) => {
+    const compacted = await next(e)
+    if (e.agentId === undefined) $.ui.invalidate('prompt.section')
+    return compacted
+  })
 
-    // The person is shown all of what is stored, and whether it replaces a memory, as the title and
-    // description join every future system prompt and the body is what a later read hands the model.
-    const file = `${dir}/${name}.md`
-    const replacing = await $.fs.exists(file)
-    const question = saveQuestion({ name, title, description, type: type as MemoryType, body, replacing })
-    const refused = await permitted($, 'global_memory_write', { name, title, description, type, body }, `Save global memory "${name}"`, question)
-    if (refused) return refused
-
-    // The index joins the system prompt at the next session, not this one: a changed prompt would
-    // throw away the cache of the conversation.
-    return change($, dir, async () => {
-      const index = await readIndex($, dir)
-      if (!hasEntry(index, name) && entryCount(index) >= MAX_ENTRIES)
-        return { deny: `The index holds ${MAX_ENTRIES} memories, the most it can: delete or fold one first.` }
-      const existed = await $.fs.exists(file)
-      await put($, file, memoryFile({ name, description, type: type as MemoryType, body }))
-      try {
-        await put($, `${dir}/MEMORY.md`, withEntry(index, name, title, description))
-      } catch (error) {
-        return { deny: `Wrote ${name}.md but could not update the index (${why(error)}), so it is not listed. Save it again to list it.` }
-      }
-      return { result: `${existed ? 'Replaced' : 'Saved'} global memory ${name}.` }
-    })
-  }).catch(() => ({
-    deny: 'global-memory: the save did not finish, so it may or may not have been made. Read it with global_memory_read before saving again.',
-  }))
+  on('tool.call', { tool: `${OWN}global_memory_write` }, ($, e) => save($, dir, e)).catch(() =>
+    unfinished('save', 'Read it with global_memory_read before saving again.'),
+  )
 
   on('tool.call', { tool: `${OWN}global_memory_read` }, async ($, e) => {
     const name = nameOf(e.name)
@@ -206,35 +283,7 @@ export const register: Register = on => {
     return typeof text === 'string' ? { result: text } : noMemory(name)
   }).catch(() => ({ deny: 'global-memory: the read failed.' }))
 
-  on('tool.call', { tool: `${OWN}global_memory_delete` }, async ($, e) => {
-    const name = nameOf(e.name)
-    if (!isName(name) || dir === '') return noMemory(name)
-    // Ask about a memory that is there: its file, or the index line a file once had.
-    const listed = (await $.fs.exists(`${dir}/${name}.md`)) || hasEntry(await readIndex($, dir).catch(() => ''), name)
-    if (!listed) return noMemory(name)
-    const refused = await permitted($, 'global_memory_delete', { name }, `Delete global memory "${name}"`)
-    if (refused) return refused
-
-    return change($, dir, async () => {
-      const file = `${dir}/${name}.md`
-      const index = await readIndex($, dir)
-      // A line the index keeps for a file that is gone is cleared too, or nothing could.
-      const onDisk = await $.fs.exists(file)
-      if (!onDisk && !hasEntry(index, name)) return noMemory(name)
-      if (onDisk) {
-        const removed = await $.process.run(['rm', '--', file])
-        if (removed.exitCode !== 0)
-          return { deny: `Could not delete global memory ${name}: ${removed.stderr.trim() || `rm exited ${removed.exitCode}`}.` }
-      }
-      try {
-        await put($, `${dir}/MEMORY.md`, withoutEntry(index, name))
-      } catch (error) {
-        const done = onDisk ? `Deleted ${name}.md` : `${name}.md was already gone`
-        return { deny: `${done} but could not clear its index line (${why(error)}). Delete it again to clear the line.` }
-      }
-      return { result: `Deleted global memory ${name}.` }
-    })
-  }).catch(() => ({
-    deny: 'global-memory: the delete did not finish, so it may or may not have been made. Read the memory to see whether it is still there.',
-  }))
+  on('tool.call', { tool: `${OWN}global_memory_delete` }, ($, e) => remove($, dir, e)).catch(() =>
+    unfinished('delete', 'Read the memory to see whether it is still there.'),
+  )
 }
