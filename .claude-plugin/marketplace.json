@@ -21,6 +21,11 @@
       "name": "gates",
       "source": "./plugins/gates",
       "description": "Gates that refuse risky Bash commands (pkill, kill by pattern, git add -A, git commit -a) and tell Claude why and what to run instead."
+    },
+    {
+      "name": "global-memory",
+      "source": "./plugins/global-memory",
+      "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session."
     }
   ]
 }
