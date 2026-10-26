@@ -48,8 +48,12 @@ import {
   errorLines,
   frame,
   fromHex,
+  litArgs,
   markArgs,
+  markCells,
   measured,
+  overlaps,
+  wrap,
   mermaidArgs,
   nameOf,
   page,
@@ -268,7 +272,7 @@ const SHOW_TOOL = {
 - path: an image file that already exists.
 - url: an image on the web: the image's own address, not the page it sits on. The result hands you what came back, so check it is the picture you meant.
 - images: several images (paths or URLs) side by side on one sheet, lettered A, B, C… and labeled, to compare options. The person can press a tile's letter in the pane to pick it, which starts their prompt with "I pick B".
-Add marks to any of these to point things out: numbered boxes or rings in the picture's own pixels, with their notes listed under it.`,
+Add marks to any of these to point things out: numbered boxes or rings in the picture's own pixels. Each note is a button in a card under the picture that starts the person's reply about it; a detail shows there while they hover over the mark.`,
   isDeferred: false,
   inputSchema: {
     type: 'object',
@@ -295,6 +299,7 @@ Add marks to any of these to point things out: numbered boxes or rings in the pi
             w: { type: 'number', description: 'Box width; leave out for a ring.' },
             h: { type: 'number', description: 'Box height; leave out for a ring.' },
             note: { type: 'string', description: 'What the mark points out, in a few words.' },
+            detail: { type: 'string', description: 'More on it, a sentence or two, shown while the person hovers over the mark.' },
           },
           required: ['x', 'y', 'note'],
         },
@@ -369,6 +374,31 @@ export function pickText(picture: Pick<Picture, 'caption' | 'tiles'>, n: number)
   return `I pick ${letterOf(n)} (${picture.tiles?.[n] ?? ''}) from "${picture.caption}". `
 }
 
+// What pressing a mark's button starts the prompt with.
+export function markText(picture: Pick<Picture, 'caption' | 'marks'>, n: number) {
+  const note = picture.marks?.[n]?.note ?? ''
+  const quote = note.length > 60 ? `${note.slice(0, 57)}...` : note
+
+  return `About mark ${n + 1} ("${quote}") on "${picture.caption}": `
+}
+
+// How wide a picture's card is drawn: as its longest line, a detail
+// included, so revealing one never widens it; at most `room`.
+export function cardWidth(picture: Pick<Picture, 'tiles' | 'marks'>, room: number) {
+  const tiles = picture.tiles ?? []
+  const pick = tiles.length === 0 ? 0 : `Pick: ${tiles.map((label, n) => `[ ${letterOf(n)} ${label} ]`).join(' ')}`.length
+  const marks = picture.marks ?? []
+  const lines = marks.flatMap((mark, n) => [`${n + 1} ${mark.note} ↩`.length, mark.detail?.length ?? 0])
+  const hint = marks.some(mark => mark.detail !== undefined) ? 'Point at a mark for its detail.'.length : 0
+
+  // The border and padding take two cells a side.
+  return Math.min(room, Math.max(pick, hint, ...lines) + 4)
+}
+
+// The hover group of a picture's mark: its spot on the picture and its row
+// in the card light together.
+export const markScope = (picture: Pick<Picture, 'id'>, n: number) => `mark-${picture.id.slice(-40)}-${n + 1}`
+
 // A prompt replies to a note when it quotes it and says something after.
 export function isReplyTo(note: Note, text: string) {
   const prefix = replyPrefix(note)
@@ -403,13 +433,14 @@ export function readMarks(value: unknown): Mark[] {
 
   return value.flatMap(item => {
     const note = asText(item?.note)
+    const detail = asText(item?.detail)
     const [x, y, w, h] = [item?.x, item?.y, item?.w, item?.h].map(Number)
     if (note === '' || !Number.isFinite(x) || !Number.isFinite(y)) {
       return []
     }
     const isBox = Number.isFinite(w) && Number.isFinite(h) && (w ?? 0) > 0 && (h ?? 0) > 0
 
-    return [{ x: x ?? 0, y: y ?? 0, ...(isBox ? { w, h } : {}), note }]
+    return [{ x: x ?? 0, y: y ?? 0, ...(isBox ? { w, h } : {}), note, ...(detail === '' ? {} : { detail }) }]
   })
 }
 
@@ -816,17 +847,25 @@ async function freeze(
     }
   }
 
-  let size = await sizeOf($, file)
+  const size = await sizeOf($, file)
+  let lit: string[] = []
   if (marks.length > 0 && size !== undefined) {
-    const why = await draw($, markArgs(file, file, marks, size, await isLightTheme($), await findFont($)))
+    const isLight = await isLightTheme($)
+    const font = await findFont($)
+    const why = await draw($, markArgs(file, file, marks, size, isLight, font))
     if (why !== undefined) {
       return `Could not draw the marks: ${why}`
     }
-    size = await sizeOf($, file)
+    // Each mark lit on a whole copy, laid over the picture while pointed at;
+    // without them the marks still work, unlit.
+    const outs = marks.map((_, n) => file.replace(/\.png$/, `-lit-${n + 1}.png`))
+    lit = (await draw($, litArgs(file, marks, size, outs, isLight, font))) === undefined ? outs : []
   }
   const tiles = 'sheet' in source ? { tiles: source.sheet.map(item => item.label || nameOf(item.src)) } : {}
 
-  return { id, file, ...(size ?? { width: 16, height: 9 }), caption, origin, ...tiles }
+  const marked = marks.length > 0 ? { marks, ...(lit.length > 0 ? { lit } : {}) } : {}
+
+  return { id, file, ...(size ?? { width: 16, height: 9 }), caption, origin, ...tiles, ...marked }
 }
 
 // A picture's size in pixels, as ImageMagick reads it.
@@ -863,9 +902,10 @@ async function keep($: EngineInterface, picture: Picture) {
   })
   await update($, picked, () => null)
   if (dropped.length > 0) {
-    const files = dropped.flatMap(one =>
-      ['.png', '-look.png', '.svg', '.d2', '.mmd', '.dot', '.html'].map(end => one.file.replace(/\.png$/, end)),
-    )
+    const files = dropped.flatMap(one => [
+      ...['.png', '-look.png', '.svg', '.d2', '.mmd', '.dot', '.html'].map(end => one.file.replace(/\.png$/, end)),
+      ...(one.lit ?? []),
+    ])
     await $.process.run(['rm', '-f', ...files])
   }
 }
@@ -1353,11 +1393,16 @@ export const register: Register = on => {
     if ('src' in source && !WEB.test(source.src) && marks.length === 0) {
       return { result: said }
     }
+    const crossed = overlaps(marks, made)
+      .map(([a, b]) => `${a} and ${b}`)
+      .join(', ')
     const check =
       drawn !== undefined
         ? 'This is what the person sees: fix overlaps and cut or crowded text, and show it again, before you go on.'
         : marks.length > 0
-          ? 'This is what the person sees: check each mark sits on what its note names, and show it again if one is off.'
+          ? `This is what the person sees: check each mark sits on what its note names, and show it again if one is off.${
+              crossed === '' ? '' : ` Marks ${crossed} overlap; where they do, pointing lands on the smaller one. Tighten them if they need not.`
+            }`
           : 'This is what the person sees: check it is the picture you meant.'
 
     return { result: [{ type: 'text', text: `${said} ${check}` }, await lookAt($, made)] }
@@ -1800,25 +1845,130 @@ export const register: Register = on => {
         return next(e)
       }
 
-      if (e.surface !== 'terminal') {
-        const { Text } = $.ui.resolve(e)
+      const { Box, Button, Text } = $.ui.resolve(e)
+      const fill = (text: string) => () => $.prompt.fill({ text, mode: 'insert' })
+      // A card of what the picture asks of the person: a sheet's tiles to
+      // pick, a mark to answer. Pressing one starts the reply in the prompt;
+      // hovering a mark, on the picture or here, lights its row and shows
+      // its detail.
+      const tiles = picture.tiles ?? []
+      const marks = picture.marks ?? []
+      const room = Math.max(20, Math.min(100, (e.viewport?.columns ?? 84) - 4))
+      const width = cardWidth(picture, room)
+      // Inside the border and padding.
+      const inner = width - 4
+      const details = marks.flatMap((mark, n) => (mark.detail === undefined ? [] : [{ n, lines: wrap(mark.detail, inner) }]))
+      const detailRows = Math.max(1, ...details.map(one => one.lines.length))
+      const card =
+        tiles.length + marks.length === 0 ? null : (
+          <Box
+            flexDirection="column"
+            borderStyle="round"
+            borderDimColor
+            paddingX={1}
+            alignSelf="flex-start"
+            width={width}
+          >
+            {tiles.length > 0 && (
+              <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+                <Text dimColor>Pick:</Text>
+                {tiles.map((label, n) => (
+                  <Button key={`pick-${picture.id}-${letterOf(n)}`} onPress={fill(pickText(picture, n))}>
+                    <Text weight="bold">{letterOf(n)}</Text> {label}
+                  </Button>
+                ))}
+              </Box>
+            )}
+            {marks.map((mark, n) => (
+              <Box
+                key={`row-${picture.id}-${n + 1}`}
+                hover={{ scope: markScope(picture, n), backgroundColor: 'subtle' }}
+              >
+                <Button key={`mark-${picture.id}-${n + 1}`} plain onPress={fill(markText(picture, n))}>
+                  <Text color="claude" weight="bold">{n + 1}</Text> {mark.note} <Text dimColor>↩</Text>
+                </Button>
+              </Box>
+            ))}
+            {details.length > 0 && (
+              // The detail of the mark pointed at, in lines kept for the
+              // longest, so the card never changes height and the chat
+              // above it never moves.
+              <Box key={`details-${picture.id}`} height={detailRows} marginTop={1}>
+                <Text dimColor italic>
+                  Point at a mark for its detail.
+                </Text>
+                {details.map(({ n, lines }) => (
+                  <Box
+                    key={`detail-${picture.id}-${n + 1}`}
+                    position="absolute"
+                    top={0}
+                    left={0}
+                    flexDirection="column"
+                    display="none"
+                    hover={{ scope: markScope(picture, n), display: 'flex' }}
+                  >
+                    {Array.from({ length: detailRows }, (_, row) => (
+                      <Text key={`line-${row}`} dimColor>
+                        {(lines[row] ?? '').padEnd(inner)}
+                      </Text>
+                    ))}
+                  </Box>
+                ))}
+              </Box>
+            )}
+          </Box>
+        )
 
+      if (e.surface !== 'terminal') {
         return (
-          <Text dimColor>
-            {picture.caption}: {picture.file}
-          </Text>
+          <Box flexDirection="column">
+            <Text dimColor>
+              {picture.caption}: {picture.file}
+            </Text>
+            {card}
+          </Box>
         )
       }
 
-      const { Box, Image, Text } = $.ui.resolve(e)
+      const { Image } = $.ui.resolve(e)
       const box = fit(picture, Math.max(1, Math.min(100, (e.viewport?.columns ?? 84) - 4)), 40)
+      // Each mark's spot on the picture, the biggest first, so where two
+      // overlap the smaller, drawn on top, takes the pointer. Pointing at a
+      // spot, or at its row, lays the mark's lit copy over the whole picture;
+      // the copies sit under the spots, which keep the pointer.
+      const spots = marks
+        .map((mark, n) => ({ n, cells: markCells(mark, picture, box) }))
+        .sort((a, b) => b.cells.width * b.cells.height - a.cells.width * a.cells.height)
 
       return (
         <Box flexDirection="column">
-          <Image source={{ file: picture.file, format: 'png' }} {...box} alt={picture.caption} />
+          <Box key={`pic-${picture.id}`} width={box.columns} height={box.rows}>
+            <Image source={{ file: picture.file, format: 'png' }} {...box} alt={picture.caption} />
+            {(picture.lit ?? []).map((file, n) => (
+              <Box
+                key={`lit-${picture.id}-${n + 1}`}
+                position="absolute"
+                top={0}
+                left={0}
+                display="none"
+                hover={{ scope: markScope(picture, n), display: 'flex' }}
+              >
+                <Image source={{ file, format: 'png' }} {...box} alt={picture.caption} />
+              </Box>
+            ))}
+            {spots.map(({ n, cells }) => (
+              <Box
+                key={`spot-${picture.id}-${n + 1}`}
+                position="absolute"
+                {...cells}
+                hover={{ scope: markScope(picture, n) }}
+              />
+            ))}
+          </Box>
           <Text dimColor>
             {picture.caption} <Text dimColor>{picture.width}x{picture.height}</Text>
           </Text>
+          {card}
         </Box>
       )
     },
@@ -2179,6 +2329,17 @@ export const register: Register = on => {
                 ))}
               </Box>
             )}
+            {(picture.marks ?? []).map((mark, n) => (
+              <Box key={`pane-row-${n + 1}`} hover={{ scope: markScope(picture, n), backgroundColor: 'subtle' }}>
+                <Button
+                  key={`pane-mark-${n + 1}`}
+                  plain
+                  onPress={() => $.prompt.fill({ text: markText(picture, n), mode: 'insert' })}
+                >
+                  <Text color="claude" weight="bold">{n + 1}</Text> {mark.note} <Text dimColor>↩</Text>
+                </Button>
+              </Box>
+            ))}
             {pics.length > 1 &&
               pics
                 .slice(-8)

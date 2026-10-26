@@ -179,6 +179,10 @@ export type Picture = {
   origin: 'shown' | 'read'
   /** A sheet's labels, one per tile in order, for the person to pick from. */
   tiles?: string[]
+  /** The marks drawn on it, in its own pixels, in their numbered order. */
+  marks?: { x: number; y: number; w?: number; h?: number; note: string; detail?: string }[]
+  /** Whole copies of the picture, each with one mark lit, in mark order. */
+  lit?: string[]
 }
 
 /** A ```mermaid block of a reply, rendered once; `error` when it would not. */
@@ -206,7 +210,7 @@ declare module 'claude-code' {
       path?: string
       url?: string
       images?: { src: string; label?: string }[]
-      marks?: { x: number; y: number; w?: number; h?: number; note: string }[]
+      marks?: { x: number; y: number; w?: number; h?: number; note: string; detail?: string }[]
     }
   }
   interface PluginState {

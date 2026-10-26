@@ -1,9 +1,9 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { across, blowUp, errorLines, fromHex, literal, markArgs, measured, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
+import { across, blowUp, errorLines, fromHex, litArgs, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { briefShow, fit, pickText, readMarks } from '../hooks/register'
+import { briefShow, cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -727,6 +727,134 @@ test('pressing a tile of a sheet starts the prompt with the pick', async ($, on)
   await ui.unmount()
 })
 
+test("a card under the chat's picture picks a tile or answers a mark, on any surface", async ($, on) => {
+  const filled = engine(on)
+  host(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_c1',
+    caption: 'Hero styles',
+    images: [{ src: '/proj/a.png', label: 'Painted' }, { src: '/proj/b.png', label: 'Pixel' }],
+  })
+  await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_c2',
+    caption: 'Level 2',
+    path: '/proj/level2.png',
+    marks: [{ x: 1, y: 2, note: 'The slope' }, { x: 3, y: 4, w: 5, h: 6, note: 'Score jumps here' }],
+  })
+
+  const sheet = await $.ui.mount({ ...RESULT('toolu_c1'), surface: 'terminal' })
+  expect((await sheet.find({ type: 'Button', key: 'pick-toolu_c1-B' }))?.text).toBe('B Pixel')
+  await sheet.press({ key: 'pick-toolu_c1-B' })
+  await sheet.unmount()
+
+  const marked = await $.ui.mount({ ...RESULT('toolu_c2'), surface: 'desktop' })
+  expect((await marked.find({ type: 'Button', key: 'mark-toolu_c2-2' }))?.text).toBe('2 Score jumps here ↩')
+  await marked.press({ key: 'mark-toolu_c2-2' })
+  await marked.unmount()
+
+  expect(filled).toEqual(['I pick B (Pixel) from "Hero styles". ', 'About mark 2 ("Score jumps here") on "Level 2": '])
+  expect(markText({ caption: 'x', marks: [{ x: 0, y: 0, note: 'a'.repeat(70) }] }, 0)).toBe(`About mark 1 ("${'a'.repeat(57)}...") on "x": `)
+
+  // A plain picture asks nothing: no card.
+  await $.tool.call({ tool: 'mcp__show-work__show', tool_use_id: 'toolu_c3', caption: 'Plain', path: '/proj/c.png' })
+  const plain = await $.ui.mount({ ...RESULT('toolu_c3'), surface: 'terminal' })
+  expect(await plain.find({ type: 'Button' })).toBeUndefined()
+  await plain.unmount()
+})
+
+test("hovering a mark's spot on the chat's picture lights its card row and shows its detail", async ($, on) => {
+  engine(on)
+  host(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_h1',
+    caption: 'Level 2',
+    path: '/proj/level2.png',
+    marks: [{ x: 800, y: 450, w: 160, h: 90, note: 'The slope', detail: 'The normal flips the one-way check.' }],
+  })
+  const chat = await $.ui.mount({ ...RESULT('toolu_h1'), surface: 'terminal' })
+  // The kit's snapshot leaves hover out, so this checks where the spot sits
+  // and that the detail waits hidden; a live session checks the hover.
+  const spot = await chat.find({ type: 'Box', key: 'spot-toolu_h1-1' })
+  expect(spot?.props).toMatchObject({ position: 'absolute', left: 38, top: 10, width: 10, height: 4 })
+  expect(await chat.find({ type: 'Box', key: 'row-toolu_h1-1' })).toBeDefined()
+  // The detail waits hidden in the lines kept for it, over the hint.
+  const detail = await chat.find({ type: 'Box', key: 'detail-toolu_h1-1' })
+  expect(detail?.props).toMatchObject({ position: 'absolute', display: 'none' })
+  expect(detail?.text.trim()).toBe('The normal flips the one-way check.')
+  expect((await chat.find({ type: 'Box', key: 'details-toolu_h1' }))?.props).toMatchObject({ height: 1 })
+  expect(await chat.find({ type: 'Text', text: 'Point at a mark for its detail.' })).toBeDefined()
+  expect(markScope({ id: 'toolu_h1' }, 0)).toBe('mark-toolu_h1-1')
+  await chat.unmount()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-pictures' })
+  expect((await ui.find({ type: 'Button', key: 'pane-mark-1' }))?.text).toBe('1 The slope ↩')
+  await ui.unmount()
+})
+
+test('each mark gets a whole lit copy, laid under the spots, and smaller spots sit on top', async ($, on) => {
+  engine(on)
+  const { ran } = host(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const marks = [
+    { x: 100, y: 100, w: 1200, h: 600, note: 'Big' },
+    { x: 200, y: 200, w: 100, h: 50, note: 'Small' },
+  ]
+  const shown = await $.tool.call({ tool: 'mcp__show-work__show', tool_use_id: 'toolu_l1', caption: 'Lit', path: '/proj/l.png', marks })
+  expect(Array.isArray(shown.result) && shown.result[0]).toMatchObject({
+    text: expect.stringContaining('Marks 1 and 2 overlap; where they do, pointing lands on the smaller one.'),
+  })
+  const lighting = ran.filter(argv => argv[0] === 'magick' && argv.at(-1) === 'null:')
+  expect(lighting).toHaveLength(1)
+  expect(lighting[0]?.[1]).toBe('/home/u/.cache/show-work/toolu_l1.png')
+  expect(lighting[0]).toContain('/home/u/.cache/show-work/toolu_l1-lit-2.png')
+
+  const chat = await $.ui.mount({ ...RESULT('toolu_l1'), surface: 'terminal' })
+  const lit = await chat.find({ type: 'Box', key: 'lit-toolu_l1-2' })
+  expect(lit?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, display: 'none' })
+  expect(lit?.children[0]).toMatchObject({
+    type: 'Image',
+    props: { source: { file: '/home/u/.cache/show-work/toolu_l1-lit-2.png' }, columns: 80, rows: 23 },
+  })
+  // The copies first, then the spots, the big one before the small.
+  const tree = JSON.stringify(await chat.find({ type: 'Box', key: 'pic-toolu_l1' }))
+  expect(tree.indexOf('lit-toolu_l1-2')).toBeLessThan(tree.indexOf('spot-toolu_l1-1'))
+  expect(tree.indexOf('spot-toolu_l1-1')).toBeLessThan(tree.indexOf('spot-toolu_l1-2'))
+  await chat.unmount()
+})
+
+test("a card is as wide as its longest line, so a revealed detail never widens it", () => {
+  const picture = { marks: [{ x: 0, y: 0, note: 'Short', detail: 'A detail that runs longer than the note.' }] }
+  expect(cardWidth(picture, 100)).toBe('A detail that runs longer than the note.'.length + 4)
+  expect(cardWidth(picture, 30)).toBe(30)
+  expect(cardWidth({ tiles: ['Logo', 'Bug page'] }, 100)).toBe('Pick: [ A Logo ] [ B Bug page ]'.length + 4)
+})
+
+test('overlapping marks are found, lit copies are whole, and details wrap to the card', () => {
+  const size = { width: 1280, height: 600 }
+  const marks = [
+    { x: 665, y: 250, w: 360, h: 75, note: 'a' },
+    { x: 1200, y: 180, w: 78, h: 168, note: 'c' },
+    { x: 1060, y: 308, w: 200, h: 272, note: 'd' },
+  ]
+  expect(overlaps(marks, size)).toEqual([[2, 3]])
+  const argv = litArgs('in.png', marks, size, ['o1.png', 'o2.png', 'o3.png'], false)
+  expect(argv.filter(arg => arg === '-write')).toHaveLength(3)
+  expect(argv.includes('-crop')).toBe(false)
+  expect(argv.at(-1)).toBe('null:')
+  expect(wrap('No contact shadow under it, so it reads as floating.', 20)).toEqual([
+    'No contact shadow',
+    'under it, so it',
+    'reads as floating.',
+  ])
+  expect(wrap('abcdefghij', 4)).toEqual(['abcd', 'efgh', 'ij'])
+})
+
 test('marks are drawn on a picture and the marked picture comes back to Claude', async ($, on) => {
   engine(on)
   const { ran } = host(on)
@@ -742,7 +870,7 @@ test('marks are drawn on a picture and the marked picture comes back to Claude',
       { x: 5, y: 5, note: ' ' },
     ],
   })
-  const drawn = ran.find(argv => argv[0] === 'magick' && argv.includes('-append')) ?? []
+  const drawn = ran.find(argv => argv[0] === 'magick' && argv.includes('-annotate')) ?? []
   expect(drawn).toEqual(
     markArgs(
       '/home/u/.cache/show-work/toolu_k.png',
@@ -788,7 +916,21 @@ test('marks read plainly, and badges stay inside the picture', () => {
   // r is 12 for a 600-pixel picture: the badge at the corner moves in by it.
   expect(argv).toContain('circle 12,12 24,12')
   expect(argv).toContain('-288-138')
-  expect(argv).toContain('caption:1  100%% @here')
+  expect(argv.at(-1)).toBe('out.png')
+  expect(argv.some(arg => arg.startsWith('caption:'))).toBe(false)
+  // A 1600x900 picture drawn 100 by 28: a box, and a ring with its badge.
+  expect(markCells({ x: 800, y: 450, w: 160, h: 90, note: 'box' }, { width: 1600, height: 900 }, { columns: 100, rows: 28 })).toEqual({
+    left: 48,
+    top: 13,
+    width: 12,
+    height: 4,
+  })
+  expect(markCells({ x: 1599, y: 0, note: 'ring' }, { width: 1600, height: 900 }, { columns: 100, rows: 28 })).toEqual({
+    left: 97,
+    top: 0,
+    width: 3,
+    height: 2,
+  })
   expect(briefShow({ caption: 'x', path: 'a.png', marks: [{}, {}] })).toEqual({ caption: 'x', path: 'a.png', marks: '2 marks' })
   expect(pickText({ caption: 'Heroes', tiles: ['Painted'] }, 0)).toBe('I pick A (Painted) from "Heroes". ')
 })

@@ -292,9 +292,9 @@ export function sheetArgs(isLight: boolean, tiles: { file: string; label: string
 }
 
 // A mark on a picture, in its own pixels: a box when it has a width and
-// height, a ring round a spot when it has neither. Its note goes under the
-// picture, after its number.
-export type Mark = { x: number; y: number; w?: number; h?: number; note: string }
+// height, a ring round a spot when it has neither. Its note names it in the
+// card under the picture; its detail shows there while it is hovered.
+export type Mark = { x: number; y: number; w?: number; h?: number; note: string; detail?: string }
 
 // The accent marks are drawn in, as the wireframe kit's.
 const ACCENT = { light: '#d97757', dark: '#e08a6a' }
@@ -304,8 +304,17 @@ const ACCENT = { light: '#d97757', dark: '#e08a6a' }
 const offset = (dx: number, dy: number) =>
   `${dx < 0 ? '-' : '+'}${Math.abs(Math.round(dx))}${dy < 0 ? '-' : '+'}${Math.abs(Math.round(dy))}`
 
+// The sizes marks are drawn at on a picture: the line, the badge's radius,
+// and a ring's.
+function markSizes(size: { width: number; height: number }) {
+  const longest = Math.max(size.width, size.height)
+  const r = Math.max(12, Math.round(longest / 60))
+
+  return { stroke: Math.max(3, Math.round(longest / 300)), r, ring: Math.round(r * 1.3) }
+}
+
 // Marks drawn on a picture, each numbered on a badge kept inside the
-// edges, and the notes set under it, wrapped to its width.
+// edges. Their notes go in the card under it, not on the picture.
 export function markArgs(
   from: string,
   to: string,
@@ -317,14 +326,11 @@ export function markArgs(
   const { width, height } = size
   const accent = isLight ? ACCENT.light : ACCENT.dark
   const paper = isLight ? PAPER.light : PAPER.dark
-  const longest = Math.max(width, height)
-  const stroke = Math.max(3, Math.round(longest / 300))
-  const r = Math.max(12, Math.round(longest / 60))
+  const { stroke, r, ring } = markSizes(size)
   const inside = (value: number, most: number) => Math.round(Math.min(Math.max(value, r), most - r))
   const typeface = font === undefined ? [] : ['-font', font]
   const drawn = marks.flatMap((mark, n) => {
     const isBox = (mark.w ?? 0) > 0 && (mark.h ?? 0) > 0
-    const ring = Math.round(r * 1.3)
     const shape = isBox
       ? `roundrectangle ${Math.round(mark.x)},${Math.round(mark.y)} ${Math.round(mark.x + (mark.w ?? 0))},${Math.round(mark.y + (mark.h ?? 0))} 8,8`
       : `circle ${Math.round(mark.x)},${Math.round(mark.y)} ${Math.round(mark.x + ring)},${Math.round(mark.y)}`
@@ -338,27 +344,115 @@ export function markArgs(
       '-gravity', 'Center', '-annotate', offset(cx - width / 2, cy - height / 2), String(n + 1),
     ]
   })
-  const notes = marks.map((mark, n) => `${n + 1}  ${mark.note}`).join('\n')
-  const pad = 16
 
-  return [
-    'magick',
-    from,
-    ...drawn,
-    '(',
-    '-size', `${Math.max(1, width - pad * 2)}x`,
-    '-background', paper,
-    '-fill', isLight ? '#1f2328' : '#e8e8e6',
-    ...typeface,
-    '-pointsize', String(Math.max(18, Math.round(width / 50))),
-    '-gravity', 'NorthWest',
-    `caption:${literal(notes)}`,
-    '-bordercolor', paper,
-    '-border', `${pad}x12`,
-    ')',
-    '-gravity', 'West',
-    '-background', paper,
-    '-append',
-    to,
-  ]
+  return ['magick', from, ...drawn, to]
+}
+
+// The pixels a mark's shape takes: its box, or its ring's square.
+export function shapeBounds(mark: Mark, size: { width: number; height: number }) {
+  const { ring } = markSizes(size)
+  const isBox = (mark.w ?? 0) > 0 && (mark.h ?? 0) > 0
+
+  return isBox
+    ? { x0: mark.x, y0: mark.y, x1: mark.x + (mark.w ?? 0), y1: mark.y + (mark.h ?? 0) }
+    : { x0: mark.x - ring, y0: mark.y - ring, x1: mark.x + ring, y1: mark.y + ring }
+}
+
+// The pairs of marks whose shapes overlap, numbered from 1.
+export function overlaps(marks: Mark[], size: { width: number; height: number }) {
+  const bounds = marks.map(mark => shapeBounds(mark, size))
+
+  return bounds.flatMap((a, i) =>
+    bounds
+      .slice(i + 1)
+      .flatMap((b, k) => (a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1 ? [[i + 1, i + k + 2] as const] : [])),
+  )
+}
+
+// The terminal cells a mark covers when its picture is drawn `columns` by
+// `rows`: its shape with its badge; at least one cell.
+export function markCells(
+  mark: Mark,
+  size: { width: number; height: number },
+  box: { columns: number; rows: number },
+) {
+  const { r } = markSizes(size)
+  const isBox = (mark.w ?? 0) > 0 && (mark.h ?? 0) > 0
+  const shape = shapeBounds(mark, size)
+  // A box's badge sits on its corner; a ring's up and to the right.
+  const [x0, y0, x1, y1] = isBox
+    ? [shape.x0 - r, shape.y0 - r, shape.x1, shape.y1]
+    : [shape.x0, shape.y0 - r, shape.x1 + r, shape.y1]
+  const across = (x: number) => Math.min(box.columns, Math.max(0, (x / size.width) * box.columns))
+  const down = (y: number) => Math.min(box.rows, Math.max(0, (y / size.height) * box.rows))
+  const left = Math.min(box.columns - 1, Math.floor(across(x0)))
+  const top = Math.min(box.rows - 1, Math.floor(down(y0)))
+
+  return {
+    left,
+    top,
+    width: Math.max(1, Math.ceil(across(x1)) - left),
+    height: Math.max(1, Math.ceil(down(y1)) - top),
+  }
+}
+
+// Each mark lit on a whole copy of the picture, written to `outs` in order:
+// its shape washed with the accent and outlined white, its badge turned
+// white. A whole copy is fitted to its cells as the picture is, so laid over
+// it, it lines up whatever shape the terminal's cells are.
+export function litArgs(
+  from: string,
+  marks: Mark[],
+  size: { width: number; height: number },
+  outs: string[],
+  isLight: boolean,
+  font?: string,
+) {
+  const { width, height } = size
+  const accent = isLight ? ACCENT.light : ACCENT.dark
+  const { stroke, r, ring } = markSizes(size)
+  const inside = (value: number, most: number) => Math.round(Math.min(Math.max(value, r), most - r))
+  const typeface = font === undefined ? [] : ['-font', font]
+  const lit = marks.flatMap((mark, n) => {
+    const isBox = (mark.w ?? 0) > 0 && (mark.h ?? 0) > 0
+    const shape = isBox
+      ? `roundrectangle ${Math.round(mark.x)},${Math.round(mark.y)} ${Math.round(mark.x + (mark.w ?? 0))},${Math.round(mark.y + (mark.h ?? 0))} 8,8`
+      : `circle ${Math.round(mark.x)},${Math.round(mark.y)} ${Math.round(mark.x + ring)},${Math.round(mark.y)}`
+    const cx = inside(isBox ? mark.x : mark.x + ring * 0.7, width)
+    const cy = inside(isBox ? mark.y : mark.y - ring * 0.7, height)
+
+    return [
+      '(', '+clone',
+      '-fill', `${accent}38`, '-stroke', 'white', '-strokewidth', String(Math.round(stroke * 1.5)), '-draw', shape,
+      '-fill', 'white', '-stroke', accent, '-strokewidth', '2', '-draw', `circle ${cx},${cy} ${cx + r},${cy}`,
+      '-fill', accent, '-stroke', 'none', ...typeface, '-pointsize', String(Math.round(r * 1.2)),
+      '-gravity', 'Center', '-annotate', offset(cx - width / 2, cy - height / 2), String(n + 1),
+      '-write', outs[n] ?? 'null:', '+delete', ')',
+    ]
+  })
+
+  return ['magick', from, ...lit, 'null:']
+}
+
+// Text broken into lines of at most `width` cells, at spaces where it can.
+export function wrap(text: string, width: number) {
+  const lines: string[] = []
+  let line = ''
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    for (let rest = word; rest !== ''; ) {
+      const room = width - (line === '' ? 0 : line.length + 1)
+      if (rest.length <= room) {
+        line = line === '' ? rest : `${line} ${rest}`
+        rest = ''
+      } else if (line !== '') {
+        lines.push(line)
+        line = ''
+      } else {
+        lines.push(rest.slice(0, width))
+        rest = rest.slice(width)
+      }
+    }
+  }
+
+  return line === '' ? lines : [...lines, line]
 }
