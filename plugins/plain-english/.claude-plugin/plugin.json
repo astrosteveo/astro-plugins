@@ -1,7 +1,7 @@
 {
   "name": "plain-english",
-  "version": "0.1.0",
-  "description": "An output style for plain English, given to every subagent and fork too, and a skill that scans prose for Claudisms.",
+  "version": "0.2.0",
+  "description": "A forced output style for plain English, given to every subagent and fork too, and a skill that scans prose for Claudisms.",
   "author": {
     "name": "astrosteveo"
   },

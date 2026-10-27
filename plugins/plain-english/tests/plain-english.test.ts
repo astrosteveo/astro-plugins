@@ -5,11 +5,9 @@ import { prose, report, scan } from '../hooks/scan'
 import { parseStyle, withRules } from '../hooks/style'
 
 const STYLE = '---\nname: Plain English\ndescription: Plain words\nkeep-coding-instructions: true\n---\n\n# Plain English\n\nWrite plainly.\n'
-const CHOSEN = 'plain-english:Plain English'
 
 type World = {
   style?: string
-  outputStyle?: string
   home?: string
   files: Map<string, string>
   verdict: 'allow' | 'ask' | 'deny'
@@ -19,7 +17,6 @@ type World = {
 
 const world = (over: Partial<World> = {}): World => ({
   style: STYLE,
-  outputStyle: CHOSEN,
   home: '/home/u',
   files: new Map(),
   verdict: 'allow',
@@ -33,7 +30,6 @@ function engine(on: On, w: World) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: '/work' }))
   on('env.get', () => ({ value: w.home }))
-  on('settings.read', () => ({ value: w.outputStyle === undefined ? {} : { outputStyle: w.outputStyle } }))
   on('tool.check', () => ({ decision: w.verdict }))
   on('tool.register', (_, e) => {
     w.registered.push(e.name)
@@ -72,7 +68,7 @@ const answer = (r: { result?: string; text?: string; deny?: string }) => r.resul
 
 // The spawn hook
 
-test('with the style chosen, a subagent gets the rules whole after its task', async ($, on) => {
+test('a subagent gets the rules whole after its task', async ($, on) => {
   const w = world()
   engine(on, w)
   await $.agent.spawn(SPAWN)
@@ -94,8 +90,6 @@ test('a fork, which shares the style already, gets a pointer to it', async ($, o
 })
 
 for (const [why, over] of [
-  ['another style is chosen', { outputStyle: 'Concise' }],
-  ['no style is chosen', { outputStyle: undefined }],
   ['the style file is missing', { style: undefined }],
   ['the style file has no frontmatter', { style: '# Plain English\n\nWrite plainly.\n' }],
 ] as const)
