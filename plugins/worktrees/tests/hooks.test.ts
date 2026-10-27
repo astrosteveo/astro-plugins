@@ -28,6 +28,8 @@ type World = {
   files: Map<string, string>
   entered: string[]
   kv: Map<string, unknown>
+  // What the model reads beside the last prompt.
+  context: readonly string[]
 }
 
 const world = (over: Partial<World> = {}): World => ({
@@ -47,6 +49,7 @@ const world = (over: Partial<World> = {}): World => ({
   files: new Map(),
   entered: [],
   kv: new Map(),
+  context: [],
   ...over,
 })
 
@@ -128,7 +131,10 @@ function engine(on: On, w: World, store: Record<string, unknown> = {}) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
   on('command.register', () => ({ value: { command: 'worktrees' } }))
-  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('prompt.submit', (_, e) => {
+    w.context = e.context ?? []
+    return { text: e.text }
+  })
   on('ui.toast', (_, e) => {
     w.toasts.push(String(e.text))
     return { value: undefined }
@@ -184,6 +190,8 @@ test('with it on, the first prompt moves the session into a worktree cut from ma
   // The folder stays out of `git status` in the main checkout.
   expect(w.files.get(`${ROOT}/.git/info/exclude`)).toBe('/.claude/worktrees/\n')
   expect(w.toasts.some(t => t.includes(`wt/${NAME}`))).toBe(true)
+  // The model is told where it is now: its first look at the directory came before the move.
+  expect(w.context.join('\n')).toContain(PATH)
 
   // A second prompt finds the session already in a worktree.
   await $.prompt.submit({ ...PROMPT, text: 'and another thing' })
@@ -220,6 +228,7 @@ test('when git cannot make the worktree the prompt still runs, in the main check
   const sent = await $.prompt.submit(PROMPT)
   expect(sent).toMatchObject({ text: PROMPT.text })
   expect(w.cwd).toBe(ROOT)
+  expect(w.context).toEqual([])
   expect(w.toasts.some(t => t.includes('fatal: boom'))).toBe(true)
   expect([...w.kv.keys()]).toEqual(['enabled'])
 })

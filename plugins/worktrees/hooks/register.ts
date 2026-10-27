@@ -73,11 +73,13 @@ async function sweep($: EngineInterface): Promise<Outcome[]> {
 
 const describe = (o: Outcome & { removed: false }) => `${label(o.entry)} (${o.reason})`
 
-async function enter($: EngineInterface, text: string): Promise<void> {
+// Moves the session into a worktree of its own. Resolves to the note the model reads with the prompt,
+// or undefined when the session stays where it is.
+async function enter($: EngineInterface, text: string): Promise<string | undefined> {
   const run = runner($)
   const cwd = await $.session.cwd()
   const repo = await repoOf(run, cwd)
-  if (repo === undefined || repo.isLinked) return
+  if (repo === undefined || repo.isLinked) return undefined
 
   const id = (await $.session.id()).replace(/-/g, '').slice(0, 4)
   const name = worktreeName(text, id)
@@ -102,7 +104,7 @@ async function enter($: EngineInterface, text: string): Promise<void> {
   if (failed !== undefined) {
     await drop($, entry)
     $.ui.toast(`worktrees: could not make a worktree, working in the main checkout. ${failed.split('\n')[0]}`)
-    return
+    return undefined
   }
 
   const moved = await $.tool.call({ tool: 'EnterWorktree', path })
@@ -110,9 +112,11 @@ async function enter($: EngineInterface, text: string): Promise<void> {
     await removeWorktree(run, entry, { deleteBranch: true })
     await drop($, entry)
     $.ui.toast('worktrees: could not move into the worktree, working in the main checkout.')
-    return
+    return undefined
   }
   $.ui.toast(`worktrees: working in ${branch}, cut from ${base}`)
+  // The model's first look at the directory was taken before the move; without this it writes to the old path.
+  return `The worktrees plugin has just moved this session into a git worktree. The working directory is now ${path}, on branch ${branch}. Use paths under it. The main checkout at ${repo.root} refuses writes.`
 }
 
 export const register: Register = on => {
@@ -156,8 +160,8 @@ export const register: Register = on => {
     if (!interactive || !isUsers || e.command || e.isMeta || e.turnId !== undefined || tried) return next(e)
     if (!(await isOn($))) return next(e)
     tried = true
-    await enter($, e.text)
-    return next(e)
+    const note = await enter($, e.text)
+    return next(note === undefined ? e : { ...e, context: [...(e.context ?? []), note] })
   }).catch(($, e, next) => {
     // A broken worktree step never costs the person their prompt.
     $.ui.toast('worktrees: it failed, so this prompt runs in the main checkout.')
