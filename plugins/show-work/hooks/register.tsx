@@ -1068,6 +1068,33 @@ export function askDiffText(file: string, rows: string) {
   return `About my change to \`${file}\`:\n${fence}diff\n${rows}\n${fence}\n`
 }
 
+// The prompt text and the label for the lines dragged over in a viewer, read
+// from whichever viewer holds them; undefined where that viewer has moved on.
+export function askFromSel(
+  sel: { id: string; from: number; to: number },
+  pv: Preview | null,
+  df: Diff | null,
+): { label: string; text: string } | undefined {
+  if (sel.id.startsWith('diff:')) {
+    if (df === null || `diff:${df.file}` !== sel.id) {
+      return undefined
+    }
+    const rows = shownRows(df.lines).slice(sel.from, sel.to + 1).join('\n')
+
+    return { label: rangeLabel(sel.from + 1, sel.to + 1), text: askDiffText(df.file, rows) }
+  }
+  if (pv === null || pv.file !== sel.id) {
+    return undefined
+  }
+  const start = pv.start ?? 1
+  const text = pv.source.split('\n').slice(sel.from, sel.to + 1).join('\n')
+
+  return {
+    label: rangeLabel(start + sel.from, start + sel.to),
+    text: askText(pv.file, { from: start + sel.from, to: start + sel.to, text }),
+  }
+}
+
 const MARKDOWN = /\.(md|markdown|mdx)$/i
 const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
 const MD_IMAGES_MOST = 8
@@ -1752,9 +1779,39 @@ export const register: Register = on => {
     const open = allNotes.filter(
       note => note.kind === 'question' && !note.isReplied && isCurrent(note, shownPlan?.startedAt),
     ).length
+    const picked = await read($, viewSel)
+    const asked = picked === null ? undefined : askFromSel(picked, await read($, preview), await read($, diff))
     forget(e.requestId)
-    if (e.props.hasSurvey || (!e.props.isWorking && running === 0 && open === 0)) {
+    if (e.props.hasSurvey) {
       return next(e)
+    }
+    // The lines dragged over in a viewer, offered where the person types.
+    const chip =
+      picked === null || asked === undefined
+        ? undefined
+        : (() => {
+            const { Box, Button } = $.ui.resolve(e)
+
+            return (
+              <Box flexDirection="row" gap={1}>
+                <Button
+                  key="band-chip"
+                  variant="primary"
+                  onPress={async () => {
+                    await $.prompt.fill({ text: asked.text, mode: 'insert' })
+                    await update($, viewSel, () => null)
+                  }}
+                >
+                  Ask Claude about {picked.id.replace(/^diff:/, '')} {asked.label} ↩
+                </Button>
+                <Button key="band-chip-clear" plain dimColor onPress={() => update($, viewSel, () => null)}>
+                  ✗
+                </Button>
+              </Box>
+            )
+          })()
+    if (!e.props.isWorking && running === 0 && open === 0) {
+      return chip === undefined ? next(e) : chip
     }
 
     const { Box, Text } = $.ui.resolve(e)
@@ -1768,7 +1825,12 @@ export const register: Register = on => {
       ...(open === 0 ? [] : [`${open} waiting on you`]),
     ]
     if (e.surface !== 'terminal') {
-      return <Text dimColor>{bits.join(' · ')}</Text>
+      return (
+        <Box flexDirection="column">
+          {chip}
+          <Text dimColor>{bits.join(' · ')}</Text>
+        </Box>
+      )
     }
 
     const { Raster } = $.ui.resolve(e)
@@ -1783,11 +1845,14 @@ export const register: Register = on => {
     startTicking($, now)
 
     return (
-      <Box flexDirection="row" gap={1}>
-        <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
-        <Text wrap="truncate-end" dimColor>
-          {bits.join(' · ')}
-        </Text>
+      <Box flexDirection="column">
+        {chip}
+        <Box flexDirection="row" gap={1}>
+          <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
+          <Text wrap="truncate-end" dimColor>
+            {bits.join(' · ')}
+          </Text>
+        </Box>
       </Box>
     )
   })
@@ -2095,12 +2160,10 @@ export const register: Register = on => {
       dragged !== null && dragged.id === `diff:${shownDiff.file}` ? { from: dragged.from, to: dragged.to } : null
 
     const askDiffChip = (shownDiff: Diff) => async () => {
-      const at = diffSel(shownDiff)
-      if (at === null) {
-        return
+      const at = dragged === null ? undefined : askFromSel(dragged, null, shownDiff)
+      if (at !== undefined) {
+        await $.prompt.fill({ text: at.text, mode: 'insert' })
       }
-      const rows = shownRows(shownDiff.lines).slice(at.from, at.to + 1).join('\n')
-      await $.prompt.fill({ text: askDiffText(shownDiff.file, rows), mode: 'insert' })
       await update($, viewSel, () => null)
     }
 
@@ -2220,13 +2283,10 @@ export const register: Register = on => {
           place: size => fit(size, Math.min(255, e.props.bodyColumns), 18, tall),
           sel: dragged !== null && dragged.id === shownPreview?.file ? { from: dragged.from, to: dragged.to } : null,
           onChip: async () => {
-            const at = dragged !== null && shownPreview !== null && dragged.id === shownPreview.file ? dragged : undefined
-            if (at === undefined || shownPreview === null) {
-              return
+            const at = dragged === null ? undefined : askFromSel(dragged, shownPreview, null)
+            if (at !== undefined) {
+              await $.prompt.fill({ text: at.text, mode: 'insert' })
             }
-            const start = shownPreview.start ?? 1
-            const text = shownPreview.source.split('\n').slice(at.from, at.to + 1).join('\n')
-            await $.prompt.fill({ text: askText(shownPreview.file, { from: start + at.from, to: start + at.to, text }), mode: 'insert' })
             await update($, viewSel, () => null)
           },
           onClearChip: () => update($, viewSel, () => null),

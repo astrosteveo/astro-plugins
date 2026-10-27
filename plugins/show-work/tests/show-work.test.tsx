@@ -1802,3 +1802,27 @@ test('letting go of a drag in the viewer offers a chip, and pressing it fills th
   expect(await ui.find({ type: 'Button', key: 'chip-ask' })).toBeUndefined()
   await ui.unmount()
 })
+
+test('the lines dragged over are offered in the band above the prompt, idle or working', async ($, on) => {
+  const filled = engine(on)
+  on('clock.every', () => ({ value: undefined }))
+  on('ui.render', ENGINE_ROW)
+  on('process.run', (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('fs.read', () => ({ value: 'one\ntwo\nthree\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await pane.press({ key: 'tab-find' })
+  await pane.press({ key: 'ex-a.ts' })
+
+  const band = await $.ui.mount({ ...BAND(false), surface: 'terminal' })
+  expect(await band.find({ type: 'Button', key: 'band-chip' })).toBeUndefined()
+  await pane.post({ id: 'a.ts', from: 0, to: 1 }, { in: 'viewer-source' })
+  expect((await band.find({ type: 'Button', key: 'band-chip' }))?.text).toBe('Ask Claude about a.ts lines 1 to 2 ↩')
+  await band.press({ key: 'band-chip' })
+  expect(filled).toEqual(['About `a.ts`, lines 1 to 2:\n```ts\none\ntwo\n```\n'])
+  expect(await band.find({ type: 'Button', key: 'band-chip' })).toBeUndefined()
+  await band.unmount()
+  await pane.unmount()
+})
