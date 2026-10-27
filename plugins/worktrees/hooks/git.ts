@@ -51,6 +51,15 @@ export async function chooseBase(run: Run, root: string): Promise<string> {
   return pickBase({ defaultBranch: d, hasLocal, hasRemote, localIsBehindRemote })
 }
 
+// Where the main checkout stands: its commit, its branch (empty when detached) and whether tracked files
+// have changes. Untracked files are left out; a worktree never carries them and most are noise.
+export async function checkoutState(run: Run, root: string) {
+  const sha = out(await run(['git', 'rev-parse', 'HEAD'], root))
+  const branch = out(await run(['git', 'branch', '--show-current'], root))
+  const status = await run(['git', 'status', '--porcelain', '--untracked-files=no'], root)
+  return { sha, branch, hasChanges: status.exitCode === 0 && isDirty(status.stdout) }
+}
+
 // Cuts the worktree. Resolves to an error text, or undefined when it was made.
 export async function addWorktree(
   run: Run,

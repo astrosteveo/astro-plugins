@@ -1,21 +1,45 @@
 import type { EngineInterface, Register } from 'claude-code'
-import { addWorktree, assess, chooseBase, removeWorktree, repoOf } from './git'
+import { addWorktree, assess, checkoutState, chooseBase, removeWorktree, repoOf } from './git'
 import type { Run } from './git'
 import {
   PREFIX,
   EXCLUDE_LINE,
   ago,
+  differences,
   entryKey,
   hasWork,
   isInside,
   isSweepable,
   judge,
+  needsWorktree,
   withExclude,
   worktreeName,
 } from './worktrees'
 import type { Entry } from './worktrees'
 
 const ENABLED = 'enabled'
+
+// The tool the model calls to begin a task; the engine names it `mcp__<plugin>__<name>`.
+const START_TOOL = 'mcp__worktrees__start'
+const START_PATTERN = /^mcp__worktrees__start$/
+const START_SPEC = {
+  name: 'start',
+  description:
+    'Moves this session into a git worktree of its own, on a new branch named for the task. Call it once, before your first change to a file or your first command that writes, with a short name for the task. Reading and answering questions need no worktree. A change attempted before this call is refused. Once the work is merged the session returns to the main checkout by itself, and the next task needs this call again.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: {
+        type: 'string',
+        description: 'Two to five words naming the task, such as "fix login redirect". It becomes the branch name.',
+      },
+    },
+    required: ['name'],
+  },
+  // In the tool list from the first prompt, not behind a search the model must think to make.
+  isDeferred: false,
+} as const
+const REFUSAL = `worktrees: this session works in a git worktree of its own, and none exists yet, so nothing ran. Call ${START_TOOL} with a short name for the task, then repeat this call.`
 
 const runner =
   ($: EngineInterface): Run =>
@@ -74,16 +98,28 @@ async function sweep($: EngineInterface): Promise<Outcome[]> {
 
 const describe = (o: Outcome & { removed: false }) => `${label(o.entry)} (${o.reason})`
 
-// Moves the session into a worktree of its own. Resolves to the note the model reads with the prompt,
-// or undefined when the session stays where it is.
-async function enter($: EngineInterface, text: string): Promise<string | undefined> {
+// What a call to `start` came to, and what the model reads about it.
+type Entered =
+  | { outcome: 'entered'; path: string; text: string }
+  // Nothing to make: not a repository, or already in a worktree. The directory is fine to change files in.
+  | { outcome: 'stays'; cwd: string; text: string }
+  | { outcome: 'failed'; text: string }
+  | { outcome: 'off'; text: string }
+
+// Moves the session into a worktree named for the task it is about to do.
+async function enter($: EngineInterface, task: string): Promise<Entered> {
   const run = runner($)
   const cwd = await $.session.cwd()
   const repo = await repoOf(run, cwd)
-  if (repo === undefined || repo.isLinked) return undefined
+  if (repo === undefined) {
+    return { outcome: 'stays', cwd, text: 'This directory is not in a git repository, so there is no worktree to make. Carry on here.' }
+  }
+  if (repo.isLinked) {
+    return { outcome: 'stays', cwd, text: `This session is already in a git worktree, ${cwd}. Carry on here.` }
+  }
 
   const id = (await $.session.id()).replace(/-/g, '').slice(0, 4)
-  const name = worktreeName(text, id)
+  const name = worktreeName(task, id)
   const path = `${repo.root}/.claude/worktrees/${name}`
   const branch = `wt/${name}`
   const base = await chooseBase(run, repo.root)
@@ -113,8 +149,9 @@ async function enter($: EngineInterface, text: string): Promise<string | undefin
   const failed = await addWorktree(run, repo.root, path, branch, base)
   if (failed !== undefined) {
     await drop($, entry)
-    $.ui.toast(`worktrees: could not make a worktree, working in the main checkout. ${failed.split('\n')[0]}`)
-    return undefined
+    const why = failed.split('\n')[0]
+    $.ui.toast(`worktrees: could not make a worktree, working in the main checkout. ${why}`)
+    return { outcome: 'failed', text: `Could not make a worktree (${why}). Carry on in the main checkout.` }
   }
 
   const moved = await $.tool.call({ tool: 'EnterWorktree', path })
@@ -122,11 +159,32 @@ async function enter($: EngineInterface, text: string): Promise<string | undefin
     await removeWorktree(run, entry, { deleteBranch: true })
     await drop($, entry)
     $.ui.toast('worktrees: could not move into the worktree, working in the main checkout.')
-    return undefined
+    return { outcome: 'failed', text: 'Could not move into the worktree. Carry on in the main checkout.' }
   }
-  $.ui.toast(`worktrees: working in ${branch}, cut from ${base}`)
-  // The model's first look at the directory was taken before the move; without this it writes to the old path.
-  return `The worktrees plugin has just moved this session into a git worktree. The working directory is now ${path}, on branch ${branch}. Use paths under it. The main checkout at ${repo.root} refuses writes.`
+
+  // The model read the main checkout before this move; say where the tree it now stands in is not that checkout.
+  const unlike = differences({ ...(await checkoutState(run, repo.root)), base, baseSha })
+  $.ui.toast(`worktrees: working in ${branch}, cut from ${base}${unlike.length > 0 ? '; your checkout differs, and Claude was told' : ''}`)
+  return {
+    outcome: 'entered',
+    path,
+    text: [
+      `Moved into the git worktree ${path}, on branch ${branch}, cut from ${base}.`,
+      `The working directory is now ${path}; the main checkout at ${repo.root} refuses writes, so use paths under the worktree.`,
+      'Read a file again at its new path before you edit it.',
+      ...unlike,
+    ].join(' '),
+  }
+}
+
+// What `start` does: the worktree, unless the toggle is off or nobody is at the prompt.
+async function begin($: EngineInterface, task: string, interactive: boolean): Promise<Entered> {
+  if (!interactive || !(await isOn($))) {
+    return { outcome: 'off', text: 'Worktrees are off, so the session stays in this checkout. Carry on.' }
+  }
+  return enter($, task).catch(
+    (): Entered => ({ outcome: 'failed', text: 'The worktree could not be made. Carry on in the main checkout.' }),
+  )
 }
 
 // After a turn: once the work in this session's worktree has been merged and nothing is left in the tree,
@@ -164,8 +222,13 @@ export const register: Register = on => {
   let interactive = false
   // What the model reads with the next prompt after the session stepped out of a merged worktree.
   let left: string | undefined
-  // The prompt that turned the toggle on or the first after it tries once; a failure is not retried each prompt.
-  let tried = false
+  // The directory the session was last found fit to change files in: in a worktree, or with none to make.
+  // Any other directory is looked at again, which is how a step back out to main brings the net back.
+  let settled: string | undefined
+  // Set when a worktree could not be made: the net steps aside rather than refuse every change.
+  let blocked = false
+  // A `start` in flight; a change that arrives beside it waits for the answer.
+  let starting: Promise<unknown> | undefined
 
   on('session.start', async ($, e, next) => {
     interactive = e.isInteractive
@@ -174,6 +237,8 @@ export const register: Register = on => {
       description: 'Work in a git worktree of its own: on, off, status, clean, discard NAME.',
       argumentHint: '[on|off|status|clean|discard NAME]',
     })
+    // A headless run is never moved, so the model is not offered the tool.
+    if (e.isInteractive && (await isOn($))) await $.tool.register(START_SPEC)
     try {
       // A session resumed inside a worktree this mod made takes it over again.
       for (const entry of await entries($)) {
@@ -207,19 +272,47 @@ export const register: Register = on => {
       if (mine !== undefined) await save($, { ...mine, sessionId: id, endedAt: undefined, keptBecause: undefined })
     }
     if (!interactive || !isUsers || e.command || e.isMeta || e.turnId !== undefined) return next(e)
-    const notes: string[] = left === undefined ? [] : [left]
+    const note = left
     left = undefined
-    if (!tried && (await isOn($))) {
-      tried = true
-      const note = await enter($, e.text)
-      if (note !== undefined) notes.push(note)
-    }
-    return next(notes.length === 0 ? e : { ...e, context: [...(e.context ?? []), ...notes] })
-  }).catch(($, e, next) => {
-    // A broken worktree step never costs the person their prompt.
-    $.ui.toast('worktrees: it failed, so this prompt runs in the main checkout.')
-    return next(e)
+    return next(note === undefined ? e : { ...e, context: [...(e.context ?? []), note] })
   })
+
+  // The model begins a task: the worktree is made now, named for the task, with the files read.
+  on('tool.call', { tool: START_PATTERN }, ($, e) => {
+    // The tool is the mod's own, so the engine's types do not know its input.
+    const task = (e as { name?: unknown }).name
+    // A call the model makes on purpose tries again after a failure.
+    blocked = false
+    const attempt = begin($, typeof task === 'string' ? task : '', interactive).then(found => {
+      // Settled before anyone waiting on this wakes, so a change beside it sees the answer.
+      if (found.outcome === 'entered') settled = found.path
+      else if (found.outcome === 'stays') settled = found.cwd
+      else if (found.outcome === 'failed') blocked = true
+      return found
+    })
+    // Set at once, not after the first await: a change called beside this one must find it.
+    starting = attempt
+    return attempt
+      .then(found => ({ result: found.text }))
+      .finally(() => {
+        if (starting === attempt) starting = undefined
+      })
+  })
+
+  // A change before `start` is refused once; the model reads why, calls `start`, and repeats it.
+  on('tool.check', async ($, e, next) => {
+    if (!interactive || blocked || !needsWorktree(e)) return next(e)
+    if (starting !== undefined) await starting
+    if (blocked || !(await isOn($))) return next(e)
+    const cwd = await $.session.cwd()
+    if (cwd === settled) return next(e)
+    const repo = await repoOf(runner($), cwd)
+    if (repo === undefined || repo.isLinked) {
+      settled = cwd
+      return next(e)
+    }
+    return { decision: 'deny', reason: REFUSAL }
+  }).catch((_, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
     // The main loop's turns only; a subagent finishing says nothing about the task.
@@ -228,8 +321,8 @@ export const register: Register = on => {
         const note = await leaveIfMerged($)
         if (note !== undefined) {
           left = note
-          // The next task gets a worktree of its own.
-          tried = false
+          // The next task begins with a `start` of its own.
+          settled = undefined
         }
       } catch {
         // Stepping out is a courtesy; session end and the next start clean up all the same.
@@ -264,11 +357,12 @@ export const register: Register = on => {
 
     if (verb === 'on' || (verb === '' && !(await isOn($)))) {
       await $.store.set(ENABLED, true)
-      tried = false
+      blocked = false
+      if (interactive) await $.tool.register(START_SPEC)
       return {
         text: here
-          ? `Worktrees on. This session is already in ${label(here)}; each new session gets its own.`
-          : 'Worktrees on. Your next prompt moves this session into a worktree of its own, cut from main.',
+          ? `Worktrees on. This session is already in ${label(here)}; each new task gets its own.`
+          : 'Worktrees on. When Claude first has a change to make, it moves this session into a worktree named for the task, cut from main.',
       }
     }
     if (verb === 'off' || verb === '') {

@@ -65,6 +65,35 @@ export function judge(a: Assessment): Verdict {
 export const hasWork = (head: string, baseSha: string | undefined) =>
   baseSha !== undefined && head !== '' && head !== baseSha
 
+// The built-in tools that change a file whatever their input.
+export const FILE_TOOLS: ReadonlySet<string> = new Set(['Write', 'Edit', 'NotebookEdit'])
+
+// Whether a tool call is the session's first change, so that it waits for a worktree. The engine's own word
+// that a command only reads decides Bash; a subagent's command is let through, since an explorer pipes and
+// chains and has no business naming a task. Only a real call counts, not another plugin's query.
+export function needsWorktree(call: { tool: string; isReadOnly?: boolean; agentId?: string; tool_use_id?: string }) {
+  if (call.tool_use_id === undefined) return false
+  if (FILE_TOOLS.has(call.tool)) return true
+  return call.tool === 'Bash' && call.agentId === undefined && call.isReadOnly !== true
+}
+
+// How the main checkout differs from the tree the session now works in. The model read the checkout before the
+// move, so each difference is a reason to read a file again before editing it.
+export function differences(i: {
+  branch: string
+  sha: string
+  hasChanges: boolean
+  base: string
+  baseSha: string | undefined
+}): string[] {
+  const found: string[] = []
+  if (i.baseSha !== undefined && i.sha !== '' && i.sha !== i.baseSha) {
+    found.push(`The main checkout is on ${i.branch === '' ? 'a detached HEAD' : i.branch}, a different commit from ${i.base}, where the worktree was cut.`)
+  }
+  if (i.hasChanges) found.push('The main checkout has uncommitted changes, which the worktree does not have.')
+  return found
+}
+
 // The path is inside `dir`, or is it.
 export const isInside = (path: string, dir: string) => path === dir || path.startsWith(dir + '/')
 

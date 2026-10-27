@@ -2,10 +2,12 @@ import { expect, test } from 'claude-code/testing'
 import {
   type Entry,
   STALE_MS,
+  differences,
   isDirty,
   isInside,
   isSweepable,
   judge,
+  needsWorktree,
   pickBase,
   slug,
   withExclude,
@@ -82,4 +84,37 @@ test('the exclude file gains the worktrees folder once', () => {
   expect(withExclude('*.log\n')).toBe('*.log\n/.claude/worktrees/\n')
   const once = withExclude('*.log\n')
   expect(withExclude(once)).toBe(once)
+})
+
+test('a call waits for a worktree when it changes a file, or runs a command the engine does not call read-only', () => {
+  const real = { tool_use_id: 't1' }
+  expect(needsWorktree({ ...real, tool: 'Write' })).toBe(true)
+  expect(needsWorktree({ ...real, tool: 'Edit' })).toBe(true)
+  expect(needsWorktree({ ...real, tool: 'NotebookEdit' })).toBe(true)
+  expect(needsWorktree({ ...real, tool: 'Bash' })).toBe(true)
+  expect(needsWorktree({ ...real, tool: 'Bash', isReadOnly: true })).toBe(false)
+  // Reading, searching and asking are no change.
+  for (const tool of ['Read', 'Grep', 'Glob', 'Agent', 'WebFetch', 'mcp__worktrees__start']) {
+    expect(needsWorktree({ ...real, tool })).toBe(false)
+  }
+  // A subagent's command is let through; its file change is not.
+  expect(needsWorktree({ ...real, tool: 'Bash', agentId: 'a1' })).toBe(false)
+  expect(needsWorktree({ ...real, tool: 'Write', agentId: 'a1' })).toBe(true)
+  // A query from another plugin is no call.
+  expect(needsWorktree({ tool: 'Write' })).toBe(false)
+})
+
+test('the main checkout is called different only when it is on another commit or has changes', () => {
+  const same = { branch: 'main', sha: 'a1', hasChanges: false, base: 'main', baseSha: 'a1' }
+  expect(differences(same)).toEqual([])
+  expect(differences({ ...same, sha: 'b2', branch: 'feature-x' })).toEqual([
+    'The main checkout is on feature-x, a different commit from main, where the worktree was cut.',
+  ])
+  expect(differences({ ...same, sha: 'b2', branch: '' })[0]).toContain('a detached HEAD')
+  expect(differences({ ...same, hasChanges: true })).toEqual([
+    'The main checkout has uncommitted changes, which the worktree does not have.',
+  ])
+  expect(differences({ ...same, sha: 'b2', hasChanges: true })).toHaveLength(2)
+  // A base git could not resolve says nothing about a commit.
+  expect(differences({ ...same, baseSha: undefined, sha: 'b2' })).toEqual([])
 })
