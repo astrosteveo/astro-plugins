@@ -30,7 +30,7 @@
     {
       "name": "worktrees",
       "source": "./plugins/worktrees",
-      "description": "Toggle on and each session works in a git worktree of its own, removed afterwards when nothing in it would be lost."
+      "description": "Toggle on and each task Claude takes on goes into a git worktree named for it, removed once the work is merged or the session ends and nothing in it would be lost."
     }
   ]
 }

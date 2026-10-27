@@ -25,7 +25,7 @@ export const STALE_MS = 7 * 24 * 60 * 60 * 1000
 export const PREFIX = 'wt:'
 export const entryKey = (path: string) => PREFIX + path
 
-// The first words of the prompt as a branch-safe slug; `task` when it has none.
+// The name of a task as a branch-safe slug; `task` when it has none.
 export function slug(text: string, max = 28): string {
   const words = text
     .toLowerCase()
@@ -38,7 +38,7 @@ export function slug(text: string, max = 28): string {
 }
 
 // `fix-the-login-bug-3f9a`: the slug and a short id that keeps two sessions apart.
-export const worktreeName = (text: string, id: string) => `${slug(text)}-${id}`
+export const worktreeName = (task: string, id: string) => `${slug(task)}-${id}`
 
 export const isDirty = (porcelain: string) => porcelain.split('\n').some(line => line.trim() !== '')
 

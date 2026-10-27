@@ -14,7 +14,7 @@ import {
   worktreeName,
 } from '../hooks/worktrees'
 
-test('a prompt becomes a short branch-safe name', () => {
+test('a task name becomes a short branch-safe name', () => {
   expect(slug('Fix the login bug, please!')).toBe('fix-the-login-bug-please')
   expect(slug('   ')).toBe('task')
   expect(slug('日本語')).toBe('task')
