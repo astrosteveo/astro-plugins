@@ -201,6 +201,23 @@ test('with nothing given, the main thread\'s last answer is scanned, never a sub
   expect(out).not.toContain('delves')
 })
 
+test('a turn that ran a scan stores no reply, so a second scan reads the same reply, not the report', async ($, on) => {
+  const w = world()
+  engine(on, w)
+  await $.session.start(START)
+  const turn = { durationMs: 1, isAborted: false, reason: 'answer' } as const
+  await $.turn.complete({ ...turn, turnId: 't1', answer: 'We delve.' })
+  await call($, {})
+  await $.turn.complete({ ...turn, turnId: 't2', answer: 'Rewrite: "robust" at 1:4.' })
+  const again = answer(await call($, {}))
+  expect(again).toContain('"delve"')
+  expect(again).not.toContain('robust')
+  // A turn with no scan in it stores its answer again.
+  await $.turn.complete({ ...turn, turnId: 't3', answer: 'It is seamless.' })
+  await $.turn.complete({ ...turn, turnId: 't4', answer: 'It is seamless.' })
+  expect(answer(await call($, {}))).toContain('"seamless"')
+})
+
 test('a subagent with nothing given is refused the main thread\'s reply', async ($, on) => {
   const w = world()
   engine(on, w)
@@ -302,6 +319,64 @@ test('a rule at the top is prose, and a fence in a list item is code', () => {
   expect(found('1. Step\n\n    ```\n    const delve = 1\n    ```\n')).toEqual([])
 })
 
+test('a line that opens with backticks and closes them is inline code, not a fence that eats the rest', () => {
+  expect(found('```js``` is inline.\n\nWe delve into it.\n\nIt is robust.')).toEqual(['rewrite delve', 'rewrite robust'])
+  expect(found('```js\nconst delve = 1\n```\nIt is robust.')).toEqual(['rewrite robust'])
+})
+
+test('frontmatter holds only YAML; a rule, a "Note:" line and prose up to a later rule are prose', () => {
+  const hits = scan('---\nNote: we delve here.\n\nMore delve.\n\n---\nEnd delve.').filter(h => h.tier === 'rewrite')
+  expect(hits.map(h => h.line)).toEqual([2, 4, 7])
+  expect(found('---\ntitle: A\ntags:\n  - x\n- y\n\nsummary: we delve\n---\nIt is robust.')).toEqual(['rewrite robust'])
+})
+
+test('a phrase broken across the wrapped lines of a paragraph is found, on the line it starts', () => {
+  expect(found('It is worth\nnoting that this is robust.')).toEqual(['rewrite It is worth noting', 'rewrite robust'])
+  expect(found('This is well worth\nthe effort.')).toEqual(['rewrite worth '])
+  expect(found('- It is not only fast\n  but small.')[0]).toBe('rewrite not only fast but')
+  expect(scan('Fine.\nIt is not just a tool,\nit is a habit.').map(h => [h.line, h.column])).toEqual([[2, 1]])
+  expect(found('It broke.\nWe looked.\nWe fixed it.\nIt works.')).toEqual(['check It broke.'])
+})
+
+test('no phrase runs from one paragraph, list item or heading into the next', () => {
+  expect(found('It is not only fast\n\nbut small.')).toEqual([])
+  expect(found('- It is not only fast\n- but small.')).toEqual([])
+  expect(found('# At the end\nof the day')).toEqual([])
+})
+
+test('indented code and HTML comments are not prose; an indented paragraph in a list is', () => {
+  expect(found('Text.\n\n    const robust = leverage()\n')).toEqual([])
+  expect(found('<!-- we delve -->')).toEqual([])
+  expect(found('<!--\nwe delve\n-->\nIt is robust.')).toEqual(['rewrite robust'])
+  expect(found('Run `<!--` first. It is robust.')).toEqual(['rewrite robust'])
+  expect(found('1. Step\n\n    It is robust.')).toEqual(['rewrite robust'])
+  expect(found('Para\n    robust continued.')).toEqual(['rewrite robust'])
+})
+
+test('"worth" as a value is left alone; "worth it" is still rewritten', () => {
+  expect(found('The house is worth more than the car. Is it worth less?')).toEqual([])
+  expect(found('Is it worth it?')).toEqual(['rewrite worth '])
+})
+
+test('symbols drawn as text are left alone; flags and keycaps are emoji', () => {
+  expect(found('Press ➡ or ⬆ to move. ❤ ⚠ ☑')).toEqual([])
+  expect(found('Made in 🇺🇸 and step 1️⃣ done.')).toEqual(['rewrite 🇺🇸', 'rewrite 1️⃣'])
+  expect(found('Love ❤️ it.')).toEqual(['rewrite ❤️'])
+})
+
+test('columns count characters, so an emoji takes one', () => {
+  expect(scan('🚀 We delve.').map(h => [h.text, h.column])).toEqual([['🚀', 1], ['delve', 6]])
+  expect(scan('👨‍💻 We delve.').map(h => h.column)).toEqual([1, 8])
+})
+
+test('a large file with many hits is scanned well inside the hook budget', () => {
+  const text = 'We delve into a robust, seamless realm at its core.\n\n'.repeat(15_000)
+  const begun = Date.now()
+  const hits = scan(text)
+  expect(hits.length).toBe(15_000 * 5)
+  expect(Date.now() - begun).toBeLessThan(4_000)
+})
+
 test('a form shows the words as written, inline code included', () => {
   expect(found('Run `x`. Done. Ok. Go.')).toEqual(['check Run `x`.'])
 })
@@ -314,7 +389,7 @@ test('a report lists rewrites first and says what it cannot see', () => {
 })
 
 test('a long report is cut with a count of the rest', () => {
-  const out = report('long.md', scan('We delve.\n'.repeat(200)))
+  const out = report('long.md', scan('We delve.\n\n'.repeat(200)))
   expect(out).toContain('200 to rewrite')
   expect(out).toContain('...and 50 more.')
 })

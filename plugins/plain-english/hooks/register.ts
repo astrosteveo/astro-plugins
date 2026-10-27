@@ -7,7 +7,7 @@ const SCAN = 'mcp__plain-english__scan'
 const SCAN_TOOL = {
   name: 'scan',
   description:
-    'Scan prose for Claudisms: the stock words, set phrases and forms that mark machine-written text. Give a file path, or text, or neither to scan your last reply to the person (a subagent passes its draft as text). Lists each hit by line and column, as one to rewrite or one to check by eye, with a plainer form. It skips code, block quotes and URLs, but not text in quotation marks, and matches words and phrases only, so read the text yourself for the forms it cannot see.',
+    'Scan prose for Claudisms: the stock words, set phrases and forms that mark machine-written text. Give a file path, or text, or neither to scan the reply that ended your last turn. To check a draft before you send it, pass the draft as text; a subagent always does. Lists each hit by line and column, as one to rewrite or one to check by eye, with a plainer form. It skips code, block quotes and URLs, but not text in quotation marks, and matches words and phrases only, so read the text yourself for the forms it cannot see.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -44,6 +44,23 @@ async function scanFile($: EngineInterface, path: string) {
   return { result: report(path, scan(body)) }
 }
 
+type Answer = { result: string } | { deny: string }
+
+// A file, a text, or with neither the main thread's last reply.
+async function scanFor($: EngineInterface, e: { path?: unknown; text?: unknown; agentId?: string }): Promise<Answer> {
+  const path = asText(e.path).trim()
+  const text = asText(e.text)
+  if (path !== '' && text !== '') return { deny: 'Give a path or text, not both.' }
+  if (path !== '') return scanFile($, path)
+  if (text !== '') return { result: report('the text', scan(text)) }
+  // The stored reply is the main thread's. A subagent's own draft is not stored, and the main
+  // thread's text is not the subagent's to correct.
+  if (e.agentId !== undefined) return { deny: 'In a subagent, pass your draft as text, or a path.' }
+  const { value } = await $.state.get(LAST_REPLY)
+  if (value === undefined || value === '') return { deny: 'There is no earlier reply to scan. Pass a path or text.' }
+  return { result: report('your last reply', scan(value)) }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.tool.register(SCAN_TOOL)
@@ -62,24 +79,24 @@ export const register: Register = on => {
     return next({ ...e, prompt: withRules(e.prompt, style.body, e.fork) })
   }).catch((_, e, next) => next(e))
 
+  // Whether the main thread ran a scan this turn: its answer is then a scan's report, not prose to
+  // check, so a second scan reads the reply the first one read.
+  let scannedThisTurn = false
+
   // The main thread's last answer, so a scan with nothing given reads the reply before it.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined && e.reason === 'answer' && e.answer.trim() !== '')
-      await $.state.set(LAST_REPLY, e.answer)
+    if (e.agentId === undefined) {
+      const isReport = scannedThisTurn
+      scannedThisTurn = false
+      if (!isReport && e.reason === 'answer' && e.answer.trim() !== '') await $.state.set(LAST_REPLY, e.answer)
+    }
     return next(e)
   })
 
   on('tool.call', { tool: SCAN }, async ($, e) => {
-    const path = asText(e.path).trim()
-    const text = asText(e.text)
-    if (path !== '' && text !== '') return { deny: 'Give a path or text, not both.' }
-    if (path !== '') return scanFile($, path)
-    if (text !== '') return { result: report('the text', scan(text)) }
-    // The stored reply is the main thread's. A subagent's own draft is not stored, and the main
-    // thread's text is not the subagent's to correct.
-    if (e.agentId !== undefined) return { deny: 'In a subagent, pass your draft as text, or a path.' }
-    const { value } = await $.state.get(LAST_REPLY)
-    if (value === undefined || value === '') return { deny: 'There is no earlier reply to scan. Pass a path or text.' }
-    return { result: report('your last reply', scan(value)) }
+    const answer = await scanFor($, e)
+    // Only a report counts: a refused scan leaves the turn's answer to be stored.
+    if (e.agentId === undefined && 'result' in answer) scannedThisTurn = true
+    return answer
   }).catch(() => ({ deny: 'plain-english: the scan failed.' }))
 }

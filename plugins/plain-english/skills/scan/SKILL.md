@@ -1,6 +1,6 @@
 ---
 name: scan
-description: Scan prose for Claudisms, the stock words, set phrases and sentence forms that mark machine-written text, and rewrite them in plain English. Use it before you hand over a README, docs, a commit message, a pull request or a long reply, and when the person asks you to check writing for AI tells or Claudisms.
+description: Scan prose for Claudisms, the stock words, set phrases and sentence forms that mark machine-written text, and rewrite them in plain English. Use it before you finish a README, docs, a commit message, a pull request or a long reply, and when the person asks you to check writing for AI tells or Claudisms.
 argument-hint: "[file ...]"
 ---
 
@@ -11,14 +11,15 @@ Find the Claudisms that got past the Plain English style, and rewrite them.
 ## 1. Choose the text
 
 - Files named in the arguments: scan each one.
-- No arguments: scan your last reply to the person.
+- No arguments: scan the reply that ended your last turn.
 - Text the person pasted: scan that.
+- A draft you have not sent yet: scan the draft itself, as text.
 
 ## 2. Run the scan tool
 
-Load the tool with ToolSearch (`select:mcp__plain-english__scan`) if it is not loaded yet. Call it once per file with `path`, once with `text` for pasted text, or with neither for your last reply. If it refuses a path for permission, read the file with Read and pass its text.
+Load the tool with ToolSearch (`select:mcp__plain-english__scan`) if it is not loaded yet. Call it once per file with `path`, once with `text` for pasted text or a draft, or with neither for your last reply. If it refuses a path for permission, read the file with Read and pass its text.
 
-The tool skips code blocks, inline code, block quotes, URLs and frontmatter, but not text in quotation marks. It returns two lists. Rewrite each entry in the Rewrite list: its words and phrases are almost never right. The Check list has words that are fine when used literally, such as a config that `lives in` a folder, a promise that `settles` or a data `shape`; keep the literal ones and rewrite the metaphors.
+The tool skips fenced and indented code, inline code, block quotes, HTML comments, URLs and frontmatter, but not text in quotation marks. It matches phrases across wrapped lines within a paragraph. It returns two lists. Rewrite each entry in the Rewrite list: its words and phrases are almost never right. The Check list has words that are fine when used literally, such as a config that `lives in` a folder, a promise that `settles` or a data `shape`; keep the literal ones and rewrite the metaphors.
 
 ## 3. Read for what a search misses
 

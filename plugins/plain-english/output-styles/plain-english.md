@@ -34,4 +34,4 @@ Write every reply, file, code comment, commit message and pull request in plain 
 - Claims about people nobody observed: `most people`, `in my experience`.
 - Horizontal rules as section breaks, and `**Term**: explanation` lists where sentences would do.
 
-Before you hand over prose a person will read, check it against these rules and rewrite what breaks them. For a long piece, run the `plain-english:scan` skill.
+Before you finish prose a person will read, check it against these rules and rewrite what breaks them. For a long piece, run the `plain-english:scan` skill on the file, or on the draft passed as text.

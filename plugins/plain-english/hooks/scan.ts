@@ -12,8 +12,27 @@ type Rule = { re: RegExp; tier: Tier; why: string }
 
 const A = "['’]"
 
-const rewrite = (re: RegExp, why: string): Rule => ({ re, tier: 'rewrite', why })
-const check = (re: RegExp, why: string): Rule => ({ re, tier: 'check', why })
+// A rule's spaces match any run of whitespace, a line break within a paragraph included, so a
+// phrase broken across a wrapped line still matches. A space inside a character class stays.
+function wrapping(re: RegExp): RegExp {
+  let source = ''
+  let inClass = false
+  for (let i = 0; i < re.source.length; i++) {
+    const c = re.source[i]!
+    if (c === '\\') {
+      source += c + (re.source[i + 1] ?? '')
+      i++
+      continue
+    }
+    if (c === '[') inClass = true
+    else if (c === ']') inClass = false
+    source += c === ' ' && !inClass ? '\\s+' : c
+  }
+  return new RegExp(source, re.flags)
+}
+
+const rewrite = (re: RegExp, why: string): Rule => ({ re: wrapping(re), tier: 'rewrite', why })
+const check = (re: RegExp, why: string): Rule => ({ re: wrapping(re), tier: 'check', why })
 
 const RULES: readonly Rule[] = [
   rewrite(/—/g, 'em dash. Use a comma, a colon, parentheses or a new sentence.'),
@@ -45,7 +64,7 @@ const RULES: readonly Rule[] = [
 
   // Throat-clearing and signposts.
   rewrite(/\b(?:it|this)(?:['’]s| is) (?:worth|important to) (?:noting|note|mentioning|mention)\b/gi, 'throat-clearing. Cut it and state the fact.'),
-  rewrite(/(?<!\bnet |['’]s )\bworth (?!\$|\d)/gi, 'the "worth ___" construction tells the reader what deserves attention. Cut it and let the thing show it.'),
+  rewrite(/(?<!\bnet |['’]s )\bworth (?!\$|\d|more\b|less\b)/gi, 'the "worth ___" construction tells the reader what deserves attention. Cut it and let the thing show it.'),
   rewrite(/\bwhen it comes to\b/gi, 'soft opener. Start with the subject.'),
   rewrite(/\bat (?:its|their|his|her) core\b/gi, 'pseudo-deep framing. Cut it.'),
   rewrite(/\bthis is where [\w ]{1,30}? comes? in\b/gi, 'lecture-hall framing. Say what it does.'),
@@ -132,73 +151,105 @@ const RULES: readonly Rule[] = [
   check(/\b(?:wreck(?:s|ed)?|shatter(?:s|ed)?|obliterat\w+)\b/gi, 'overdrawn verb. Match it to what happened.'),
 ]
 
-// Symbols with a plain text form, drawn as text unless a variation selector asks for an emoji:
-// ©, ®, ™, ‼, ⁉, ℹ, ↔ and its arrows, the technical block (⌘, ⏎), Ⓜ, ▪, ▶ and the like, ✔, ✖.
-// Those the ranges take in that draw as emoji by default (⌚, ⏳, ◾) are emoji all the same.
-const TEXT_SYMBOL = /^[©®‼⁉™ℹ↔-↙↩↪⌀-⏿Ⓜ▪-◾✔✖]$/u
-const EMOJI_BY_DEFAULT = /\p{Emoji_Presentation}/u
-// One emoji whole: a pictograph with its variation selector or skin tone, and any joined to it.
-const PICTOGRAPH = /\p{Extended_Pictographic}(?:\u{FE0F}|\p{Emoji_Modifier})?(?:‍\p{Extended_Pictographic}(?:\u{FE0F}|\p{Emoji_Modifier})?)*/gu
+// One emoji whole: a flag, a keycap, or a pictograph with its variation selector or skin tone and
+// any joined to it.
+const EMOJI =
+  /\p{Regional_Indicator}{2}|[0-9#*]\u{FE0F}?\u{20E3}|\p{Extended_Pictographic}(?:\u{FE0F}|\p{Emoji_Modifier})?(?:\u{200D}\p{Extended_Pictographic}(?:\u{FE0F}|\p{Emoji_Modifier})?)*/gu
+// A symbol that draws as text by default (©, ™, ➡, ❤, ⚠) is an emoji only when a variation
+// selector, a skin tone, a keycap mark or a join asks for one.
+const DRAWN_AS_EMOJI = /\p{Emoji_Presentation}|\p{Emoji_Modifier}|\p{Regional_Indicator}|[\u{FE0F}\u{20E3}\u{200D}]/u
 
 const LIST_MARK = /^\s*(?:[-*+]|\d+[.)])\s+/
 const SENTENCE_END = /(?<=[.!?]["'”’)]?)\s+(?=["'“‘(]?[A-Z0-9])/
+const RULE_LINE = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/
+const BLOCK_START = /^\s*(?:[-*+]|\d+[.)])\s+|^\s{0,3}[#|]/
+const HEADING = /^\s{0,3}#/
 
-// Each line with what is not prose blanked out, columns kept: frontmatter, fenced code, block
-// quotes, inline code, links' targets, URLs and HTML tags.
+// Each line with what is not prose blanked out, columns kept: frontmatter, fenced and indented
+// code, block quotes, HTML comments, inline code, links' targets, URLs and HTML tags.
 export function prose(text: string): string[] {
   const lines = text.split(/\r?\n/)
   const out: string[] = []
   const blank = (s: string) => ' '.repeat(s.length)
-  let fence: { char: string; size: number } | undefined
-  // Frontmatter opens with `---` and a `key:` line, and closes; a lone rule at the top is prose.
-  let front =
+  // Frontmatter opens the file with `---`, holds only `key: value` lines and what YAML nests under
+  // them, and closes with `---`. A rule at the top followed by prose is prose.
+  const close = lines.findIndex((l, i) => i > 0 && l.trim() === '---')
+  const front =
     lines[0]?.trim() === '---' &&
-    /^[\w-]+\s*:/.test(lines[1] ?? '') &&
-    lines.slice(2).some(l => l.trim() === '---')
+    close > 1 &&
+    /^[\w-]+\s*:/.test(lines[1]!) &&
+    lines.slice(1, close).every(l => l.trim() === '' || /^[\w-]+\s*:|^\s+\S|^\s*-\s/.test(l))
+  let fence: { char: string; size: number } | undefined
+  let inComment = false
+  let inCode = false
+  let inList = false
+  let wasBlank = true
+  // Inline code goes first, so a `<!--` inside it opens no comment.
+  const inline = (s: string) => {
+    let t = s.replace(/(`+)(?:(?!\1)[\s\S])+?\1/g, blank).replace(/<!--[\s\S]*?-->/g, blank)
+    const open = t.indexOf('<!--')
+    if (open !== -1) {
+      inComment = true
+      t = t.slice(0, open) + blank(t.slice(open))
+    }
+    return t
+      .replace(/\]\([^)]*\)/g, m => `]${blank(m.slice(1))}`)
+      .replace(/\b(?:https?|file):\/\/\S+/g, blank)
+      .replace(/<\/?[a-zA-Z][^>]*>/g, blank)
+  }
   lines.forEach((line, i) => {
-    if (front) {
-      out.push(blank(line))
-      if (i > 0 && line.trim() === '---') front = false
-      return
-    }
-    // Any indent, so a fence inside a list item is code too.
-    const mark = /^\s*(`{3,}|~{3,})/.exec(line)
+    const isBlank = line.trim() === ''
+    const afterBlank = wasBlank
+    wasBlank = isBlank
+    if (front && i <= close) return void out.push(blank(line))
     if (fence !== undefined) {
-      out.push(blank(line))
-      if (mark !== null && mark[1]![0] === fence.char && mark[1]!.length >= fence.size && line.trim() === mark[1]) fence = undefined
-      return
+      const end = /^\s*(`{3,}|~{3,})\s*$/.exec(line)
+      if (end !== null && end[1]![0] === fence.char && end[1]!.length >= fence.size) fence = undefined
+      return void out.push(blank(line))
     }
-    if (mark !== null) {
+    if (inComment) {
+      const end = line.indexOf('-->')
+      if (end === -1) return void out.push(blank(line))
+      inComment = false
+      return void out.push(blank(line.slice(0, end + 3)) + inline(line.slice(end + 3)))
+    }
+    if (isBlank) return void out.push(line)
+    // Indented code follows a blank line, or more of it; in a list the indent is the item's.
+    if (/^(?: {4}|\t)/.test(line) && !inList && (afterBlank || inCode)) {
+      inCode = true
+      return void out.push(blank(line))
+    }
+    inCode = false
+    // A fence at any indent, so one inside a list item is code too. A line that opens with
+    // backticks and holds more of them is inline code, as CommonMark has it.
+    const mark = /^\s*(`{3,}|~{3,})(.*)$/.exec(line)
+    if (mark !== null && !(mark[1]![0] === '`' && mark[2]!.includes('`'))) {
       fence = { char: mark[1]![0]!, size: mark[1]!.length }
-      out.push(blank(line))
-      return
+      return void out.push(blank(line))
     }
-    if (/^\s{0,3}>/.test(line)) {
-      out.push(blank(line))
-      return
-    }
-    out.push(
-      line
-        .replace(/(`+)(?:(?!\1)[\s\S])+?\1/g, blank)
-        .replace(/\]\([^)]*\)/g, m => `]${blank(m.slice(1))}`)
-        .replace(/\b(?:https?|file):\/\/\S+/g, blank)
-        .replace(/<\/?[a-zA-Z][^>]*>/g, blank),
-    )
+    if (LIST_MARK.test(line)) inList = true
+    else if (!/^\s/.test(line)) inList = false
+    if (/^\s{0,3}>/.test(line)) return void out.push(blank(line))
+    out.push(inline(line))
   })
   return out
 }
 
-// A hit inside one found before it adds nothing ("worth" inside "It is worth noting"). One that
-// only overlaps another still counts: a stock word must not hide the parallelism around it.
-const within = (hits: Hit[], line: number, start: number, end: number) =>
-  hits.some(h => h.line === line && h.column - 1 <= start && end <= h.column - 1 + h.text.length)
+// Whether a line goes on the paragraph of the line before it, as a wrapped line does.
+const continues = (prev: string, line: string) =>
+  prev.trim() !== '' &&
+  line.trim() !== '' &&
+  !BLOCK_START.test(line) &&
+  !RULE_LINE.test(line) &&
+  !RULE_LINE.test(prev) &&
+  !HEADING.test(prev)
 
-// Sentences of a line, each with the column it starts at.
-function sentences(line: string): { text: string; start: number }[] {
+// Sentences of a paragraph, each with the offset it starts at.
+function sentences(text: string): { text: string; start: number }[] {
   const found: { text: string; start: number }[] = []
   let from = 0
-  for (const part of line.split(SENTENCE_END)) {
-    const start = line.indexOf(part, from)
+  for (const part of text.split(SENTENCE_END)) {
+    const start = text.indexOf(part, from)
     if (part.trim() !== '') found.push({ text: part, start })
     from = start + part.length
   }
@@ -207,32 +258,41 @@ function sentences(line: string): { text: string; start: number }[] {
 
 const words = (s: string) => s.match(/[\p{L}\p{N}'’-]+/gu)?.length ?? 0
 
+type Push = (start: number, length: number, tier: Tier, why: string) => void
+
 // The forms a word list cannot match: emoji, horizontal rules, "**Term**: explanation" lists,
-// two spaced dashes in one sentence, and four or more very short sentences in a row.
-function forms(lines: string[], push: (line: number, start: number, length: number, tier: Tier, why: string) => void) {
+// two spaced dashes in one sentence, and four or more very short sentences in a row. Offsets are
+// into the whole text, each line starting where `starts` says.
+function forms(lines: string[], matched: string, starts: number[], push: Push) {
   lines.forEach((line, i) => {
-    for (const m of line.matchAll(PICTOGRAPH)) {
-      if (TEXT_SYMBOL.test(m[0]) && !EMOJI_BY_DEFAULT.test(m[0])) continue
-      push(i, m.index, m[0].length, 'rewrite', 'emoji. Cut it; the words carry the meaning.')
-    }
-    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line) && (lines[i - 1] ?? '').trim() === '')
-      push(i, line.search(/\S/), line.trim().length, 'check', 'horizontal rule as a section break. Use a heading, or nothing.')
+    const at = starts[i]!
+    for (const m of line.matchAll(EMOJI))
+      if (DRAWN_AS_EMOJI.test(m[0])) push(at + m.index, m[0].length, 'rewrite', 'emoji. Cut it; the words carry the meaning.')
+    if (RULE_LINE.test(line) && (lines[i - 1] ?? '').trim() === '')
+      push(at + line.search(/\S/), line.trim().length, 'check', 'horizontal rule as a section break. Use a heading, or nothing.')
     // A bold or italic label that ends in a colon or a period, or is followed by one or a dash.
     const term = /^(\s*(?:[-*+]|\d+[.)])\s+)((\*\*|__|\*|_)[^*_]+?(?:[:.]\3|\3\s*(?::|[-–—]\s)))/.exec(line)
-    if (term !== null) push(i, term[1]!.length, term[2]!.trimEnd().length, 'check', '"**Term**: explanation" list, the most recognised AI list form. Write plain sentences, or plain items.')
+    if (term !== null) push(at + term[1]!.length, term[2]!.trimEnd().length, 'check', '"**Term**: explanation" list, the most recognised AI list form. Write plain sentences, or plain items.')
+  })
 
-    const body = line.replace(LIST_MARK, m => ' '.repeat(m.length))
+  // Sentences run across the wrapped lines of a paragraph.
+  for (let first = 0; first < lines.length; ) {
+    let last = first
+    while (last + 1 < lines.length && continues(lines[last]!, lines[last + 1]!)) last++
+    const at = starts[first]!
+    const body = matched.slice(at, starts[last]! + lines[last]!.length).replace(LIST_MARK, m => ' '.repeat(m.length))
+    first = last + 1
     const parts = sentences(body)
     for (const s of parts) {
       const dashes = [...s.text.matchAll(/(?<=\S)\s[-–]\s(?=\S)/g)]
-      if (dashes.length >= 2) push(i, s.start + dashes[1]!.index, dashes[1]![0].length, 'check', 'two dashes in one sentence. Keep one aside, or split the sentence.')
+      if (dashes.length >= 2) push(at + s.start + dashes[1]!.index, dashes[1]![0].length, 'check', 'two dashes in one sentence. Keep one aside, or split the sentence.')
     }
     let run: typeof parts = []
     const close = () => {
-      const first = run[0]
-      if (first !== undefined && run.length >= 4) {
-        const lead = first.text.length - first.text.trimStart().length
-        push(i, first.start + lead, first.text.trim().length, 'check', `${run.length} very short sentences in a row. Join some; vary the length.`)
+      const lead = run[0]
+      if (lead !== undefined && run.length >= 4) {
+        const indent = lead.text.length - lead.text.trimStart().length
+        push(at + lead.start + indent, lead.text.trim().length, 'check', `${run.length} very short sentences in a row. Join some; vary the length.`)
       }
       run = []
     }
@@ -241,26 +301,59 @@ function forms(lines: string[], push: (line: number, start: number, length: numb
       else close()
     }
     close()
-  })
+  }
 }
 
 export function scan(text: string): Hit[] {
   const original = text.split(/\r?\n/)
+  const whole = original.join('\n')
   const lines = prose(text)
+  const starts: number[] = []
+  let offset = 0
+  for (const line of original) {
+    starts.push(offset)
+    offset += line.length + 1
+  }
+  // The lines of one paragraph join with a newline, which a rule's spaces match. Any other break
+  // is a full stop, so no phrase runs from one paragraph, list item or heading into the next.
+  const matched = lines.map((line, i) => (i === 0 ? '' : continues(lines[i - 1]!, line) ? '\n' : '.') + line).join('')
+
+  const lineOf = (at: number) => {
+    let lo = 0
+    let hi = starts.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if (starts[mid]! <= at) lo = mid
+      else hi = mid - 1
+    }
+    return lo
+  }
+
   const hits: Hit[] = []
-  // The text shown is the person's own, not the blanked line: inline code stays in it.
-  const push = (line: number, start: number, length: number, tier: Tier, why: string) => {
-    if (within(hits, line + 1, start, start + length)) return
-    hits.push({ line: line + 1, column: start + 1, text: original[line]!.slice(start, start + length), tier, why })
+  // The spans found so far, by each line they touch. A hit inside one found before it adds nothing
+  // ("worth" inside "It is worth noting"). One that only overlaps another still counts: a stock
+  // word must not hide the parallelism around it.
+  const spans = new Map<number, [number, number][]>()
+  // The text shown is the person's own, not the blanked line: inline code stays in it. The column
+  // counts characters, so an emoji before a hit takes one column.
+  const push: Push = (start, length, tier, why) => {
+    const end = start + length
+    const first = lineOf(start)
+    if ((spans.get(first) ?? []).some(([s, e]) => s <= start && end <= e)) return
+    for (let l = first, last = lineOf(Math.max(start, end - 1)); l <= last; l++) {
+      const onLine = spans.get(l)
+      if (onLine === undefined) spans.set(l, [[start, end]])
+      else onLine.push([start, end])
+    }
+    const column = [...original[first]!.slice(0, start - starts[first]!)].length + 1
+    hits.push({ line: first + 1, column, text: whole.slice(start, end).replace(/[ \t]*\n[ \t]*/g, ' '), tier, why })
   }
   // Rewrites are matched first, so a check that lies inside a rewrite's words is dropped, and rules
   // run in their listed order, so a phrase listed before a word it holds is the one reported.
   for (const tier of ['rewrite', 'check'] as const)
     for (const rule of RULES.filter(r => r.tier === tier))
-      lines.forEach((line, i) => {
-        for (const m of line.matchAll(rule.re)) push(i, m.index, m[0].length, rule.tier, rule.why)
-      })
-  forms(lines, push)
+      for (const m of matched.matchAll(rule.re)) push(m.index, m[0].length, rule.tier, rule.why)
+  forms(lines, matched, starts, push)
   return hits.sort((a, b) => a.line - b.line || a.column - b.column)
 }
 
