@@ -17,7 +17,8 @@ type World = {
   hasOrigin: boolean
   localBehindOrigin: boolean
   // Worktrees git lists besides the main one, by path.
-  trees: Map<string, { dirty: boolean; unmerged: boolean; head?: string }>
+  // `squashed`: git sees no ancestry, but main holds every change the work makes.
+  trees: Map<string, { dirty: boolean; unmerged: boolean; head?: string; squashed?: boolean }>
   branches: Set<string>
   addFails: boolean
   enterFails: boolean
@@ -86,6 +87,13 @@ function git(w: World, argv: readonly string[], cwd: string) {
     return w.isLinked
       ? done(`${cwd}\n${ROOT}/.git/worktrees/x\n${ROOT}/.git\n`)
       : done(`${ROOT}\n${ROOT}/.git\n${ROOT}/.git\n`)
+  }
+  if (a === 'rev-parse' && String(b).endsWith('^{tree}')) return done('tree-home\n')
+  if (a === 'merge-tree') {
+    // A merge of the work into main: main's own tree when main already holds every change.
+    const tip = String(argv[4])
+    const tree = tip === 'HEAD' ? treeAt(cwd) : [...w.trees].find(([p]) => p.endsWith(tip.replace('wt/', '')))?.[1]
+    return done(tree?.squashed ? 'tree-home\n' : 'tree-other\n')
   }
   if (a === 'rev-parse' && b !== '--verify') return done(`${b === 'HEAD' ? (treeAt(cwd)?.head ?? (cwd === ROOT ? w.rootHead : 'base0')) : 'base0'}\n`)
   if (a === 'symbolic-ref') return w.hasOrigin ? done('origin/main\n') : done('', 128)
@@ -636,4 +644,42 @@ test('when the engine will not step out, the worktree is left alone', async ($, 
   await $.turn.complete(TURN)
   expect(w.removed).toEqual([])
   expect(w.cwd).toBe(PATH)
+})
+
+// A squash merge: no commit of the work is in main, but main holds every change it makes.
+const SQUASHED = { dirty: false, unmerged: true, squashed: true, head: 'work1' }
+
+test('a squash-merged branch counts as merged, so the session steps back out to main', async ($, on) => {
+  const w = world()
+  engine(on, w, { enabled: true })
+  await $.session.start(START)
+  await start($)
+  w.trees.set(PATH, SQUASHED)
+  await $.turn.complete(TURN)
+  expect(w.exited).toBe(1)
+  expect(w.cwd).toBe(ROOT)
+  expect(w.removed).toEqual([{ path: PATH, force: false }])
+  expect(w.deleted).toEqual([`wt/${NAME}`])
+})
+
+test('a squash-merged branch is removed when its session ends', async ($, on) => {
+  const w = world()
+  engine(on, w, { enabled: true })
+  await $.session.start(START)
+  await start($)
+  w.trees.set(PATH, SQUASHED)
+  await finish($, w)
+  expect(w.removed).toEqual([{ path: PATH, force: false }])
+  expect(w.deleted).toEqual([`wt/${NAME}`])
+})
+
+test('work that main does not hold in full is kept, even when some of it is there', async ($, on) => {
+  const w = world()
+  engine(on, w, { enabled: true })
+  await $.session.start(START)
+  await start($)
+  w.trees.set(PATH, { dirty: false, unmerged: true, head: 'work1' })
+  await finish($, w)
+  expect(w.removed).toEqual([])
+  expect((w.kv.get(KEY) as { keptBecause?: string }).keptBecause).toContain('commits not in main')
 })

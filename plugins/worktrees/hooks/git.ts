@@ -72,6 +72,15 @@ export async function addWorktree(
   return r.exitCode === 0 ? undefined : r.stderr.trim() || `git worktree add exited ${r.exitCode}`
 }
 
+// Whether `home` already has every change in `tip`: merging them gives back `home`'s own files.
+// A conflict, or a git too old to try the merge, answers no, so work is kept when in doubt.
+async function alreadyIn(run: Run, cwd: string, tip: string, home: string): Promise<boolean> {
+  const merged = await run(['git', 'merge-tree', '--write-tree', home, tip], cwd)
+  if (merged.exitCode !== 0) return false
+  const want = await run(['git', 'rev-parse', `${home}^{tree}`], cwd)
+  return want.exitCode === 0 && out(want) !== '' && out(merged).split('\n')[0] === out(want)
+}
+
 // What would be lost by removing the worktree.
 export async function assess(run: Run, entry: Entry): Promise<Assessment> {
   const listed = await run(['git', 'worktree', 'list', '--porcelain'], entry.repo)
@@ -101,6 +110,10 @@ export async function assess(run: Run, entry: Entry): Promise<Assessment> {
     let isHome = false
     for (const home of homes) {
       if ((await run(['git', 'merge-base', '--is-ancestor', tip, home], cwd)).exitCode === 0) isHome = true
+    }
+    // After a squash merge no commit of the work is in main, so check whether main has all its changes instead.
+    for (const home of homes) {
+      if (!isHome && (await alreadyIn(run, cwd, tip, home))) isHome = true
     }
     if (!isHome) unmerged.push(tip)
   }

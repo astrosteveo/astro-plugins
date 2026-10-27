@@ -26,7 +26,7 @@ It does nothing when the session is already in a worktree, is outside a reposito
 **Leaving.** When the session ends, the mod removes the worktree and its branch only if both hold:
 
 - the tree has no uncommitted or untracked files, and
-- every commit in it is already in `main` or `origin/main`.
+- the work is already in `main` or `origin/main`: every commit is there, or `main` holds every change the work makes, as after a squash merge.
 
 Otherwise it stays, marked with the reason. The next time you start Claude in that repository, a note lists what was left. Once you merge the branch and clean the tree, the next start removes it.
 
@@ -36,7 +36,7 @@ A `/clear` or a resume ends nothing. A session that dies without a goodbye is cl
 
 ## Limits
 
-- A branch merged by squash looks unmerged to git, so its worktree stays until you run `/worktrees discard NAME`.
+- A squash merge counts only while `main` still holds the work as merged. If `main` has since changed the same lines, the work reads as unmerged and stays until you run `/worktrees discard NAME`.
 - Your uncommitted changes in the main checkout stay there. The worktree starts from the last commit.
 - A subagent's commands run before `start`; its file changes are refused until the session has a worktree.
 - A command that writes but that the engine calls read-only lands in the main checkout.
