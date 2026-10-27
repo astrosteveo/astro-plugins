@@ -136,9 +136,9 @@ test('pressing a note quotes it into the prompt; sending a reply marks it', asyn
   expect(filled).toEqual(['About your question "Should Esc also close the menu?": '])
   // Pressing alone, or sending the quote with nothing after it, is no reply.
   expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeDefined()
-  await $.prompt.submit({ text: filled[0] ?? '' })
+  await $.prompt.submit({ text: filled[0] ?? '', wait: false, origin: { kind: 'composer' } })
   expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeDefined()
-  await $.prompt.submit({ text: `${filled[0]}Yes, and Start too.` })
+  await $.prompt.submit({ text: `${filled[0]}Yes, and Start too.`, wait: false, origin: { kind: 'composer' } })
   expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeUndefined()
   await ui.press({ key: 'tab-notes' })
   expect((await ui.find({ type: 'Button', text: /Esc also close/ }))?.text).toMatch(/↩ replied$/)
@@ -177,7 +177,7 @@ test('pressing another note opens it to its why, detail and actions', async ($, 
   await ui.press({ key: `reply-${decision?.key}` })
   expect(filled).toEqual([`About your decision "Use a CanvasLayer for the menu": I'd rather `])
   expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeUndefined()
-  await $.prompt.submit({ text: `${filled[0]}use a Control.` })
+  await $.prompt.submit({ text: `${filled[0]}use a Control.`, wait: false, origin: { kind: 'composer' } })
   expect((await ui.find({ type: 'Button', text: /CanvasLayer/ }))?.text).toMatch(/↩ replied$/)
   expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes 1')
 
@@ -235,7 +235,7 @@ test('changes list edits and failed commands, and count reads', async ($, on) =>
 test('repeated edits of a file fold into one row with a count, newest first', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  const edit = { tool: 'Edit', file_path: '/proj/scripts/pause.gd', old_string: 'a', new_string: 'b' }
+  const edit = { tool: 'Edit', file_path: '/proj/scripts/pause.gd', old_string: 'a', new_string: 'b' } as const
   await $.tool.call(edit)
   await $.tool.call({ tool: 'Read', file_path: '/proj/scenes/main.tscn' })
   await $.tool.call(edit)
@@ -1328,7 +1328,7 @@ test("an edit's row in the chat gets a bar of lines added and removed", async ($
     surface: 'terminal',
   })
   const bar = await ui.find({ type: 'Raster', key: 'edit-toolu_e1' })
-  expect(decode(bar?.props.cells, bar?.props.columns, 1).lines[0]).toMatch(/^\+2 −1 █+$/)
+  expect(decode(bar?.props.cells as string, bar?.props.columns as number, 1).lines[0]).toMatch(/^\+2 −1 █+$/)
   await ui.unmount()
 })
 
@@ -1348,7 +1348,7 @@ test("a test command's row in the chat gets a pass and fail bar", async ($, on) 
     const ui = await $.ui.mount({ ...TOOL_RESULT(id, 'Bash', { stdout: '' }), surface })
     if (surface === 'terminal') {
       const bar = await ui.find({ type: 'Raster', key: `tests-${id}` })
-      expect(decode(bar?.props.cells, bar?.props.columns, 1).lines[0]).toMatch(/^✗ 1 pass 1 fail █+$/)
+      expect(decode(bar?.props.cells as string, bar?.props.columns as number, 1).lines[0]).toMatch(/^✗ 1 pass 1 fail █+$/)
     } else {
       expect((await ui.find({ type: 'Text', text: /pass/ }))?.text).toBe('✗ 1 pass · 1 fail')
     }
@@ -1366,8 +1366,8 @@ const BAND = (isWorking: boolean) =>
 
 test('the band shows the pulse and step while Claude works, and nothing idle', async ($, on) => {
   engine(on)
-  on('clock.every', () => ({ value: { cancel: () => {} } }))
-  on('session.usage', () => ({ value: USAGE }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.usage', () => ({ value: USAGE as never }))
   on('ui.render', ENGINE_ROW)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.tool.call({
