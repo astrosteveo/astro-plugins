@@ -1891,3 +1891,37 @@ test('the tabs are Now, Pictures, Changes, Tests and Git; the search box brings 
   expect(await ui.find({ type: 'Text', text: /^\d+ files/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('the text search runs as the typing pauses, and not for a single letter', async ($, on) => {
+  engine(on)
+  on('clock.sleep', () => ({ value: undefined }))
+  const asked: string[] = []
+  on('process.run', (_, e) => {
+    if (e.argv[0] === 'rg') {
+      asked.push(e.argv.at(-1) ?? '')
+    }
+
+    return {
+      value: {
+        exitCode: 0,
+        stdout: e.argv[0] === 'rg' ? 'hooks/a.ts:42:  jump()\n' : '',
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'find-text' })
+  await ui.input({ key: 'search-q', text: 'j', kind: 'change' })
+  expect(asked).toEqual([])
+  await ui.input({ key: 'search-q', text: 'jump', kind: 'change' })
+  expect(asked).toHaveLength(1)
+  expect((await ui.find({ type: 'Text', text: /hits in/ }))?.text).toBe('1 hits in 1 file')
+  // Back to a letter, and the results clear.
+  await ui.input({ key: 'search-q', text: 'j', kind: 'change' })
+  expect(await ui.find({ type: 'Text', text: /hits in/ })).toBeUndefined()
+  await ui.unmount()
+})

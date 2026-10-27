@@ -115,6 +115,12 @@ const wrapLines = atom({ plugin: 'show-work', key: 'wrapLines' } as const, true)
 const viewSel = atom({ plugin: 'show-work', key: 'viewSel' } as const, null)
 // Quoted lines behind the short markers in the prompt box, swapped in on send.
 const refs = atom({ plugin: 'show-work', key: 'refs' } as const, [])
+// The newest keystroke in the search box; a search waits for it to hold still.
+let typing = 0
+// How long the typing holds still before the text is searched, in ms.
+const SEARCH_WAIT = 250
+// The shortest text worth a search.
+const SEARCH_LEAST = 2
 // The rows each block of the rendered markdown file drew at.
 const mdRows = atom({ plugin: 'show-work', key: 'mdRows' } as const, { file: '', rows: [] })
 // The note opened to show its why, detail and actions; null when none is.
@@ -2598,10 +2604,16 @@ export const register: Register = on => {
       body = (
         <Box flexDirection="column" gap={1}>
           <Box flexDirection="row" columnGap={2}>
-            <Button key="find-files" plain dimColor={mode !== 'files'} hotkey="o" onPress={() => update($, findMode, () => 'files')}>
+            <Button key="find-files" plain dimColor={mode !== 'files'} hotkey="o" onPress={async () => {
+                await update($, findMode, () => 'files')
+                await $.ui.focus({ requestId: PANE, key: 'ex-filter' }).catch(() => undefined)
+              }}>
               <Text weight={mode === 'files' ? 'bold' : 'regular'}>Names</Text>
             </Button>
-            <Button key="find-text" plain dimColor={mode !== 'text'} hotkey="t" onPress={() => update($, findMode, () => 'text')}>
+            <Button key="find-text" plain dimColor={mode !== 'text'} hotkey="t" onPress={async () => {
+                await update($, findMode, () => 'text')
+                await $.ui.focus({ requestId: PANE, key: 'search-q' }).catch(() => undefined)
+              }}>
               <Text weight={mode === 'text' ? 'bold' : 'regular'}>Text</Text>
             </Button>
           </Box>
@@ -2732,17 +2744,32 @@ export const register: Register = on => {
             key={isText ? 'search-q' : 'ex-filter'}
             label="⌕"
             placeholder={isText ? 'search the project’s text (regex)…' : 'find a file by a few letters…'}
-            value={isText ? (found?.query ?? '') : filterText}
             submitLabel={isText ? 'search' : 'open'}
             onInput={async value => {
+              await toFind()
               if (!isText) {
                 await update($, filter, () => value)
-                await toFind()
+
+                return
+              }
+              // The text is searched as the typing pauses, each keystroke setting the last aside.
+              // The box is left to the person's typing: drawing a value back would eat keystrokes.
+              typing += 1
+              const mine = typing
+              await $.clock.sleep(SEARCH_WAIT)
+              if (mine !== typing) {
+                return
+              }
+              const result = value.trim().length < SEARCH_LEAST ? null : await runSearch($, cwd, value)
+              if (mine === typing) {
+                await update($, search, () => result)
+                await update($, viewSel, () => null)
               }
             }}
             onSubmit={async value => {
               await toFind()
               if (isText) {
+                typing += 1
                 const result = await runSearch($, cwd, value)
                 await update($, search, () => result)
                 await update($, viewSel, () => null)
