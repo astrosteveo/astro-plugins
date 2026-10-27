@@ -199,7 +199,7 @@ test('a note without text is refused', async ($, on) => {
   expect(ran.deny).toBe('A note needs text.')
 })
 
-test('changes list edits, log commands, and fold reads away', async ($, on) => {
+test('changes list edits and failed commands, and count reads', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Read', file_path: '/proj/scenes/main.tscn' })
@@ -214,10 +214,10 @@ test('changes list edits, log commands, and fold reads away', async ($, on) => {
 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: /main\.tscn/ })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /idle/ }))?.text).toBe('○ idle')
     await ui.press({ key: 'tab-changes' })
-    expect((await ui.find({ type: 'Text', text: /folded/ }))?.text).toBe(
-      '1 commands and searches · 1 reads folded · 1 failed',
+    expect((await ui.find({ type: 'Text', text: /commands and searches/ }))?.text).toBe(
+      '1 commands and searches · 1 reads · 1 failed',
     )
     expect(await ui.find({ type: 'Button', key: 'file-scripts/pause.gd' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /main\.tscn/ })).toBeUndefined()
@@ -244,7 +244,7 @@ test('repeated edits of a file fold into one row with a count, newest first', as
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-changes' })
   expect((await ui.find({ type: 'Button', key: 'file-scripts/pause.gd' }))?.text).toBe('± scripts/pause.gd ×3')
-  expect((await ui.find({ type: 'Text', text: /folded/ }))?.text).toBe('0 commands and searches · 1 reads folded')
+  expect((await ui.find({ type: 'Text', text: /commands and searches/ }))?.text).toBe('0 commands and searches · 1 reads')
   await ui.unmount()
 })
 
@@ -1140,12 +1140,9 @@ import {
   base64,
   patchCounts,
   shareBar,
-  flaky,
   glyphs,
-  parseLog,
   parseTests,
   pulse,
-  scoreboard,
 } from '../hooks/charts'
 
 const decode = (cells: string, columns: number, rows: number) => {
@@ -1213,23 +1210,6 @@ const run = (id: string, names: [string, boolean][], extra = {}) => ({
   ...extra,
 })
 
-test('the scoreboard puts failing tests first and flags flips as flaky', () => {
-  const runs = [
-    run('r1', [['jump', true], ['dash', true]]),
-    run('r2', [['jump', false], ['dash', true]]),
-    run('r3', [['jump', true], ['dash', false]]),
-  ]
-  expect([...flaky(runs)]).toEqual(['jump'])
-  const board = scoreboard(runs, 40, 10)
-  expect(board.names).toEqual(['dash', 'jump'])
-  const { lines, words } = decode(board.cells, board.columns, board.rows)
-  expect(lines).toEqual(['runs           █ █ █ ', 'dash           ▆ ▆ ▆ ', 'jump           ▆ ▆ ▆ '])
-  const fg = (row: number, col: number) => words[(row * board.columns + col) * 3 + 1]
-  expect([fg(0, 15), fg(0, 17), fg(0, 19)]).toEqual([0x6cc070, 0xe06c75, 0xe06c75])
-  expect([fg(1, 15), fg(1, 19)]).toEqual([0x6cc070, 0xe06c75])
-  expect(fg(2, 0)).toBe(0xe0a040)
-})
-
 test('the pulse stacks calls into buckets, newest on the right', () => {
   const beats = [
     { at: 9_500, kind: 'read', status: 'ok' },
@@ -1242,23 +1222,6 @@ test('the pulse stacks calls into buckets, newest on the right', () => {
   expect(lines[0]).toBe('▂▁▁▁▁▄')
   expect(words[5 * 3 + 1]).toBe(0xe0a040)
   expect(words[0 * 3 + 1]).toBe(0xe06c75)
-})
-
-test('git log --graph reads into commits with stats and forks', () => {
-  const out = [
-    '* \x1e3d4035d\x1fadd timeline\x1f2 hours ago\x1fHEAD -> work',
-    '|  2 files changed, 418 insertions(+), 4 deletions(-)',
-    '| * \x1eabc1234\x1fside fix\x1f3 hours ago\x1f',
-    '|/  ',
-    '|  1 file changed, 1 deletion(-)',
-    '* \x1e0f88d45\x1freadme\x1f4 hours ago\x1f',
-  ].join('\n')
-  expect(parseLog(out)).toEqual([
-    { graph: '*', sha: '3d4035d', subject: 'add timeline', when: '2 hours ago', refs: 'HEAD -> work', added: 418, removed: 4 },
-    { graph: '| *', sha: 'abc1234', subject: 'side fix', when: '3 hours ago', added: 0, removed: 1 },
-    { graph: '|/' },
-    { graph: '*', sha: '0f88d45', subject: 'readme', when: '4 hours ago' },
-  ])
 })
 
 const USAGE = {
@@ -1299,37 +1262,13 @@ test('test commands land on the Tests tab as runs', async ($, on) => {
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'tab-tests' })
     expect((await ui.find({ type: 'Text', text: /pass · \d fail/ }))?.text).toMatch(/^✗ 1 pass · 1 fail bun test · \d+s ago$/)
-    expect((await ui.find({ type: 'Raster', key: 'tests-board' })) !== undefined).toBe(surface === 'terminal')
+    expect(await ui.find({ type: 'Button', key: 'tests-fix' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^✓\s+2 pass/ })).toBeDefined()
     await ui.press({ key: 'tests-fix' })
     expect(filled.at(-1)).toMatch(/^Fix the failing tests from `bun test`/)
     await ui.press({ key: 'tab-now' })
     await ui.unmount()
   }
-})
-
-test("the Commits tab draws this session's graph and refreshes after a commit", async ($, on) => {
-  let log = '* \x1e1111111\x1ffirst\x1f1 minute ago\x1fHEAD -> work\n|  1 file changed, 2 insertions(+)\n'
-  const asked: string[][] = []
-  engine(on)
-  on('session.usage', () => ({ value: { ...USAGE, startedAt: 1_700_000_000_000 } }))
-  on('process.run', (_, e) => {
-    asked.push([...e.argv])
-    const stdout = e.argv.includes('rev-list') ? 'basesha\n' : e.argv.includes('log') ? log : ''
-
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  expect(asked.find(argv => argv.includes('rev-list'))).toEqual(['git', '-C', '/proj', 'rev-list', '-1', '--before=@1700000000', 'HEAD'])
-  expect(asked.find(argv => argv.includes('log'))?.at(-1)).toBe('^basesha')
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-git' })
-  expect((await ui.find({ type: 'Text', text: /1111111/ }))?.text).toBe('● 1111111 first (HEAD -> work) +2 −0 1 minute ago')
-  log = '* \x1e2222222\x1fsecond\x1fnow\x1fHEAD -> work\n' + log.replace('HEAD -> work', '')
-  await $.tool.call({ tool: 'Bash', command: 'git commit -m second', description: 'Commit' })
-  expect((await ui.find({ type: 'Text', text: /^This session's commits/ }))?.text).toBe("This session's commits 2")
-  await ui.unmount()
 })
 
 test('Changes stages what Claude edited and hands over to the Git tab', async ($, on) => {
@@ -1534,32 +1473,6 @@ test('git status, grep hits and coloured output are read plainly', () => {
   })
   expect(plain('\x1b[32m✓ ok\x1b[0m')).toBe('✓ ok')
   expect(plain('10%\r50%\r100% done')).toBe('100% done')
-})
-
-test('the Run tab streams a command, keeps its tail and hands it to Claude', async ($, on) => {
-  const filled = engine(on)
-  const spawned: string[][] = []
-  on('process.spawn', async function* ($, e, next) {
-    spawned.push([...e.argv])
-    yield { stream: 'stdout' as const, text: 'building\n\x1b[31merror: x\x1b[0m\npart' }
-    yield { stream: 'stderr' as const, text: 'ial\n' }
-
-    return { value: { code: 1, signal: null } } as never
-  })
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-run' })
-  await ui.input({ key: 'run-cmd', text: 'make build', kind: 'submit' })
-  expect(spawned).toEqual([['bash', '-lc', 'make build']])
-  expect((await ui.find({ type: 'Button', text: /^. make build/ }))?.text).toMatch(/^✗ make build \d+s · exit 1$/)
-  expect((await ui.findAll({ type: 'Text', text: /building|error|partial/ })).map(one => [one.text, one.props.color])).toEqual([
-    ['building', undefined],
-    ['error: x', 'error'],
-    ['partial', undefined],
-  ])
-  await ui.press({ key: 'run-ask' })
-  expect(filled[0]).toBe('The output of `make build` (failed, exit 1):\n```\nbuilding\nerror: x\npartial\n```\n')
-  await ui.unmount()
 })
 
 test('the Git tab stages a file, commits with a message and shows what git said', async ($, on) => {

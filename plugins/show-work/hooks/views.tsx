@@ -1,11 +1,10 @@
-// The Tests, Git, Find, Run and Commits views. Each takes the elements of the
+// The Tests, Git and Find views. Each takes the elements of the
 // surface it draws on, with a Raster where the surface has one, and the data.
 
 import type { Color, Elements, RenderElement } from 'claude-code'
 
-import type { CommitRow, GitFile, GitState, Job, Preview, Search, TestRun, Touch } from '../types'
+import type { GitFile, GitState, Preview, Search, TestRun, Touch } from '../types'
 import { matches, treeRows } from './explorer'
-import { scoreboard } from './charts'
 
 export type Kit = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'> & {
   Raster?: Elements['terminal']['Raster']
@@ -23,13 +22,8 @@ export function ago(ms: number) {
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1)
 
 export function testsView(
-  { Box, Text, Button, Raster }: Kit,
-  {
-    runs,
-    columns,
-    now,
-    onFix,
-  }: { runs: TestRun[]; columns: number; now: number; onFix?: (run: TestRun) => () => void },
+  { Box, Text, Button }: Kit,
+  { runs, now, onFix }: { runs: TestRun[]; now: number; onFix?: (run: TestRun) => () => void },
 ): RenderElement {
   const last = runs.at(-1)
   if (last === undefined) {
@@ -41,7 +35,7 @@ export function testsView(
     )
   }
   const isGreen = last.failed === 0 && !last.isError
-  const board = scoreboard(runs, columns, 20)
+  const failing = last.names.filter(one => !one.ok)
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -58,11 +52,15 @@ export function testsView(
           Fix these (x)
         </Button>
       )}
-      {Raster !== undefined && <Raster key="tests-board" {...board} />}
-      {board.shaky.size > 0 && (
-        <Text color="warning" wrap="truncate-end">
-          flaky: {[...board.shaky].join(', ')}
-        </Text>
+      {failing.length > 0 && (
+        <Box flexDirection="column">
+          {failing.slice(0, 15).map(one => (
+            <Text key={`fail-${one.name}`} color="error" wrap="truncate-end">
+              ✗ {one.name}
+            </Text>
+          ))}
+          {failing.length > 15 && <Text dimColor>… {failing.length - 15} more</Text>}
+        </Box>
       )}
       <Box flexDirection="column">
         {runs
@@ -77,61 +75,6 @@ export function testsView(
             </Text>
           ))}
       </Box>
-    </Box>
-  )
-}
-
-// Each column of the graph keeps one color, as git colors its lanes.
-const LANES: Color[] = ['claude', 'suggestion', 'success', 'warning', 'error']
-const GRAPH: Record<string, string> = { '*': '●', '|': '│', '/': '╱', '\\': '╲' }
-
-export function commitsView(
-  { Box, Text, Button }: Kit,
-  { rows, onRefresh }: { rows: CommitRow[]; onRefresh: () => void },
-): RenderElement {
-  const count = rows.filter(row => row.sha !== undefined).length
-
-  return (
-    <Box flexDirection="column" gap={1}>
-      <Box flexDirection="row" gap={2}>
-        <Text weight="bold">
-          This session's commits <Text dimColor>{count}</Text>
-        </Text>
-        <Button key="commits-refresh" plain dimColor hotkey="r" onPress={onRefresh}>
-          ↻ refresh
-        </Button>
-      </Box>
-      {count === 0 ? (
-        <Text dimColor>No commits since the session began.</Text>
-      ) : (
-        <Box flexDirection="column">
-          {rows.map((row, i) => (
-            <Text key={`commit-${row.sha ?? `g${i}`}`} wrap="truncate-end">
-              {[...row.graph].map((ch, col) =>
-                ch === ' ' ? (
-                  ' '
-                ) : (
-                  <Text color={LANES[Math.floor(col / 2) % LANES.length]}>{GRAPH[ch] ?? ch}</Text>
-                ),
-              )}
-              {row.sha !== undefined && (
-                <Text>
-                  {' '}
-                  <Text color="warning">{row.sha}</Text> {row.subject}
-                  {row.refs !== undefined && <Text color="success"> ({row.refs})</Text>}
-                  {row.added !== undefined && (
-                    <Text>
-                      {' '}
-                      <Text color="success">+{row.added}</Text> <Text color="error">−{row.removed ?? 0}</Text>
-                    </Text>
-                  )}
-                  <Text dimColor> {row.when}</Text>
-                </Text>
-              )}
-            </Text>
-          ))}
-        </Box>
-      )}
     </Box>
   )
 }
@@ -281,119 +224,6 @@ export function explorerView(
               {!row.isDir && marks(row.path)}
             </Button>
           ))}
-        </Box>
-      )}
-    </Box>
-  )
-}
-
-const since = (ms: number) => {
-  const sec = Math.max(0, Math.round(ms / 1000))
-
-  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`
-}
-
-const JOB_MARK: Record<Job['status'], { mark: string; color: Color }> = {
-  running: { mark: '…', color: 'warning' },
-  ok: { mark: '✓', color: 'success' },
-  failed: { mark: '✗', color: 'error' },
-  stopped: { mark: '■', color: 'inactive' },
-}
-
-// A line of output's color: errors red, warnings yellow, the rest as is.
-const lineColor = (line: string): Color | undefined =>
-  /\b(error|fail(ed|ure)?|panic|exception)\b/i.test(line)
-    ? 'error'
-    : /\bwarn(ing)?\b/i.test(line)
-      ? 'warning'
-      : undefined
-
-// Commands you start from the pane: a field to type one, the recent ones to
-// run again, and the chosen one's output as it streams, to stop or hand to
-// Claude.
-export function runView(
-  { Box, Text, Button, Input }: Kit & { Input?: Elements['terminal']['Input'] },
-  data: {
-    jobs: Job[]
-    picked: string | null
-    now: number
-    onRun: (command: string) => () => void
-    onPick: (id: string) => () => void
-    onStop: (id: string) => () => void
-    onAsk: (job: Job) => () => void
-  },
-): RenderElement {
-  const job = data.jobs.find(one => one.id === data.picked) ?? data.jobs.at(-1)
-  const recent = [...new Set(data.jobs.map(one => one.command).reverse())].slice(0, 5)
-
-  return (
-    <Box flexDirection="column" gap={1}>
-      <Box flexDirection="column">
-        {Input !== undefined && (
-          <Input
-            key="run-cmd"
-            placeholder="run a command: bun test, godot --headless --export-release …"
-            submitLabel="run"
-            onSubmit={value => {
-              if (value.trim() !== '') {
-                data.onRun(value.trim())()
-              }
-            }}
-          />
-        )}
-        {recent.length > 0 && (
-          <Box flexDirection="row" columnGap={2} flexWrap="wrap">
-            <Text dimColor>again:</Text>
-            {recent.map((command, i) => (
-              <Button key={`run-again-${i}`} plain dimColor onPress={data.onRun(command)}>
-                {command.length > 40 ? command.slice(0, 39) + '…' : command}
-              </Button>
-            ))}
-          </Box>
-        )}
-      </Box>
-      {job === undefined ? (
-        <Text dimColor>Nothing run yet. Type a command above and press Enter; its output streams here.</Text>
-      ) : (
-        <Box flexDirection="column">
-          <Box flexDirection="column">
-            {data.jobs
-              .slice(-5)
-              .reverse()
-              .map(one => (
-                <Button key={`job-${one.id}`} plain dimColor={one.id !== job.id} onPress={data.onPick(one.id)}>
-                  <Text color={JOB_MARK[one.status].color}>{JOB_MARK[one.status].mark}</Text> {one.command}
-                  <Text dimColor>
-                    {' '}
-                    {since((one.end ?? data.now) - one.start)}
-                    {one.code === undefined || one.code === null || one.code === 0 ? '' : ` · exit ${one.code}`}
-                  </Text>
-                </Button>
-              ))}
-          </Box>
-          <Box flexDirection="row" gap={2}>
-            {job.status === 'running' && (
-              <Button key="run-stop" variant="secondary" hotkey="k" onPress={data.onStop(job.id)}>
-                ■ stop
-              </Button>
-            )}
-            <Button key="run-rerun" plain dimColor hotkey="e" onPress={data.onRun(job.command)}>
-              ↻ again
-            </Button>
-            <Button key="run-ask" plain dimColor hotkey="a" onPress={data.onAsk(job)}>
-              → ask Claude
-            </Button>
-            <Text dimColor>
-              {job.total} lines{job.total > job.output.length ? `, last ${job.output.length} kept` : ''}
-            </Text>
-          </Box>
-          <Box flexDirection="column">
-            {job.output.slice(-40).map((line, i) => (
-              <Text key={`out-${i}`} wrap="truncate-end" color={lineColor(line)}>
-                {line === '' ? ' ' : line}
-              </Text>
-            ))}
-          </Box>
         </Box>
       )}
     </Box>

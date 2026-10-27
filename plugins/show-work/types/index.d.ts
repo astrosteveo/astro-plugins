@@ -18,7 +18,7 @@ export type Note = {
   isOk?: boolean
 }
 
-export type Tab = 'now' | 'notes' | 'pictures' | 'changes' | 'tests' | 'git' | 'find' | 'run'
+export type Tab = 'now' | 'notes' | 'pictures' | 'changes' | 'tests' | 'git' | 'find'
 
 export type ActKind = 'read' | 'edit' | 'run' | 'search' | 'web' | 'agent' | 'tool'
 export type ActStatus = 'runs' | 'ok' | 'failed'
@@ -79,19 +79,6 @@ export type Preview = {
   hit?: number
 }
 
-/** A command run from the Run tab, with the tail of its output. */
-export type Job = {
-  id: string
-  command: string
-  status: 'running' | 'ok' | 'failed' | 'stopped'
-  code?: number | null
-  start: number
-  end?: number
-  output: string[]
-  /** Lines written in all, kept or not. */
-  total: number
-}
-
 /** A file `git status` names: its index and worktree columns. */
 export type GitFile = { path: string; index: string; worktree: string }
 
@@ -108,17 +95,6 @@ export type GitState = {
 export type Hit = { file: string; line: number; text: string }
 
 export type Search = { query: string; hits: Hit[]; isCut: boolean; error?: string }
-
-/** A row of `git log --graph`: a commit, or a line of the graph alone. */
-export type CommitRow = {
-  graph: string
-  sha?: string
-  subject?: string
-  when?: string
-  refs?: string
-  added?: number
-  removed?: number
-}
 
 /** A changed file's diff, as git gave it when the person pressed the file. */
 export type Diff = { file: string; lines: string[]; isCut: boolean }
@@ -194,7 +170,6 @@ declare module 'claude-code' {
       turns: Shaped<Turn[]>
       tests: Shaped<TestRun[]>
       touches: Shaped<Touch[]>
-      commits: Shaped<CommitRow[]>
       tree: Shaped<string[]>
       status: Shaped<Record<string, string>>
       openDirs: Shaped<string[]>
@@ -202,8 +177,6 @@ declare module 'claude-code' {
       /** How many times taller than wide the terminal's cells are. */
       cellTall: number
       preview: Shaped<Preview | null>
-      jobs: Shaped<Job[]>
-      pickedJob: string | null
       git: Shaped<GitState | null>
       search: Shaped<Search | null>
       picked: string | null

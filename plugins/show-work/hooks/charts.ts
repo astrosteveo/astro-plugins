@@ -1,13 +1,8 @@
 // What the pane draws in Raster cells, and the parsing behind it: pure
 // functions of plain data, so the tests can read the cells back.
 
-import type { CommitRow, TestRun } from '../types'
-
 export const DEFAULT = 0x01000000
 const GRID = 0x3a3a3a
-const DIM = 0x8a8a8a
-const BRIGHT = 0xd0d0d0
-const LABEL = 14
 const FULL = 0x2588
 // Eighth blocks, from one eighth up to seven: a column's top lands on an eighth.
 const EIGHTHS = [0x2581, 0x2582, 0x2583, 0x2584, 0x2585, 0x2586, 0x2587]
@@ -156,92 +151,6 @@ export function parseTests(text: string) {
     failed: failed ?? names.filter(one => !one.ok).length,
     names: names.slice(0, 200),
   }
-}
-
-// Tests that both passed and failed across the runs, flipping at least twice.
-export function flaky(runs: TestRun[]) {
-  const seen = new Map<string, boolean[]>()
-  for (const run of runs) {
-    for (const { name, ok } of run.names) {
-      seen.set(name, [...(seen.get(name) ?? []), ok])
-    }
-  }
-
-  return new Set(
-    [...seen].filter(([, oks]) => oks.slice(1).filter((ok, i) => ok !== oks[i]).length >= 2).map(([name]) => name),
-  )
-}
-
-// Runs across, tests down: the top row says how each run went, each row
-// below how one test did in each run, a dot where the run did not name it.
-export function scoreboard(runs: TestRun[], wanted: number, most: number) {
-  const width = Math.max(1, Math.floor((wanted - LABEL - 1) / 2))
-  const shown = runs.slice(-width)
-  const last = shown.at(-1)
-  const order = new Map<string, number>()
-  shown.forEach((run, i) => run.names.forEach(({ name }) => order.set(name, i)))
-  const failingNow = new Set(last?.names.filter(one => !one.ok).map(one => one.name) ?? [])
-  const shaky = flaky(shown)
-  const names = [...order]
-    .sort(([a, i], [b, j]) => Number(failingNow.has(b)) - Number(failingNow.has(a)) || j - i)
-    .map(([name]) => name)
-    .slice(0, most)
-  const columns = LABEL + 1 + shown.length * 2
-  const g = grid(Math.max(LABEL + 2, columns), names.length + 1)
-
-  g.text(0, 0, 'runs', BRIGHT)
-  shown.forEach((run, i) => {
-    g.put(0, LABEL + 1 + i * 2, FULL, run.failed > 0 || run.isError ? RED : GREEN)
-  })
-  names.forEach((name, row) => {
-    g.text(row + 1, 0, name.slice(0, LABEL), shaky.has(name) ? ORANGE : DIM)
-    shown.forEach((run, i) => {
-      const result = run.names.find(one => one.name === name)
-      g.put(
-        row + 1,
-        LABEL + 1 + i * 2,
-        result === undefined ? 0x00b7 : 0x2586,
-        result === undefined ? GRID : result.ok ? GREEN : RED,
-      )
-    })
-  })
-
-  return { ...g.done(), names, shaky }
-}
-
-// `git log --graph` written with %x1e before a commit's fields and %x1f
-// between them, and --shortstat: commits with their stats, and the graph's
-// joins and forks between them.
-export function parseLog(stdout: string): CommitRow[] {
-  const rows: CommitRow[] = []
-  for (const line of stdout.split('\n')) {
-    if (line.includes('\x1e')) {
-      const [graph = '', fields = ''] = line.split('\x1e')
-      const [sha, subject, when, refs] = fields.split('\x1f')
-      rows.push({
-        graph: graph.trimEnd(),
-        ...(sha === undefined ? {} : { sha }),
-        ...(subject === undefined ? {} : { subject }),
-        ...(when === undefined ? {} : { when }),
-        ...(refs === undefined || refs === '' ? {} : { refs }),
-      })
-      continue
-    }
-    const stat = line.match(/\d+ files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?/)
-    const commit = rows.findLast(row => row.sha !== undefined)
-    if (stat !== null && commit !== undefined) {
-      commit.added = Number(stat[1] ?? 0)
-      commit.removed = Number(stat[2] ?? 0)
-      continue
-    }
-    // The vertical runs between commits say nothing; forks and joins do.
-    const graph = line.trimEnd()
-    if (/[/\\]/.test(graph)) {
-      rows.push({ graph })
-    }
-  }
-
-  return rows
 }
 
 // A share bar under a transcript row: a count in words, then a bar whose

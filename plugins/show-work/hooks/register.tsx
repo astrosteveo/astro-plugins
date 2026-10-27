@@ -2,9 +2,6 @@ import { atom, read, update } from 'claude-code'
 import type {
   Color,
   EngineInterface,
-  HookStream,
-  ProcessSpawnChunk,
-  ProcessSpawnResult,
   Register,
   Timer,
 } from 'claude-code'
@@ -13,9 +10,7 @@ import type {
   Act,
   ActKind,
   Diagram,
-  CommitRow,
   GitState,
-  Job,
   Preview,
   Search,
   TestRun,
@@ -31,7 +26,7 @@ import type {
   Tab,
   Turn,
 } from '../types'
-import { GREEN, RED, parseLog, parseTests, patchCounts, pulse, shareBar } from './charts'
+import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
 import { parseGit, parseHits, parseStatus, plain } from './explorer'
 import {
   FIND_BROWSER,
@@ -60,7 +55,7 @@ import {
 } from './design'
 import type { Drawn, Mark } from './design'
 import { diagramColumns, hashOf, splitMermaid } from './mermaid'
-import { commitsView, explorerView, gitView, runView, searchView, testsView } from './views'
+import { explorerView, gitView, searchView, testsView } from './views'
 
 const PANE = 'show-work'
 const TITLE = 'Show work'
@@ -99,16 +94,11 @@ const tests = atom({ plugin: 'show-work', key: 'tests' } as const, [], {
 const touches = atom({ plugin: 'show-work', key: 'touches' } as const, [], {
   shape: 'touches-1',
 })
-const commits = atom({ plugin: 'show-work', key: 'commits' } as const, [], {
-  shape: 'commits-1',
-})
 const tree = atom({ plugin: 'show-work', key: 'tree' } as const, [], { shape: 'tree-1' })
 const gitStatus = atom({ plugin: 'show-work', key: 'status' } as const, {}, { shape: 'status-1' })
 const openDirs = atom({ plugin: 'show-work', key: 'openDirs' } as const, [], { shape: 'openDirs-1' })
 const filter = atom({ plugin: 'show-work', key: 'filter' } as const, '')
 const preview = atom({ plugin: 'show-work', key: 'preview' } as const, null, { shape: 'preview-1' })
-const jobs = atom({ plugin: 'show-work', key: 'jobs' } as const, [], { shape: 'jobs-1' })
-const pickedJob = atom({ plugin: 'show-work', key: 'pickedJob' } as const, null)
 const git = atom({ plugin: 'show-work', key: 'git' } as const, null, { shape: 'git-1' })
 const search = atom({ plugin: 'show-work', key: 'search' } as const, null, { shape: 'search-1' })
 // How many times taller than wide the terminal's cells are, as read from its
@@ -137,10 +127,6 @@ const KEPT_LANES = 20
 const KEPT_TURNS = 50
 const KEPT_RUNS = 40
 const TREE_FILES = 20_000
-const KEPT_JOBS = 12
-const JOB_LINES = 500
-// How often a running job's output is written to the pane, in ms.
-const JOB_FLUSH = 200
 const HITS = 200
 const PREVIEW_LINES = 400
 const KEPT_TOUCHES = 200
@@ -333,7 +319,7 @@ const ACTIONS: Record<Exclude<NoteKind, 'question'>, { reply: string; fill: stri
 }
 
 // The field each tool's tab puts the typing in.
-const FIELDS: Partial<Record<Tab, string>> = { find: 'ex-filter', run: 'run-cmd' }
+const FIELDS: Partial<Record<Tab, string>> = { find: 'ex-filter' }
 
 const STEP_MARK: Record<StepStatus, { mark: string; color?: Color }> = {
   todo: { mark: '·' },
@@ -1103,8 +1089,7 @@ async function loadGit($: EngineInterface, cwd: string, note?: { text: string; i
   }
 }
 
-// A git command from the Git tab, then the tab, the Explorer's marks and
-// the commit graph read again.
+// A git command from the Git tab, then the tab and the Find marks read again.
 async function gitDo($: EngineInterface, cwd: string, argv: string[], timeoutMs = 30_000) {
   const ran = await $.process.run(['git', '-C', cwd, ...argv], { timeoutMs }).catch((error: unknown) => ({
     exitCode: 1,
@@ -1113,10 +1098,9 @@ async function gitDo($: EngineInterface, cwd: string, argv: string[], timeoutMs 
   }))
   const said = (ran.exitCode === 0 ? ran.stdout || ran.stderr : ran.stderr || ran.stdout).trim().split('\n')
   const note = { text: `git ${argv[0]}: ${said.at(-1) || (ran.exitCode === 0 ? 'done' : 'failed')}`, isError: ran.exitCode !== 0 }
-  const [state, codes, rows] = await Promise.all([loadGit($, cwd, note), loadStatus($, cwd), loadCommits($, cwd)])
+  const [state, codes] = await Promise.all([loadGit($, cwd, note), loadStatus($, cwd)])
   await update($, git, () => state)
   await update($, gitStatus, () => codes)
-  await update($, commits, () => rows)
 }
 
 // ripgrep where it is, git grep where it is not: smart case, a few hits a file.
@@ -1138,101 +1122,6 @@ async function runSearch($: EngineInterface, cwd: string, query: string): Promis
   return { query, ...parseHits(ran.stdout, HITS) }
 }
 
-// Children of the Run tab, by job: ending the stream kills the child.
-const children = new Map<string, HookStream<ProcessSpawnChunk, ProcessSpawnResult>>()
-
-// Runs a command in a shell and keeps the tail of its output in the job,
-// flushed a few times a second; the job ends with the child.
-async function runJob($: EngineInterface, cwd: string, command: string) {
-  const id = crypto.randomUUID()
-  const job: Job = { id, command, status: 'running', start: await $.clock.now(), output: [], total: 0 }
-  await update($, jobs, list => [...list, job].slice(-KEPT_JOBS))
-  await update($, pickedJob, () => id)
-  const child = $.process.spawn({ argv: ['bash', '-lc', command], ...(cwd === '' ? {} : { cwd }) })
-  children.set(id, child)
-  let carry = ''
-  let lines: string[] = []
-  let flushedAt = 0
-  const flush = async () => {
-    const fresh = lines
-    lines = []
-    flushedAt = await $.clock.now()
-    await update($, jobs, list =>
-      list.map(one =>
-        one.id === id
-          ? { ...one, output: [...one.output, ...fresh].slice(-JOB_LINES), total: one.total + fresh.length }
-          : one,
-      ),
-    )
-  }
-  let result: { code: number | null; signal: string | null } | undefined
-  try {
-    let step = await child.next()
-    while (step.done !== true) {
-      const parts = (carry + step.value.text).split('\n')
-      carry = parts.pop() ?? ''
-      lines.push(...parts.map(plain))
-      if ((await $.clock.now()) - flushedAt >= JOB_FLUSH) {
-        await flush()
-      }
-      step = await child.next()
-    }
-    result = step.value
-  } catch (error) {
-    lines.push(`(could not run: ${String(error)})`)
-  }
-  if (carry !== '') {
-    lines.push(plain(carry))
-  }
-  await flush()
-  const wasStopped = !children.has(id)
-  children.delete(id)
-  const end = await $.clock.now()
-  await update($, jobs, list =>
-    list.map(one =>
-      one.id === id
-        ? {
-            ...one,
-            end,
-            code: result?.code ?? null,
-            status: wasStopped ? 'stopped' : result?.code === 0 ? 'ok' : 'failed',
-          }
-        : one,
-    ),
-  )
-}
-
-function stopJob(id: string) {
-  const child = children.get(id)
-  children.delete(id)
-  void child?.return({ code: null, signal: 'SIGTERM' })
-}
-
-// This session's commits on every branch: those after the last commit made
-// before the session began.
-async function loadCommits($: EngineInterface, cwd: string): Promise<CommitRow[]> {
-  if (cwd === '') {
-    return []
-  }
-  try {
-    const { startedAt } = await $.session.usage()
-    const base = await $.process.run([
-      'git', '-C', cwd, 'rev-list', '-1', `--before=@${Math.floor(startedAt / 1000)}`, 'HEAD',
-    ])
-    const sha = base.stdout.trim()
-    const log = await $.process.run([
-      'git', '-C', cwd, 'log', '--graph', '--color=never', '--branches', '--shortstat',
-      '--format=%x1e%h%x1f%s%x1f%cr%x1f%D', '-n', '60',
-      ...(base.exitCode === 0 && sha !== '' ? [`^${sha}`] : []),
-    ])
-
-    return log.exitCode === 0 ? parseLog(log.stdout) : []
-  } catch {
-    // Not a repository, or no git: no commits to show.
-    return []
-  }
-}
-
 export const register: Register = on => {
   let cwd = ''
 
@@ -1248,14 +1137,9 @@ export const register: Register = on => {
     })
     void $.ui.open({ id: PANE, title: TITLE })
     const started = await next(e)
-    const [rows, files, codes] = await Promise.all([
-      loadCommits($, cwd),
-      loadTree($, cwd),
-      loadStatus($, cwd),
-    ])
+    const [files, codes] = await Promise.all([loadTree($, cwd), loadStatus($, cwd)])
     const tall = await cellShape($)
     await update($, cellTall, () => tall ?? 2)
-    await update($, commits, () => rows)
     await update($, tree, () => files)
     await update($, gitStatus, () => codes)
     const state = await loadGit($, cwd)
@@ -1602,10 +1486,6 @@ export const register: Register = on => {
           isError: ran.isError === true,
         }
         await update($, tests, list => [...list, run].slice(-KEPT_RUNS))
-      }
-      if (status === 'ok' && GIT_MOVE.test(command)) {
-        const rows = await loadCommits($, cwd)
-        await update($, commits, () => rows)
       }
     }
     if (status === 'ok' && what.image !== undefined) {
@@ -1989,14 +1869,11 @@ export const register: Register = on => {
     const allTurns = await read($, turns)
     const runs = await read($, tests)
     const touched = await read($, touches)
-    const commitRows = await read($, commits)
     const projectFiles = await read($, tree)
     const codes = await read($, gitStatus)
     const opened = await read($, openDirs)
     const filterText = await read($, filter)
     const shownPreview = await read($, preview)
-    const allJobs = await read($, jobs)
-    const pickedJobId = await read($, pickedJob)
     const gitState = await read($, git)
     const found = await read($, search)
     const now = await $.clock.now()
@@ -2005,7 +1882,6 @@ export const register: Register = on => {
     const Raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : undefined
     // The views draw a Raster only where the surface has one.
     const kit = { Box, Text, Button, ...(Raster === undefined ? {} : { Raster }) }
-    const bodyColumns = Math.max(24, Math.min(512, e.props.bodyColumns))
 
     // The tabs always show, the tools among them work from the start; the
     // Now tab says what will come while nothing has.
@@ -2016,7 +1892,6 @@ export const register: Register = on => {
     const earlier = allNotes.length - current.length
     const open = current.filter(note => note.kind === 'question' && !note.isReplied)
     const picture = pics.find(one => one.id === pickedId) ?? pics.at(-1)
-    const failed = acts.filter(act => act.status === 'failed').length
     // Lanes of this task, and any still running from before it.
     const currentLanes = allLanes.filter(
       lane => since === undefined || lane.at >= since || lane.status === 'runs',
@@ -2148,29 +2023,27 @@ export const register: Register = on => {
       </Box>
     )
 
-    // Calls over the last stretch, newest on the right: what Claude is doing
-    // at a glance. The context and spend stay in the status line.
-    const pulseView = () => {
-      const lastAt = acts.at(-1)?.at
-      if (Raster === undefined || lastAt === undefined) {
-        return undefined
-      }
-      const beats = acts.map(act => ({ at: act.at ?? 0, kind: act.kind, status: act.status }))
-      const span = bodyColumns * BEAT
-      paint({
-        site: PANE,
-        key: 'pulse',
-        draw: at => pulse(beats, at, bodyColumns, BEAT),
-        isLive: at => at - lastAt < span,
-      })
+    // One line on what Claude is doing: working or idle, the call in
+    // flight, the agents running and the failures this turn.
+    const statusView = () => {
+      const turn = allTurns.at(-1)
+      const isBusy = turn !== undefined && turn.end === undefined
+      const call = acts.findLast(act => act.status === 'runs' && !act.isSubagent)
+      const agents = currentLanes.filter(lane => lane.status === 'runs').length
+      const broke = acts.filter(act => act.status === 'failed' && turn !== undefined && act.turn === turn.n).length
+      const bits = [
+        call === undefined ? '' : `${call.kind} ${call.label}`,
+        agents === 0 ? '' : `${agents} agent${agents === 1 ? '' : 's'} running`,
+        broke === 0 ? '' : `${broke} failed this turn`,
+      ].filter(bit => bit !== '')
 
       return (
-        <Box flexDirection="column">
-          <Raster key="pulse" {...pulse(beats, now, bodyColumns, BEAT)} />
-          <Text dimColor>
-            calls · last {Math.round(span / 60_000)}m
+        <Text wrap="truncate-end">
+          <Text color={isBusy ? 'warning' : 'success'} weight="bold">
+            {isBusy ? '● working' : '○ idle'}
           </Text>
-        </Box>
+          {bits.length === 0 ? '' : <Text dimColor> · {bits.join(' · ')}</Text>}
+        </Text>
       )
     }
 
@@ -2346,7 +2219,6 @@ export const register: Register = on => {
         kit,
         {
           runs,
-          columns: bodyColumns,
           now,
           onFix: run => async () => {
             const names = run.names.filter(one => !one.ok).map(one => `- ${one.name}`)
@@ -2368,28 +2240,6 @@ export const register: Register = on => {
           </Box>
           {mode === 'text' ? findText() : findNames()}
         </Box>
-      )
-    } else if (tab === 'run') {
-      body = runView(
-        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }) },
-        {
-          jobs: allJobs,
-          picked: pickedJobId,
-          now,
-          onRun: command => () => {
-            void runJob($, cwd, command)
-            void $.ui.focus({ requestId: PANE, key: 'tab-run' }).catch(() => undefined)
-          },
-          onPick: id => () => update($, pickedJob, () => id),
-          onStop: id => () => stopJob(id),
-          onAsk: job => async () => {
-            const tail = job.output.slice(-40).join('\n')
-            await $.prompt.fill({
-              text: `The output of \`${job.command}\` (${job.status}${job.code === undefined || job.code === null ? '' : `, exit ${job.code}`}):\n\`\`\`\n${tail}\n\`\`\`\n`,
-              mode: 'insert',
-            })
-          },
-        },
       )
     } else if (tab === 'git') {
       body = gitView(
@@ -2413,18 +2263,6 @@ export const register: Register = on => {
           },
         },
       )
-      body = (
-        <Box flexDirection="column" gap={1}>
-          {body}
-          {commitsView(kit, {
-            rows: commitRows,
-            onRefresh: async () => {
-              const rows = await loadCommits($, cwd)
-              await update($, commits, () => rows)
-            },
-          })}
-        </Box>
-      )
     } else if (tab === 'changes' && shownDiff !== null) {
       body = diffView(shownDiff)
     } else if (tab === 'changes') {
@@ -2432,6 +2270,7 @@ export const register: Register = on => {
       // fold into a count: the Find tab and the Now tab hold the rest.
       const edited = touched.filter(touch => touch.edits > 0).sort((a, b) => b.at - a.at)
       const ran = acts.filter(act => act.kind !== 'read' && act.kind !== 'edit')
+      const broke = ran.filter(act => act.status === 'failed')
       const reads = acts.filter(act => act.kind === 'read').reduce((sum, act) => sum + (act.count ?? 1), 0)
       body = (
         <Box flexDirection="column" gap={1}>
@@ -2464,10 +2303,10 @@ export const register: Register = on => {
           {(ran.length > 0 || reads > 0) && (
             <Box flexDirection="column">
               <Text dimColor>
-                {ran.length} commands and searches · {reads} reads folded
-                {failed > 0 ? ` · ${failed} failed` : ''}
+                {ran.length} commands and searches · {reads} reads
+                {broke.length > 0 ? ` · ${broke.length} failed` : ''}
               </Text>
-              {ran.slice(-30).flatMap((act, i, list) =>
+              {broke.slice(-15).flatMap((act, i, list) =>
                 act.turn !== undefined && act.turn !== list[i - 1]?.turn
                   ? [
                       <Text key={`turn-${act.turn}-${act.id}`} color="claude" dimColor wrap="truncate-end">
@@ -2489,7 +2328,7 @@ export const register: Register = on => {
       body = (
         <Text dimColor>
           Nothing yet. Claude posts its plan, decisions and questions here as it works, and logs the files and
-          commands it touches. Meanwhile: f finds files and text, u runs a command, g is git.
+          commands it touches. Meanwhile: f finds files and text, g is git.
         </Text>
       )
     } else {
@@ -2503,8 +2342,8 @@ export const register: Register = on => {
               {open.map(note => noteRow(note))}
             </Box>
           )}
+          {statusView()}
           {planView()}
-          {pulseView()}
           {currentLanes.length > 0 && (
             <Box flexDirection="column">
               <Text weight="bold">
@@ -2514,12 +2353,6 @@ export const register: Register = on => {
                 </Text>
               </Text>
               {currentLanes.slice(-6).map(laneRow)}
-            </Box>
-          )}
-          {acts.length > 0 && (
-            <Box flexDirection="column">
-              <Text weight="bold">Latest</Text>
-              {acts.slice(-3).map(actRow)}
             </Box>
           )}
         </Box>
@@ -2535,8 +2368,7 @@ export const register: Register = on => {
       { id: 'tests', label: 'Tests', count: runs.length, hotkey: '5' },
       { id: 'git', label: 'Git', count: gitState?.files.length ?? 0, hotkey: 'g' },
       { id: 'find', label: 'Find', count: mode === 'text' ? found?.hits.length ?? 0 : Object.keys(codes).length, hotkey: 'f' },
-      { id: 'run', label: 'Run', count: allJobs.filter(job => job.status === 'running').length, hotkey: 'u' },
-    ]
+          ]
 
     startTicking($, now)
 
