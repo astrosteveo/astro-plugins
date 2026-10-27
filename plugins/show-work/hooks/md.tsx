@@ -13,6 +13,8 @@ export type MdProps = {
   lang: string
   // The rows each block takes, pictures included, in order.
   heights: number[]
+  // The rows of gap before each block.
+  gaps: number[]
   sel: { from: number; to: number } | null
 }
 
@@ -38,7 +40,7 @@ const Block: ClientModule<MdProps, State> = (props, surface) => {
       } else if (event.type === 'move' && live.drag) {
         live.moved = live.moved || here !== live.from
         // The blocks passed over light up as the pointer goes, told to the hooks as each new one is reached.
-        const end = blockAt(live.props.heights, live.props.index, event.y)
+        const end = blockAt(live.props.heights, live.props.index, event.y, live.props.gaps)
         if (live.moved && end !== live.end) {
           live.end = end
           const at = live.props.index
@@ -50,7 +52,7 @@ const Block: ClientModule<MdProps, State> = (props, surface) => {
         const sel = live.props.sel
         const at = live.props.index
         if (live.moved) {
-          const end = blockAt(live.props.heights, at, event.y)
+          const end = blockAt(live.props.heights, at, event.y, live.props.gaps)
           surface.post({ id, from: Math.min(at, end), to: Math.max(at, end) })
         } else if (sel !== null && sel.from === at && sel.to === at) {
           // A click on the one block picked puts it back.

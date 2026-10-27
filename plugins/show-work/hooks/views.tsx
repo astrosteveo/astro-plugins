@@ -212,8 +212,10 @@ function markdownBlocks(
   // files of the project are listed below the file instead.
   const links = [...new Set([...shown.source.matchAll(LOCAL_LINK)].map(one => one[1] ?? ''))].filter(one => one !== '')
 
+  const gaps = blocks.map((block, index) => (index === 0 || block.tight === true ? 0 : 1))
+
   return (
-    <Box flexDirection="column" gap={1}>
+    <Box flexDirection="column">
       {blocks.map((block, index) => {
         if (block.kind === 'image') {
           const picture = shown.images?.find(one => one.ref === block.ref)
@@ -222,7 +224,7 @@ function markdownBlocks(
           }
 
           return (
-            <Box key={`md-img-${index}`} flexDirection="column">
+            <Box key={`md-img-${index}`} flexDirection="column" marginTop={gaps[index] ?? 0}>
               <Image
                 key={`md-pic-${index}`}
                 source={{ file: picture.file, format: 'png' }}
@@ -235,6 +237,7 @@ function markdownBlocks(
         }
 
         return Client === undefined ? null : (
+          <Box key={`md-slot-${index}`} flexDirection="column" marginTop={gaps[index] ?? 0}>
           <Client
             key={`md-block-${index}`}
             module="./md.tsx"
@@ -245,9 +248,11 @@ function markdownBlocks(
               text: block.text,
               lang: block.kind === 'code' ? block.lang : '',
               heights,
+              gaps,
               sel: data.sel,
             }}
           />
+          </Box>
         )
       })}
       {links.length > 0 && (

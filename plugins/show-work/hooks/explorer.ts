@@ -192,10 +192,14 @@ export function hitsQuote(query: string, items: HitItem[], from: number, to: num
 // A markdown file cut into the blocks the viewer draws one by one: prose
 // (a paragraph, heading, list or table), fenced code, and the local pictures
 // it names, each with the source lines it came from, 0-based and inclusive.
-export type MdBlock =
+export type MdBlock = (
   | { kind: 'md'; text: string; from: number; to: number }
   | { kind: 'code'; text: string; lang: string; from: number; to: number }
   | { kind: 'image'; ref: string; alt: string; from: number; to: number }
+) & {
+  // No row of gap before it: the next item of a list.
+  tight?: boolean
+}
 
 const IMAGE_MD = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
 
@@ -207,26 +211,47 @@ export function mdBlocks(source: string, pictures: readonly string[] = []) {
     if (para === undefined) {
       return
     }
-    const text = para.text.join('\n')
-    const base = para.from
-    let at = 0
-    const lineAt = (offset: number) => base + text.slice(0, offset).split('\n').length - 1
-    const prose = (end: number) => {
-      const piece = text.slice(at, end)
-      if (piece.trim() !== '') {
-        blocks.push({ kind: 'md', text: piece.trim(), from: lineAt(at + (piece.length - piece.trimStart().length)), to: lineAt(end) })
+    // A list is cut into its items, each its own block, so a drag can pick some of them;
+    // the items sit tight, with no row of gap, as the list does.
+    const marker = /^([-*+]|\d+[.)])\s/
+    const parts: { text: string[]; from: number; tight: boolean }[] = []
+    para.text.forEach((line, offset) => {
+      const last = parts.at(-1)
+      if (marker.test(line)) {
+        parts.push({ text: [line], from: para!.from + offset, tight: last !== undefined && last.text.some(one => marker.test(one)) })
+      } else if (last === undefined) {
+        parts.push({ text: [line], from: para!.from + offset, tight: false })
+      } else {
+        last.text.push(line)
       }
-    }
-    for (const match of text.matchAll(IMAGE_MD)) {
-      if (!pictures.includes(match[2] ?? '')) {
-        continue
+    })
+    for (const part of parts) {
+      const text = part.text.join('\n')
+      const base = part.from
+      let at = 0
+      let isFirst = true
+      const lineAt = (offset: number) => base + text.slice(0, offset).split('\n').length - 1
+      const push = (block: MdBlock) => {
+        blocks.push(isFirst && part.tight ? { ...block, tight: true } : block)
+        isFirst = false
       }
-      prose(match.index ?? 0)
-      const line = lineAt(match.index ?? 0)
-      blocks.push({ kind: 'image', ref: match[2] ?? '', alt: match[1] ?? '', from: line, to: line })
-      at = (match.index ?? 0) + match[0].length
+      const prose = (end: number) => {
+        const piece = text.slice(at, end)
+        if (piece.trim() !== '') {
+          push({ kind: 'md', text: piece.trim(), from: lineAt(at + (piece.length - piece.trimStart().length)), to: lineAt(end) })
+        }
+      }
+      for (const match of text.matchAll(IMAGE_MD)) {
+        if (!pictures.includes(match[2] ?? '')) {
+          continue
+        }
+        prose(match.index ?? 0)
+        const line = lineAt(match.index ?? 0)
+        push({ kind: 'image', ref: match[2] ?? '', alt: match[1] ?? '', from: line, to: line })
+        at = (match.index ?? 0) + match[0].length
+      }
+      prose(text.length)
     }
-    prose(text.length)
     para = undefined
     void to
   }
@@ -258,16 +283,18 @@ export function mdBlocks(source: string, pictures: readonly string[] = []) {
 }
 
 // The block a row of a stack of blocks falls in, where `y` counts rows from the
-// top of block `start` (negative above it) and a row of gap lies between blocks.
-export function blockAt(heights: number[], start: number, y: number) {
+// top of block `start` (negative above it). `gaps[i]` is the rows of gap before
+// block i: one between paragraphs, none between the items of a list.
+export function blockAt(heights: number[], start: number, y: number, gaps: number[] = []) {
+  const gap = (index: number) => gaps[index] ?? 1
   let at = Math.max(0, Math.min(start, heights.length - 1))
   let off = y
   while (off < 0 && at > 0) {
     at -= 1
-    off += (heights[at] ?? 1) + 1
+    off += (heights[at] ?? 1) + gap(at + 1)
   }
   while (at < heights.length - 1 && off >= (heights[at] ?? 1)) {
-    off -= (heights[at] ?? 1) + 1
+    off -= (heights[at] ?? 1) + gap(at + 1)
     at += 1
   }
 

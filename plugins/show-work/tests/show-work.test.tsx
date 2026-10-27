@@ -1732,6 +1732,14 @@ test('markdown is cut into blocks with their source lines, and a drag finds the 
     { kind: 'image', ref: 'docs/shot.png', alt: 'The banner', from: 9, to: 9 },
     { kind: 'md', text: '| a | b |\n| - | - |\n| 1 | 2 |', from: 11, to: 13 },
   ])
+  // Each item of a list is a block of its own, tight against the one before; a continuation line stays with its item.
+  expect(mdBlocks('Intro\n\n- one\n  more of one\n- two\n1. three\n\nOutro\n')).toEqual([
+    { kind: 'md', text: 'Intro', from: 0, to: 0 },
+    { kind: 'md', text: '- one\n  more of one', from: 2, to: 3 },
+    { kind: 'md', text: '- two', from: 4, to: 4, tight: true },
+    { kind: 'md', text: '1. three', from: 5, to: 5, tight: true },
+    { kind: 'md', text: 'Outro', from: 7, to: 7 },
+  ])
   // A picture the file names but is not here stays in its prose.
   expect(mdBlocks('See ![x](nope.png) here\n', []).map(block => block.kind)).toEqual(['md'])
   // Blocks 1, 3 and 1 rows tall with a row of gap between: from block 1, rows 0 to 2 are its own,
@@ -1739,6 +1747,9 @@ test('markdown is cut into blocks with their source lines, and a drag finds the 
   const heights = [1, 3, 1]
   expect([-2, 0, 2, 3, 4, 9].map(y => blockAt(heights, 1, y))).toEqual([0, 1, 1, 2, 2, 2])
   expect(blockAt(heights, 0, -4)).toBe(0)
+  // Tight items have no gap before them: blocks 1 and 1 rows tall, then one more, row 1 is the second.
+  expect([0, 1, 2, 3].map(y => blockAt([1, 1, 1], 0, y, [0, 0, 0]))).toEqual([0, 1, 2, 2])
+  expect(blockAt([1, 1, 1], 2, -2, [0, 0, 0])).toBe(0)
 })
 
 test('a drag over blocks of rendered markdown puts the whole lines in the prompt', async ($, on) => {
