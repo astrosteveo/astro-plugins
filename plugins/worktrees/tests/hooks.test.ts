@@ -1,5 +1,5 @@
 import type { On } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { type Engine, expect, mock, test } from 'claude-code/testing'
 
 const ROOT = '/home/u/proj'
 const SESSION = 'abcd1234-0000-0000-0000-000000000000'
@@ -30,6 +30,7 @@ type World = {
   kv: Map<string, unknown>
   // What the model reads beside the last prompt.
   context: readonly string[]
+  sessionId: string
 }
 
 const world = (over: Partial<World> = {}): World => ({
@@ -50,6 +51,7 @@ const world = (over: Partial<World> = {}): World => ({
   entered: [],
   kv: new Map(),
   context: [],
+  sessionId: SESSION,
   ...over,
 })
 
@@ -127,7 +129,7 @@ function engine(on: On, w: World, store: Record<string, unknown> = {}) {
   const clock = mock.clock(on, { now: 100 * DAY })
   on('process.run', (_, e) => ({ value: git(w, e.argv, e.init?.cwd ?? w.cwd) }))
   on('session.cwd', () => ({ value: w.cwd }))
-  on('session.id', () => ({ value: SESSION }))
+  on('session.id', () => ({ value: w.sessionId }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
   on('command.register', () => ({ value: { command: 'worktrees' } }))
@@ -158,6 +160,13 @@ function engine(on: On, w: World, store: Record<string, unknown> = {}) {
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
 const END = { reason: 'prompt_input_exit', sessionId: SESSION, resume: { id: SESSION } } as const
+// The engine takes the session back out of the worktree before session.end fires.
+function finish($: Engine, w: World) {
+  w.cwd = ROOT
+  w.isLinked = false
+  return $.session.end({ ...END, sessionId: w.sessionId })
+}
+
 const PROMPT = { text: 'Fix the login bug', wait: false, origin: { kind: 'composer' } } as const
 const run = (command: string, args: string) => ({
   command,
@@ -248,7 +257,7 @@ test('ending a session with nothing in its worktree removes it and its branch', 
   engine(on, w, { enabled: true })
   await $.session.start(START)
   await $.prompt.submit(PROMPT)
-  await $.session.end(END)
+  await finish($, w)
   expect(w.removed).toEqual([{ path: PATH, force: false }])
   expect(w.deleted).toEqual([`wt/${NAME}`])
   expect([...w.kv.keys()]).toEqual(['enabled'])
@@ -267,7 +276,7 @@ for (const [state, reason] of WORK) {
     await $.prompt.submit(PROMPT)
     w.trees.set(PATH, state)
     await clock.advance(1000)
-    await $.session.end(END)
+    await finish($, w)
     expect(w.removed).toEqual([])
     expect(w.deleted).toEqual([])
     const entry = (w.kv.get(KEY)) as { endedAt?: number; keptBecause?: string }
@@ -388,4 +397,19 @@ test('/worktrees discard forces one named worktree away and never a running one'
   expect(w.removed).toEqual([{ path: ended.path, force: true }])
   expect(w.deleted).toEqual([ended.branch])
   expect(w.kv.get(`wt:${ended.path}`)).toBeUndefined()
+})
+
+test('a /clear gives the session a new id, and the worktree still goes when it ends', async ($, on) => {
+  const w = world()
+  engine(on, w, { enabled: true })
+  await $.session.start(START)
+  await $.prompt.submit(PROMPT)
+  await $.session.end({ ...END, reason: 'clear' })
+  w.sessionId = 'ffff0000-0000-0000-0000-000000000000'
+  await $.prompt.submit({ ...PROMPT, text: 'next task' })
+  expect((w.kv.get(KEY) as { sessionId: string }).sessionId).toBe(w.sessionId)
+  // It is the same worktree: nothing new was cut.
+  expect(w.added.length).toBe(1)
+  await finish($, w)
+  expect(w.removed).toEqual([{ path: PATH, force: false }])
 })

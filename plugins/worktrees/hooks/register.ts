@@ -157,6 +157,13 @@ export const register: Register = on => {
 
   on('prompt.submit', async ($, e, next) => {
     const isUsers = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+    if (interactive && isUsers && !e.isMeta) {
+      // A /clear gives the session a new id and fires no session.start: the worktree it sits in is its own still.
+      const cwd = await $.session.cwd()
+      const id = await $.session.id()
+      const mine = (await entries($)).find(entry => isInside(cwd, entry.path) && entry.sessionId !== id)
+      if (mine !== undefined) await save($, { ...mine, sessionId: id, endedAt: undefined, keptBecause: undefined })
+    }
     if (!interactive || !isUsers || e.command || e.isMeta || e.turnId !== undefined || tried) return next(e)
     if (!(await isOn($))) return next(e)
     tried = true
@@ -172,8 +179,8 @@ export const register: Register = on => {
     // A /clear or a resume goes on in the same directory, and no session.start follows.
     if (e.reason !== 'clear' && e.reason !== 'resume') {
       try {
-        const cwd = await $.session.cwd()
-        const entry = (await entries($)).find(entry => isInside(cwd, entry.path))
+        // By id, not by directory: the engine has taken the session back out of the worktree by now.
+        const entry = (await entries($)).find(entry => entry.sessionId === e.sessionId)
         if (entry !== undefined) {
           // Marked ended first: if the time runs out, the next session's sweep finishes it.
           const ended = { ...entry, endedAt: await $.clock.now() }
