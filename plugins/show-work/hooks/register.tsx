@@ -26,7 +26,7 @@ import type {
   Tab,
 } from '../types'
 import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
-import { parseGit, parseHits, parseStatus, plain } from './explorer'
+import { locateSelection, parseGit, parseHits, parseStatus, plain } from './explorer'
 import {
   FIND_BROWSER,
   LONGEST,
@@ -1045,6 +1045,16 @@ async function loadStatus($: EngineInterface, cwd: string): Promise<Record<strin
 
 // A file's text for the preview: the head of a long one, or the stretch
 // around a search hit; none of a binary one.
+// What the prompt starts with to ask about some lines of a file: where they
+// are and what they say, ready for the person's question.
+export function askText(file: string, at: { from?: number | undefined; to?: number | undefined; text: string }) {
+  const where = at.from === undefined ? '' : at.from === at.to ? `, line ${at.from}` : `, lines ${at.from} to ${at.to}`
+  const fence = at.text.includes('```') ? '````' : '```'
+  const lang = file.includes('.') ? file.slice(file.lastIndexOf('.') + 1).toLowerCase() : ''
+
+  return `About \`${file}\`${where}:\n${fence}${lang}\n${at.text}\n${fence}\n`
+}
+
 const MARKDOWN = /\.(md|markdown|mdx)$/i
 const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
 const MD_IMAGES_MOST = 8
@@ -2120,6 +2130,16 @@ export const register: Register = on => {
             void loadPreview($, cwd, relative(target, cwd)).then(loaded => update($, preview, () => loaded))
           },
           place: size => fit(size, Math.min(255, e.props.bodyColumns), 18, tall),
+          onAsk: file => async () => {
+            const picked = await $.ui.selection()
+            const at = picked === undefined ? undefined : locateSelection(shownPreview?.source ?? '', picked.text)
+            if (at === undefined) {
+              await $.ui.toast('Drag over some text in the preview first, then press a.')
+
+              return
+            }
+            await $.prompt.fill({ text: askText(file, at), mode: 'insert' })
+          },
           onMention: file => async () => {
             await $.prompt.fill({ text: `@${file} `, mode: 'insert' })
           },

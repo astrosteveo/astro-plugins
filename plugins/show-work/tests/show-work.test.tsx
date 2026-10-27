@@ -1127,7 +1127,8 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
   await ui.unmount()
 })
 
-import { duration, joinPath } from '../hooks/register'
+import { askText, duration, joinPath } from '../hooks/register'
+import { locateSelection } from '../hooks/explorer'
 import {
   base64,
   patchCounts,
@@ -1646,5 +1647,59 @@ test('a markdown file previews as markdown, with a button for its source', async
   expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
   expect((await ui.find({ type: 'Code' }))?.props.source).toMatch(/^# Title/)
   expect((await ui.find({ type: 'Button', key: 'ex-raw' }))?.text).toBe('rendered')
+  await ui.unmount()
+})
+
+test('a selection is found in its file by lines, with or without the gutter, and quoted whole', () => {
+  const source = 'import x\n\nexport function add() {\n  return a + b\n}\n'
+  // A partial line quotes the whole line.
+  expect(locateSelection(source, 'function add() {\n  return')).toEqual({
+    from: 3,
+    to: 4,
+    text: 'export function add() {\n  return a + b',
+  })
+  // The gutter's numbers come off.
+  expect(locateSelection(source, ' 3 export function add() {\n 4   return a + b')).toMatchObject({ from: 3, to: 4 })
+  // Rendered text that is not in the source is quoted as it is, with no lines.
+  expect(locateSelection('# Title\n\nSome **bold** words here.\n', 'Title\n\nSome bold words here.')).toEqual({
+    from: undefined,
+    to: undefined,
+    text: 'Title\n\nSome bold words here.',
+  })
+  expect(locateSelection('# Title\n\nSome **bold** words here.\n', 'Title')).toMatchObject({ from: 1, to: 1 })
+  expect(locateSelection(source, '   \n')).toBeUndefined()
+  expect(locateSelection(source, 'nowhere to be found')).toEqual({ from: undefined, to: undefined, text: 'nowhere to be found' })
+})
+
+test('the prompt starts with the file, its lines and the quoted text', () => {
+  expect(askText('src/a.ts', { from: 3, to: 4, text: 'a\nb' })).toBe('About `src/a.ts`, lines 3 to 4:\n```ts\na\nb\n```\n')
+  expect(askText('README.md', { from: 7, to: 7, text: 'x' })).toBe('About `README.md`, line 7:\n```md\nx\n```\n')
+  expect(askText('a.md', { from: undefined, to: undefined, text: 'has ``` inside' })).toContain('````md')
+})
+
+test('pressing ask puts the selected lines in the prompt, or says what to do', async ($, on) => {
+  const filled = engine(on)
+  const toasts: string[] = []
+  let picked: { text: string } | undefined
+  on('process.run', (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('fs.read', () => ({ value: 'one\ntwo\nthree\n' }))
+  on('ui.selection', () => ({ value: picked }))
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-a.ts' })
+  await ui.press({ key: 'ex-ask' })
+  expect(filled).toEqual([])
+  expect(toasts).toHaveLength(1)
+  picked = { text: 'two' }
+  await ui.press({ key: 'ex-ask' })
+  expect(filled).toEqual(['About `a.ts`, line 2:\n```ts\ntwo\n```\n'])
   await ui.unmount()
 })

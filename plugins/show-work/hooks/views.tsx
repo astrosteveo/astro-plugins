@@ -159,6 +159,7 @@ export function explorerView(
     onOpen: (file: string) => () => void
     onClose: () => void
     onMention: (file: string) => () => void
+    onAsk: (file: string) => () => void
     onDiff: (file: string) => () => void
     onRefresh: () => void
     onRaw: () => void
@@ -201,6 +202,9 @@ export function explorerView(
           <Box flexDirection="row" gap={2}>
             <Button key="ex-mention" variant="primary" hotkey="m" onPress={data.onMention(shown.file)}>
               @ mention
+            </Button>
+            <Button key="ex-ask" variant="primary" hotkey="a" onPress={data.onAsk(shown.file)}>
+              ask about selection
             </Button>
             {code !== undefined && code !== '??' && (
               <Button key="ex-diff" variant="secondary" hotkey="d" onPress={data.onDiff(shown.file)}>

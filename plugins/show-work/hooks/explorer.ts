@@ -137,3 +137,34 @@ export function parseHits(stdout: string, most: number) {
 export function plain(line: string) {
   return (line.split('\r').at(-1) ?? '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b[()][0-9A-Za-z]/g, '')
 }
+
+// Where a selection lies in the file it was taken from: its 1-based lines,
+// quoted whole as the file has them. The screen's text may carry the gutter's
+// line numbers or the markdown's rendering, so the exact text is tried first,
+// then the text without a gutter, then its first and last lines alone.
+export function locateSelection(source: string, text: string) {
+  const lines = source.split('\n')
+  const whole = (from: number, to: number) => ({ from, to, text: lines.slice(from - 1, to).join('\n') })
+  const picked = text.replace(/\s+$/, '')
+  if (picked.trim() === '') {
+    return undefined
+  }
+  const lineOf = (at: number) => source.slice(0, at).split('\n').length
+  const at = source.indexOf(picked)
+  if (at >= 0) {
+    return whole(lineOf(at), lineOf(at) + picked.split('\n').length - 1)
+  }
+  const bare = picked.split('\n').map(line => line.replace(/^\s*\d+(?: |\t)/, ''))
+  const bareAt = source.indexOf(bare.join('\n'))
+  if (bareAt >= 0) {
+    return whole(lineOf(bareAt), lineOf(bareAt) + bare.length - 1)
+  }
+  const kept = bare.map(line => line.trim()).filter(line => line !== '')
+  const first = lines.findIndex(line => line.includes(kept[0] ?? '\u0000'))
+  const last = lines.findLastIndex(line => line.includes(kept.at(-1) ?? '\u0000'))
+  if (first >= 0 && last >= first) {
+    return whole(first + 1, last + 1)
+  }
+
+  return { from: undefined, to: undefined, text: picked }
+}
