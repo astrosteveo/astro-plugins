@@ -1,0 +1,10 @@
+{
+  "name": "plain-english",
+  "version": "0.1.0",
+  "description": "An output style for plain English, given to every subagent and fork too, and a skill that scans prose for Claudisms.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
