@@ -1,0 +1,9 @@
+{
+  "name": "worktrees",
+  "version": "0.1.0",
+  "description": "Toggle on and every session works in its own git worktree, and the worktree is cleaned up afterwards.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT"
+}
