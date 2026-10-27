@@ -189,114 +189,73 @@ export function hitsQuote(query: string, items: HitItem[], from: number, to: num
   }
 }
 
-// A markdown file cut into the blocks the viewer draws one by one: prose
-// (a paragraph, heading, list or table), fenced code, and the local pictures
-// it names, each with the source lines it came from, 0-based and inclusive.
-export type MdBlock = (
-  | { kind: 'md'; text: string; from: number; to: number }
-  | { kind: 'code'; text: string; lang: string; from: number; to: number }
-  | { kind: 'image'; ref: string; alt: string; from: number; to: number }
-) & {
-  // No row of gap before it: the next item of a list.
-  tight?: boolean
-}
-
-const IMAGE_MD = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
-
-export function mdBlocks(source: string, pictures: readonly string[] = []) {
+// Where a selection lies in the file it was taken from: its 1-based lines,
+// quoted whole as the file has them. The screen's text may carry the gutter's
+// line numbers or the markdown's rendering, so the exact text is tried first,
+// then the text without a gutter, then its first and last lines alone.
+export function locateSelection(source: string, text: string) {
   const lines = source.split('\n')
-  const blocks: MdBlock[] = []
-  let para: { text: string[]; from: number } | undefined
-  const flush = (to: number) => {
-    if (para === undefined) {
-      return
-    }
-    // A list is cut into its items, each its own block, so a drag can pick some of them;
-    // the items sit tight, with no row of gap, as the list does.
-    const marker = /^([-*+]|\d+[.)])\s/
-    const parts: { text: string[]; from: number; tight: boolean }[] = []
-    para.text.forEach((line, offset) => {
-      const last = parts.at(-1)
-      if (marker.test(line)) {
-        parts.push({ text: [line], from: para!.from + offset, tight: last !== undefined && last.text.some(one => marker.test(one)) })
-      } else if (last === undefined) {
-        parts.push({ text: [line], from: para!.from + offset, tight: false })
-      } else {
-        last.text.push(line)
-      }
-    })
-    for (const part of parts) {
-      const text = part.text.join('\n')
-      const base = part.from
-      let at = 0
-      let isFirst = true
-      const lineAt = (offset: number) => base + text.slice(0, offset).split('\n').length - 1
-      const push = (block: MdBlock) => {
-        blocks.push(isFirst && part.tight ? { ...block, tight: true } : block)
-        isFirst = false
-      }
-      const prose = (end: number) => {
-        const piece = text.slice(at, end)
-        if (piece.trim() !== '') {
-          push({ kind: 'md', text: piece.trim(), from: lineAt(at + (piece.length - piece.trimStart().length)), to: lineAt(end) })
-        }
-      }
-      for (const match of text.matchAll(IMAGE_MD)) {
-        if (!pictures.includes(match[2] ?? '')) {
-          continue
-        }
-        prose(match.index ?? 0)
-        const line = lineAt(match.index ?? 0)
-        push({ kind: 'image', ref: match[2] ?? '', alt: match[1] ?? '', from: line, to: line })
-        at = (match.index ?? 0) + match[0].length
-      }
-      prose(text.length)
-    }
-    para = undefined
-    void to
+  const whole = (from: number, to: number) => ({ from, to, text: lines.slice(from - 1, to).join('\n') })
+  const picked = text.replace(/\s+$/, '')
+  if (picked.trim() === '') {
+    return undefined
   }
-  for (let n = 0; n < lines.length; n += 1) {
-    const line = lines[n] ?? ''
-    const open = line.match(/^(`{3,})[ \t]*([\w+#.-]*)/)
-    if (open !== null) {
-      flush(n - 1)
-      const mark = open[1] ?? '```'
-      const body: string[] = []
-      let end = n + 1
-      while (end < lines.length && !new RegExp(`^${mark}[ \\t]*$`).test(lines[end] ?? '')) {
-        body.push(lines[end] ?? '')
-        end += 1
-      }
-      blocks.push({ kind: 'code', text: body.join('\n'), lang: open[2] ?? '', from: n, to: Math.min(end, lines.length - 1) })
-      n = end
-    } else if (line.trim() === '') {
-      flush(n - 1)
-    } else if (para === undefined) {
-      para = { text: [line], from: n }
-    } else {
-      para.text.push(line)
-    }
+  const lineOf = (at: number) => source.slice(0, at).split('\n').length
+  const at = source.indexOf(picked)
+  if (at >= 0) {
+    return whole(lineOf(at), lineOf(at) + picked.split('\n').length - 1)
   }
-  flush(lines.length - 1)
+  const bare = picked.split('\n').map(line => line.replace(/^\s*\d+(?: |\t)/, ''))
+  const bareAt = source.indexOf(bare.join('\n'))
+  if (bareAt >= 0) {
+    return whole(lineOf(bareAt), lineOf(bareAt) + bare.length - 1)
+  }
+  // The text may be the rendered form of markdown: match with its marks and spacing taken out.
+  const plain = (line: string) =>
+    line
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/[*_`#>|]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const kept = bare.map(plain).filter(line => line !== '')
+  const flat = lines.map(plain)
+  const first = flat.findIndex(line => line !== '' && line.includes(kept[0] ?? '\u0000'))
+  const last = flat.findLastIndex(line => line !== '' && line.includes(kept.at(-1) ?? '\u0000'))
+  if (first >= 0 && last >= first) {
+    return whole(first + 1, last + 1)
+  }
 
-  return blocks
+  return { from: undefined, to: undefined, text: picked }
 }
 
-// The block a row of a stack of blocks falls in, where `y` counts rows from the
-// top of block `start` (negative above it). `gaps[i]` is the rows of gap before
-// block i: one between paragraphs, none between the items of a list.
-export function blockAt(heights: number[], start: number, y: number, gaps: number[] = []) {
-  const gap = (index: number) => gaps[index] ?? 1
-  let at = Math.max(0, Math.min(start, heights.length - 1))
-  let off = y
-  while (off < 0 && at > 0) {
-    at -= 1
-    off += (heights[at] ?? 1) + gap(at + 1)
+// The diff rows a selection covers, whole and with their + or -. The drawn
+// diff keeps its gutter and markers out of a selection, so the picked text is
+// matched against each row's text: the first picked line may be the tail of its
+// row, the last the head of its own.
+export function locateDiffRows(rows: string[], text: string) {
+  const picked = text.replace(/\s+$/, '').split('\n').map(line => line.trim())
+  if (picked.every(line => line === '')) {
+    return undefined
   }
-  while (at < heights.length - 1 && off >= (heights[at] ?? 1)) {
-    off -= (heights[at] ?? 1) + gap(at + 1)
-    at += 1
+  const body = rows.map(row => row.slice(1))
+  for (let at = 0; at + picked.length <= rows.length; at += 1) {
+    if (picked.every((line, k) => (body[at + k] ?? '').includes(line))) {
+      return rows.slice(at, at + picked.length).join('\n')
+    }
   }
 
-  return at
+  return undefined
+}
+
+// The lines a diff draws: its hunk headers are read, not drawn.
+export const shownRows = (lines: string[]) => lines.filter(line => !line.startsWith('@@'))
+
+// The hits a selection over the result list covers: the rows whose text the
+// selection holds, first to last.
+export function hitsFromSelection(items: HitItem[], text: string) {
+  const picked = text.split('\n').map(line => line.trim()).filter(line => line !== '')
+  const rows = items.map(item => hitRowText(item).trim())
+  const found = rows.flatMap((row, index) => (picked.some(line => line.includes(row) || row.includes(line)) ? [index] : []))
+
+  return found.length === 0 ? undefined : { from: Math.min(...found), to: Math.max(...found) }
 }

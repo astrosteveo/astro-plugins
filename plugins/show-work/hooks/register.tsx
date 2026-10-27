@@ -26,8 +26,19 @@ import type {
   Tab,
 } from '../types'
 import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
-import { shownRows } from './lines'
-import { hitItems, hitsQuote, matches, mdBlocks, parseGit, parseHits, parseStatus, plain } from './explorer'
+import {
+  hitItems,
+  hitsFromSelection,
+  hitsQuote,
+  locateDiffRows,
+  locateSelection,
+  matches,
+  parseGit,
+  parseHits,
+  parseStatus,
+  plain,
+  shownRows,
+} from './explorer'
 import {
   FIND_BROWSER,
   LONGEST,
@@ -55,7 +66,7 @@ import {
 } from './design'
 import type { Drawn, Mark } from './design'
 import { diagramColumns, hashOf, splitMermaid } from './mermaid'
-import { Viewer, explorerView, gitView, rangeLabel, searchView, testsView } from './views'
+import { QuoteLine, explorerView, gitView, rangeLabel, searchView, testsView } from './views'
 
 const PANE = 'show-work'
 const TITLE = 'Show work'
@@ -111,7 +122,7 @@ const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
 const findMode = atom({ plugin: 'show-work', key: 'findMode' } as const, 'files')
 // Long lines in the viewers: wrapped (true) or cut at the edge.
 const wrapLines = atom({ plugin: 'show-work', key: 'wrapLines' } as const, true)
-// The lines the person dragged over in a viewer, waiting on the chip.
+// What the person's selection put in the prompt, and where it was taken from.
 const viewSel = atom({ plugin: 'show-work', key: 'viewSel' } as const, null)
 // Quoted lines behind the short markers in the prompt box, swapped in on send.
 const refs = atom({ plugin: 'show-work', key: 'refs' } as const, [])
@@ -121,8 +132,6 @@ let typing = 0
 const SEARCH_WAIT = 250
 // The shortest text worth a search.
 const SEARCH_LEAST = 2
-// The rows each block of the rendered markdown file drew at.
-const mdRows = atom({ plugin: 'show-work', key: 'mdRows' } as const, { file: '', rows: [] })
 // The note opened to show its why, detail and actions; null when none is.
 const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
@@ -1176,57 +1185,95 @@ async function dropRef($: EngineInterface) {
   }
 }
 
-// The prompt text and the label for the lines dragged over in a viewer, read
-// from whichever viewer holds them; undefined where that viewer has moved on.
-export function askFromSel(
-  sel: { id: string; from: number; to: number },
-  pv: Preview | null,
-  df: Diff | null,
-  found: Search | null = null,
-): { label: string; text: string; marker: string } | undefined {
-  if (sel.id.endsWith('#md')) {
-    if (pv === null || `${pv.file}#md` !== sel.id) {
-      return undefined
-    }
-    const blocks = mdBlocks(pv.source, pv.images?.map(one => one.ref) ?? [])
-    const first = blocks[sel.from]
-    const last = blocks[sel.to]
-    if (first === undefined || last === undefined) {
-      return undefined
-    }
-    const text = pv.source.split('\n').slice(first.from, last.to + 1).join('\n')
-    const label = rangeLabel(first.from + 1, last.to + 1)
+// What the pane is showing, to find a selection in: a file's preview, a diff or
+// a list of search hits.
+export type QuoteContext = { preview: Preview | null; diff: Diff | null; search: Search | null; tab: Tab; mode: string }
 
-    return { label, text: askText(pv.file, { from: first.from + 1, to: last.to + 1, text }), marker: `[${pv.file} ${label}]` }
+// The marker, quote and label for text the person selected, found in whatever the
+// pane shows; undefined where the text is not in it (a selection in the prompt
+// box, or in the chat).
+export function quoteFromSelection(
+  text: string,
+  ctx: QuoteContext,
+): { id: string; label: string; marker: string; text: string } | undefined {
+  if (ctx.tab === 'changes' && ctx.diff !== null) {
+    const rows = locateDiffRows(shownRows(ctx.diff.lines), text)
+
+    return rows === undefined
+      ? undefined
+      : {
+          id: `diff:${ctx.diff.file}`,
+          label: 'the change',
+          marker: `[change to ${ctx.diff.file}]`,
+          text: askDiffText(ctx.diff.file, rows),
+        }
   }
-  if (sel.id === 'hits') {
-    const quote = found === null ? undefined : hitsQuote(found.query, hitItems(found.hits), sel.from, sel.to)
-
-    return quote === undefined ? undefined : { label: quote.marker, text: quote.text, marker: quote.marker }
-  }
-  if (sel.id.startsWith('diff:')) {
-    if (df === null || `diff:${df.file}` !== sel.id) {
-      return undefined
-    }
-    const rows = shownRows(df.lines).slice(sel.from, sel.to + 1).join('\n')
-
-    const label = rangeLabel(sel.from + 1, sel.to + 1)
-
-    return { label, text: askDiffText(df.file, rows), marker: `[change to ${df.file} ${label}]` }
-  }
-  if (pv === null || pv.file !== sel.id) {
+  if (ctx.tab !== 'find') {
     return undefined
   }
-  const start = pv.start ?? 1
-  const text = pv.source.split('\n').slice(sel.from, sel.to + 1).join('\n')
+  if (ctx.mode === 'text') {
+    const items = hitItems(ctx.search?.hits ?? [])
+    const range = hitsFromSelection(items, text)
+    const quote = range === undefined || ctx.search === null ? undefined : hitsQuote(ctx.search.query, items, range.from, range.to)
 
-  const label = rangeLabel(start + sel.from, start + sel.to)
+    return quote === undefined ? undefined : { id: 'hits', label: quote.marker, marker: quote.marker, text: quote.text }
+  }
+  const pv = ctx.preview
+  if (pv === null || pv.isImage === true || pv.isBinary) {
+    return undefined
+  }
+  const at = locateSelection(pv.source, text)
+  if (at === undefined || at.from === undefined || at.to === undefined) {
+    return undefined
+  }
+  const shift = (pv.start ?? 1) - 1
+  const label = rangeLabel(at.from + shift, at.to + shift)
 
   return {
+    id: pv.file,
     label,
-    text: askText(pv.file, { from: start + sel.from, to: start + sel.to, text }),
     marker: `[${pv.file} ${label}]`,
+    text: askText(pv.file, { from: at.from + shift, to: at.to + shift, text: at.text }),
   }
+}
+
+// Reads the terminal's selection, and once it has held still for a tick puts it in
+// the prompt as a marker: the person selects as anywhere else, and it is done.
+let seen = ''
+let applied = ''
+let selectionTimer: Timer | undefined
+// How often the selection is read, in ms: it must hold still for one tick to count.
+const SELECTION_TICK = 350
+async function watchSelection($: EngineInterface) {
+  const picked = await $.ui.selection().catch(() => undefined)
+  const text = picked?.text ?? ''
+  if (picked === undefined || picked.requestId !== undefined || text.trim().length < 2) {
+    seen = ''
+
+    return
+  }
+  if (text !== seen) {
+    // Still moving: wait for it to hold still.
+    seen = text
+
+    return
+  }
+  if (text === applied) {
+    return
+  }
+  const at = quoteFromSelection(text, {
+    preview: await read($, preview),
+    diff: await read($, diff),
+    search: await read($, search),
+    tab: await read($, tabAtom),
+    mode: await read($, findMode),
+  })
+  if (at === undefined) {
+    return
+  }
+  applied = text
+  await fillRef($, at.marker, at.text)
+  await update($, viewSel, () => ({ id: at.id, label: at.label }))
 }
 
 const MARKDOWN = /\.(md|markdown|mdx)$/i
@@ -1382,6 +1429,12 @@ export const register: Register = on => {
       argumentHint: '[clear]',
     })
     void $.ui.open({ id: PANE, title: TITLE })
+    // The selection is read often enough to feel at once, and only acts on text of the pane.
+    selectionTimer?.cancel()
+    seen = ''
+    applied = ''
+    lastMarker = null
+    selectionTimer = $.clock.every(SELECTION_TICK, () => void watchSelection($))
     const started = await next(e)
     const [files, codes] = await Promise.all([loadTree($, cwd), loadStatus($, cwd)])
     const tall = await cellShape($)
@@ -2183,47 +2236,8 @@ export const register: Register = on => {
     },
   )
 
-  // A drag in a viewer let go: its lines wait on the chip.
-  on('ui.message', async ($, e, next) => {
-    const data = (typeof e.data === 'object' && e.data !== null ? e.data : {}) as Record<string, unknown>
-    if (typeof data.rows === 'number' && typeof data.index === 'number' && typeof data.file === 'string') {
-      // A block of rendered markdown says how tall it drew.
-      const { file, index, rows } = data as { file: string; index: number; rows: number }
-      await update($, mdRows, now => {
-        const kept = now.file === file ? [...now.rows] : []
-        kept[index] = rows
-
-        return { file, rows: kept }
-      })
-    } else if (typeof data.open === 'string') {
-      // A click on a search hit opens its file at that line.
-      const loaded = await loadPreview($, cwd, data.open, typeof data.line === 'number' ? data.line : undefined)
-      await update($, preview, () => loaded)
-      await update($, findMode, () => 'files')
-      await update($, viewSel, () => null)
-    } else if (typeof data.id === 'string' && data.clear === true) {
-      // A click on what was picked puts it back: the marker leaves the prompt too.
-      await dropRef($)
-      await update($, viewSel, () => null)
-    } else if (typeof data.id === 'string' && typeof data.from === 'number' && typeof data.to === 'number') {
-      const sel = { id: data.id, from: data.from, to: data.to }
-      await update($, viewSel, () => sel)
-      // A drag still going only lights what it passes; the marker waits for the pointer to let go.
-      if (data.drag === true) {
-        return next(e)
-      }
-      const at = askFromSel(sel, await read($, preview), await read($, diff), await read($, search))
-      if (at !== undefined) {
-        await fillRef($, at.marker, at.text)
-      }
-    }
-
-    return next(e)
-  })
-
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Code, Text } = $.ui.resolve(e)
-    const Client = e.surface === 'terminal' ? $.ui.resolve(e).Client : undefined
     const shown = await read($, plan)
     const allNotes = await read($, notes)
     const acts = await read($, activity)
@@ -2233,7 +2247,6 @@ export const register: Register = on => {
     const mode = await read($, findMode)
     const wraps = await read($, wrapLines)
     const dragged = await read($, viewSel)
-    const blockRows = await read($, mdRows)
     const openId = await read($, openNote)
     const shownDiff = await read($, diff)
     const allLanes = await read($, lanes)
@@ -2348,28 +2361,23 @@ export const register: Register = on => {
     const clearDrag = async () => {
       await dropRef($)
       await update($, viewSel, () => null)
+      applied = ''
     }
 
-    // The rows of a diff dragged over, if the drag was in this diff.
-    const diffSel = (shownDiff: Diff) =>
-      dragged !== null && dragged.id === `diff:${shownDiff.file}` ? { from: dragged.from, to: dragged.to } : null
+    // What the selection put in the prompt, when it came from what is showing.
+    const quotedFor = (id: string) => (dragged !== null && dragged.id === id ? dragged.label : '')
 
     const diffView = (shownDiff: Diff) => (
       <Box flexDirection="column">
+        <QuoteLine kit={{ Box, Text, Button }} label={quotedFor(`diff:${shownDiff.file}`)} onClear={clearDrag} />
         {shownDiff.lines.length === 0 ? (
           <Text dimColor>No changes against git HEAD.</Text>
         ) : (
-          <Viewer
-            kit={{ Box, Text, Button, Code, ...(Client === undefined ? {} : { Client }) }}
-            id={`diff:${shownDiff.file}`}
+          <Code
             source={shownDiff.lines.join('\n')}
-            path={shownDiff.file}
-            startLine={1}
             format="diff"
-            isWrapped={wraps}
-            sel={diffSel(shownDiff)}
-            label={diffSel(shownDiff) === null ? '' : rangeLabel(diffSel(shownDiff)!.from + 1, diffSel(shownDiff)!.to + 1)}
-            onClearChip={clearDrag}
+            path={shownDiff.file}
+            wrap={wraps ? 'wrap' : 'truncate-end'}
           />
         )}
         {shownDiff.isCut && <Text dimColor>… cut at {DIFF_LINES} lines</Text>}
@@ -2437,7 +2445,6 @@ export const register: Register = on => {
           Code,
           Markdown: $.ui.resolve(e).Markdown,
           ...(e.surface === 'terminal' ? { Image: $.ui.resolve(e).Image } : {}),
-          ...(Client === undefined ? {} : { Client }),
         },
         {
           files: projectFiles,
@@ -2465,9 +2472,7 @@ export const register: Register = on => {
             void loadPreview($, cwd, relative(target, cwd)).then(loaded => update($, preview, () => loaded))
           },
           place: size => fit(size, Math.min(255, e.props.bodyColumns), 18, tall),
-          sel: dragged !== null && dragged.id === shownPreview?.file ? { from: dragged.from, to: dragged.to } : null,
-          mdRows: blockRows.file === shownPreview?.file ? blockRows.rows : [],
-          mdSel: dragged !== null && dragged.id === `${shownPreview?.file}#md` ? { from: dragged.from, to: dragged.to } : null,
+          quoted: quotedFor(shownPreview?.file ?? ''),
           onClearChip: clearDrag,
           onMention: file => async () => {
             await $.prompt.fill({ text: `@${file} `, mode: 'insert' })
@@ -2490,8 +2495,8 @@ export const register: Register = on => {
         kit,
         {
           search: found,
-          ...(Client === undefined ? {} : { Client }),
-          sel: dragged !== null && dragged.id === 'hits' ? { from: dragged.from, to: dragged.to } : null,
+          quoted: quotedFor('hits'),
+          onClearChip: clearDrag,
           onSearch: query => async () => {
             const result = await runSearch($, cwd, query)
             await update($, search, () => result)

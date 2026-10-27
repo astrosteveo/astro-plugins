@@ -4,7 +4,7 @@
 import type { Color, Elements, RenderElement } from 'claude-code'
 
 import type { GitFile, GitState, Preview, Search, TestRun, Touch } from '../types'
-import { hitItems, matches, mdBlocks, splitFences, treeRows } from './explorer'
+import { matches, splitFences, treeRows } from './explorer'
 
 export type Kit = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'> & {
   Raster?: Elements['terminal']['Raster']
@@ -87,8 +87,6 @@ export type ExplorerKit = Kit & {
   Code: Elements['terminal']['Code']
   Markdown: Elements['terminal']['Markdown']
   Image?: Elements['terminal']['Image']
-  // Where the terminal has one: the viewer the pointer can drag over.
-  Client?: Elements['terminal']['Client']
 }
 
 const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
@@ -97,66 +95,33 @@ const LOCAL_LINK = /\]\(\s*<?(?![a-z][a-z0-9+.-]*:|#|\/\/)([^)\s>]+)/gi
 // `line 4` or `lines 4 to 9`.
 export const rangeLabel = (from: number, to: number) => (from === to ? `line ${from}` : `lines ${from} to ${to}`)
 
-// Code or a diff in the viewer a drag can pick lines in, with the chip that
-// offers to ask about them; plain code where the surface has no Client.
-export function Viewer({
+// The line that says what the selection put in the prompt, with a way to take it
+// out. One row always, so a selection never moves what is under it.
+export function QuoteLine({
   kit,
-  id,
-  source,
-  path,
-  startLine,
-  format = 'source',
-  isWrapped,
-  sel,
   label,
-  onClearChip,
+  onClear,
 }: {
-  kit: Pick<ExplorerKit, 'Box' | 'Text' | 'Button' | 'Code' | 'Client'>
-  id: string
-  source: string
-  path: string
-  startLine: number
-  format?: 'source' | 'diff'
-  isWrapped: boolean
-  sel: { from: number; to: number } | null
+  kit: Pick<ExplorerKit, 'Box' | 'Text' | 'Button'>
   label: string
-  onClearChip: () => void
+  onClear: () => void
 }) {
-  const { Box, Text, Button, Code, Client } = kit
-  if (Client === undefined) {
-    return (
-      <Code
-        source={source === '' ? ' ' : source}
-        path={path}
-        {...(format === 'diff' ? { format } : { startLine })}
-        wrap={isWrapped ? 'wrap' : 'truncate-end'}
-      />
-    )
-  }
+  const { Box, Text, Button } = kit
 
-  // What the drag put in the prompt rides above the lines, where a long file cannot push it off screen.
   return (
-    <Box flexDirection="column">
-      {/* One row, always there and never wrapped, so picking never moves the lines under the pointer. */}
-      <Box flexDirection="row" height={1} columnGap={2}>
-        <Box flexGrow={1} flexShrink={1}>
-          <Text dimColor wrap="truncate-end">
-            {sel === null ? 'click or drag lines to quote them' : `in your prompt: ${label} · alt-click extends`}
-          </Text>
-        </Box>
-        {sel !== null && (
-          <Box flexShrink={0}>
-            <Button key="chip-clear" plain dimColor onPress={onClearChip}>
-              ✗ drop it
-            </Button>
-          </Box>
-        )}
+    <Box flexDirection="row" height={1} columnGap={2}>
+      <Box flexGrow={1} flexShrink={1}>
+        <Text dimColor wrap="truncate-end">
+          {label === '' ? 'select text to quote it in your prompt' : `in your prompt: ${label}`}
+        </Text>
       </Box>
-      <Client
-        key={`viewer-${format}`}
-        module="./viewer.tsx"
-        props={{ id, source, path, startLine, format, isWrapped, sel }}
-      />
+      {label !== '' && (
+        <Box flexShrink={0}>
+          <Button key="chip-clear" plain dimColor onPress={onClear}>
+            ✗ drop it
+          </Button>
+        </Box>
+      )}
     </Box>
   )
 }
@@ -182,89 +147,6 @@ function imageBody(
       <Text dimColor>
         {one.width}x{one.height}
       </Text>
-    </Box>
-  )
-}
-
-// A markdown file as the screen draws it: its prose as markdown, its local
-// pictures as pictures, in the order the file has them.
-function markdownBlocks(
-  { Box, Text, Button, Image, Client }: ExplorerKit,
-  shown: Preview,
-  data: {
-    onLink: (href: string) => void
-    place: (size: { width: number; height: number }) => { columns: number; rows: number }
-    rows: number[]
-    sel: { from: number; to: number } | null
-  },
-) {
-  const blocks = mdBlocks(shown.source, shown.images?.map(one => one.ref) ?? [])
-  const heights = blocks.map((block, index) => {
-    if (block.kind !== 'image') {
-      return data.rows[index] ?? 1
-    }
-    const picture = shown.images?.find(one => one.ref === block.ref)
-
-    return (picture === undefined || Image === undefined ? 0 : data.place(picture).rows) + (block.alt === '' ? 0 : 1)
-  })
-
-  // A block is drawn in a region of its own, which cannot answer a link; links to
-  // files of the project are listed below the file instead.
-  const links = [...new Set([...shown.source.matchAll(LOCAL_LINK)].map(one => one[1] ?? ''))].filter(one => one !== '')
-
-  const gaps = blocks.map((block, index) => (index === 0 || block.tight === true ? 0 : 1))
-
-  return (
-    <Box flexDirection="column">
-      {blocks.map((block, index) => {
-        if (block.kind === 'image') {
-          const picture = shown.images?.find(one => one.ref === block.ref)
-          if (picture === undefined || Image === undefined) {
-            return null
-          }
-
-          return (
-            <Box key={`md-img-${index}`} flexDirection="column" marginTop={gaps[index] ?? 0}>
-              <Image
-                key={`md-pic-${index}`}
-                source={{ file: picture.file, format: 'png' }}
-                {...data.place(picture)}
-                alt={block.alt || ' '}
-              />
-              {block.alt !== '' && <Text dimColor>{block.alt}</Text>}
-            </Box>
-          )
-        }
-
-        return Client === undefined ? null : (
-          <Box key={`md-slot-${index}`} flexDirection="column" marginTop={gaps[index] ?? 0}>
-          <Client
-            key={`md-block-${index}`}
-            module="./md.tsx"
-            props={{
-              file: shown.file,
-              index,
-              kind: block.kind,
-              text: block.text,
-              lang: block.kind === 'code' ? block.lang : '',
-              heights,
-              gaps,
-              sel: data.sel,
-            }}
-          />
-          </Box>
-        )
-      })}
-      {links.length > 0 && (
-        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-          <Text dimColor>links:</Text>
-          {links.slice(0, 12).map(href => (
-            <Button key={`md-link-${href}`} plain onPress={() => data.onLink(href)}>
-              → {href}
-            </Button>
-          ))}
-        </Box>
-      )}
     </Box>
   )
 }
@@ -349,19 +231,16 @@ export function explorerView(
     onDiff: (file: string) => () => void
     onRefresh: () => void
     onRaw: () => void
-    // Rendered markdown, block by block: the rows each drew at, and the blocks dragged over.
-    mdRows: number[]
-    mdSel: { from: number; to: number } | null
     wraps: boolean
     onWrap: () => void
-    // The lines dragged over, 0-based, and what the chip does with them.
-    sel: { from: number; to: number } | null
+    // What the selection put in the prompt, if anything, and the way to take it out.
+    quoted: string
     onClearChip: () => void
     onLink: (href: string) => void
     place: (size: { width: number; height: number }) => { columns: number; rows: number }
   },
 ): RenderElement {
-  const { Box, Text, Button } = kit
+  const { Box, Text, Button, Code } = kit
   const changed = Object.keys(data.codes).length
   const touch = new Map(data.touched.map(one => [one.file, one]))
   const marks = (path: string) => {
@@ -421,23 +300,21 @@ export function explorerView(
             </Button>
           </Box>
         </Box>
+        {shown.isBinary !== true && shown.isImage !== true && (
+          <QuoteLine kit={kit} label={data.quoted} onClear={data.onClearChip} />
+        )}
         {shown.isBinary ? (
           <Text dimColor>A binary file: nothing to preview.</Text>
         ) : shown.isImage === true ? (
           imageBody(kit, shown, data)
         ) : shown.isMarkdown === true && shown.isRaw !== true ? (
-          kit.Client === undefined ? markdownBody(kit, shown, data) : markdownBlocks(kit, shown, { place: data.place, onLink: data.onLink, rows: data.mdRows, sel: data.mdSel })
+          markdownBody(kit, shown, data)
         ) : (
-          <Viewer
-            kit={kit}
-            id={shown.file}
-            source={shown.source}
+          <Code
+            source={shown.source === '' ? ' ' : shown.source}
             path={shown.file}
             startLine={shown.start ?? 1}
-            isWrapped={data.wraps}
-            sel={data.sel}
-            label={data.sel === null ? '' : rangeLabel((shown.start ?? 1) + data.sel.from, (shown.start ?? 1) + data.sel.to)}
-            onClearChip={data.onClearChip}
+            wrap={data.wraps ? 'wrap' : 'truncate-end'}
           />
         )}
         {shown.isCut && (
@@ -610,16 +487,16 @@ export function gitView(
 // A search of the project's text: the hits by file, each opening the file
 // at that line in the Explorer's preview.
 export function searchView(
-  { Box, Text, Button }: Kit,
+  kit: Kit,
   data: {
     search: Search | null
     onSearch: (query: string) => () => void
     onOpen: (file: string, line?: number) => () => void
-    // Where the terminal has one: the list the pointer can drag over, and the rows dragged.
-    Client?: Elements['terminal']['Client']
-    sel: { from: number; to: number } | null
+    quoted: string
+    onClearChip: () => void
   },
 ): RenderElement {
+  const { Box, Text, Button } = kit
   const found = data.search
   const byFile = new Map<string, { line: number; text: string }[]>()
   for (const hit of found?.hits ?? []) {
@@ -639,14 +516,9 @@ export function searchView(
       </Box>
       {found === null || found.query === '' ? (
         <Text dimColor>Type a word or a pattern and press Enter. A hit opens its file at that line.</Text>
-      ) : data.Client !== undefined ? (
-        <data.Client
-          key="search-hits"
-          module="./hits.tsx"
-          props={{ items: hitItems(found.hits), sel: data.sel }}
-        />
       ) : (
         <Box flexDirection="column">
+          <QuoteLine kit={kit} label={data.quoted} onClear={data.onClearChip} />
           {[...byFile].slice(0, 40).map(([file, hits]) => (
             <Box key={`hits-${file}`} flexDirection="column">
               <Button key={`hit-file-${file}`} plain onPress={data.onOpen(file)}>
