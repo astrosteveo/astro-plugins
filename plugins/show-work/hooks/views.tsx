@@ -84,7 +84,6 @@ const STATUS_COLOR: Record<string, Color> = { M: 'warning', A: 'success', '??': 
 const statusColor = (code: string) => STATUS_COLOR[code] ?? STATUS_COLOR[code[0] ?? ''] ?? 'warning'
 
 export type ExplorerKit = Kit & {
-  Input?: Elements['terminal']['Input']
   Code: Elements['terminal']['Code']
   Markdown: Elements['terminal']['Markdown']
   Image?: Elements['terminal']['Image']
@@ -331,7 +330,6 @@ export function explorerView(
     open: string[]
     filter: string
     preview: Preview | null
-    onFilter: (text: string) => void
     onToggle: (dir: string) => () => void
     onOpen: (file: string) => () => void
     onClose: () => void
@@ -352,7 +350,7 @@ export function explorerView(
     place: (size: { width: number; height: number }) => { columns: number; rows: number }
   },
 ): RenderElement {
-  const { Box, Text, Button, Input } = kit
+  const { Box, Text, Button } = kit
   const changed = Object.keys(data.codes).length
   const touch = new Map(data.touched.map(one => [one.file, one]))
   const marks = (path: string) => {
@@ -451,20 +449,6 @@ export function explorerView(
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
-        {Input !== undefined && (
-          <Input
-            key="ex-filter"
-            placeholder="find a file by a few letters…"
-            value={data.filter}
-            onInput={value => data.onFilter(value)}
-            onSubmit={value => {
-              const first = matches(data.files, value, 1)[0]
-              if (first !== undefined) {
-                data.onOpen(first)()
-              }
-            }}
-          />
-        )}
         <Box flexDirection="row" gap={2}>
           <Text dimColor>
             {data.files.length} files{changed > 0 ? ` · ${changed} changed` : ''}
@@ -620,7 +604,7 @@ export function gitView(
 // A search of the project's text: the hits by file, each opening the file
 // at that line in the Explorer's preview.
 export function searchView(
-  { Box, Text, Button, Input }: Kit & { Input?: Elements['terminal']['Input'] },
+  { Box, Text, Button }: Kit,
   data: {
     search: Search | null
     onSearch: (query: string) => () => void
@@ -639,15 +623,6 @@ export function searchView(
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
-        {Input !== undefined && (
-          <Input
-            key="search-q"
-            placeholder="search the project's text (regex, smart case)…"
-            value={found?.query ?? ''}
-            submitLabel="search"
-            onSubmit={value => data.onSearch(value)()}
-          />
-        )}
         {found !== null && found.query !== '' && (
           <Text dimColor>
             {found.error !== undefined

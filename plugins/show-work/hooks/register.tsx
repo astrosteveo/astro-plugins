@@ -27,7 +27,7 @@ import type {
 } from '../types'
 import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
 import { shownRows } from './lines'
-import { hitItems, hitsQuote, mdBlocks, locateDiffRows, locateSelection, parseGit, parseHits, parseStatus, plain } from './explorer'
+import { hitItems, hitsQuote, matches, mdBlocks, locateDiffRows, locateSelection, parseGit, parseHits, parseStatus, plain } from './explorer'
 import {
   FIND_BROWSER,
   LONGEST,
@@ -2356,7 +2356,6 @@ export const register: Register = on => {
       explorerView(
         {
           ...kit,
-          ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }),
           Code,
           Markdown: $.ui.resolve(e).Markdown,
           ...(e.surface === 'terminal' ? { Image: $.ui.resolve(e).Image } : {}),
@@ -2369,7 +2368,6 @@ export const register: Register = on => {
           open: opened,
           filter: filterText,
           preview: shownPreview,
-          onFilter: text => update($, filter, () => text),
           onToggle: dir => () =>
             update($, openDirs, list => (list.includes(dir) ? list.filter(one => one !== dir) : [...list, dir])),
           onOpen: file => async () => {
@@ -2431,7 +2429,7 @@ export const register: Register = on => {
 
     const findText = () =>
       searchView(
-        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }) },
+        kit,
         {
           search: found,
           ...(Client === undefined ? {} : { Client }),
@@ -2660,6 +2658,47 @@ export const register: Register = on => {
       { id: 'find', label: 'Find', hotkey: 'f' },
     ]
 
+    // The search box ends the tab bar and takes the rest of its row, or a row of
+    // its own where the tabs leave too little: one box for names and for text.
+    const Input = e.surface === 'mobile' ? undefined : $.ui.resolve(e).Input
+    const isText = mode === 'text'
+    const toFind = async () => {
+      await update($, tabAtom, () => 'find')
+    }
+    const searchBox =
+      Input === undefined ? null : (
+        <Box flexGrow={1} minWidth={30} borderStyle="round" borderDimColor={tab !== 'find'} paddingX={1}>
+          <Input
+            key={isText ? 'search-q' : 'ex-filter'}
+            label="⌕"
+            placeholder={isText ? 'search the project’s text (regex)…' : 'find a file by a few letters…'}
+            value={isText ? (found?.query ?? '') : filterText}
+            submitLabel={isText ? 'search' : 'open'}
+            onInput={async value => {
+              if (!isText) {
+                await update($, filter, () => value)
+                await toFind()
+              }
+            }}
+            onSubmit={async value => {
+              await toFind()
+              if (isText) {
+                const result = await runSearch($, cwd, value)
+                await update($, search, () => result)
+                await update($, viewSel, () => null)
+              } else {
+                const first = matches(projectFiles, value, 1)[0]
+                if (first !== undefined) {
+                  const loaded = await loadPreview($, cwd, first)
+                  await update($, preview, () => loaded)
+                  await $.ui.focus({ requestId: PANE, key: 'ex-mention' }).catch(() => undefined)
+                }
+              }
+            }}
+          />
+        </Box>
+      )
+
     startTicking($, now)
 
     return (
@@ -2685,6 +2724,7 @@ export const register: Register = on => {
               {one.hasAlert === true && <Text color="warning"> ●</Text>}
             </Button>
           ))}
+          {searchBox}
         </Box>
         {body}
       </Box>
