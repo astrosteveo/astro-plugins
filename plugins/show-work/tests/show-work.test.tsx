@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { across, blowUp, errorLines, fromHex, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { briefNote, briefPlan, briefShow,cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
+import { briefNote, briefPlan, briefShow, cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -199,7 +199,7 @@ test('a note without text is refused', async ($, on) => {
   expect(ran.deny).toBe('A note needs text.')
 })
 
-test('activity logs reads, edits and failed commands', async ($, on) => {
+test('changes list edits, log commands, and fold reads away', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Read', file_path: '/proj/scenes/main.tscn' })
@@ -215,13 +215,12 @@ test('activity logs reads, edits and failed commands', async ($, on) => {
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: /main\.tscn/ })).toBeDefined()
-    await ui.press({ key: 'tab-activity' })
-    expect((await ui.find({ type: 'Text', text: /calls,/ }))?.text).toBe(
-      '3 calls, 1 files changed, 1 failed',
+    await ui.press({ key: 'tab-changes' })
+    expect((await ui.find({ type: 'Text', text: /folded/ }))?.text).toBe(
+      '1 commands and searches · 1 reads folded · 1 failed',
     )
-    expect((await ui.find({ type: 'Text', text: /main\.tscn/ }))?.text).toBe(
-      '✓ read   scenes/main.tscn',
-    )
+    expect(await ui.find({ type: 'Button', key: 'file-scripts/pause.gd' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /main\.tscn/ })).toBeUndefined()
     expect((await ui.find({ type: 'Text', text: /Run the tests/ }))?.text).toBe(
       '✗ run    Run the tests',
     )
@@ -233,7 +232,7 @@ test('activity logs reads, edits and failed commands', async ($, on) => {
   }
 })
 
-test('repeated edits of a file fold into one row with a count', async ($, on) => {
+test('repeated edits of a file fold into one row with a count, newest first', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   const edit = { tool: 'Edit', file_path: '/proj/scripts/pause.gd', old_string: 'a', new_string: 'b' }
@@ -243,15 +242,9 @@ test('repeated edits of a file fold into one row with a count', async ($, on) =>
   await $.tool.call(edit)
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-activity' })
-  expect((await ui.find({ type: 'Text', text: /calls,/ }))?.text).toBe(
-    '4 calls, 1 files changed',
-  )
-  const rows = await ui.findAll({ type: 'Text', text: /^✓ (read|edit)/ })
-  expect(rows.map(row => row.text)).toEqual([
-    '✓ read   scenes/main.tscn',
-    '✓ edit   ×3 scripts/pause.gd',
-  ])
+  await ui.press({ key: 'tab-changes' })
+  expect((await ui.find({ type: 'Button', key: 'file-scripts/pause.gd' }))?.text).toBe('± scripts/pause.gd ×3')
+  expect((await ui.find({ type: 'Text', text: /folded/ }))?.text).toBe('0 commands and searches · 1 reads folded')
   await ui.unmount()
 })
 
@@ -1081,7 +1074,7 @@ test('pressing a changed file shows its diff, colored, and close returns', async
   await $.tool.call({ tool: 'Edit', file_path: '/proj/src/menu.gd', old_string: 'a', new_string: 'b' })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-activity' })
+  await ui.press({ key: 'tab-changes' })
   await ui.press({ key: 'file-src/menu.gd' })
   expect(asked.at(-1)).toEqual(['git', '-C', '/proj/src', 'diff', '--no-color', 'HEAD', '--', '/proj/src/menu.gd'])
   // The hunks go to Code as a diff, which highlights them; the headers do not.
@@ -1108,7 +1101,7 @@ test('a new file diffs against nothing', async ($, on) => {
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Write', file_path: '/proj/new.txt', content: 'hello' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-activity' })
+  await ui.press({ key: 'tab-changes' })
   await ui.press({ key: 'file-new.txt' })
   expect((await ui.find({ type: 'Code' }))?.props.source).toBe('@@ -0,0 +1 @@\n+hello')
   await ui.unmount()
@@ -1144,20 +1137,15 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
 
 import { divider, duration } from '../hooks/register'
 import {
-  area,
   base64,
   patchCounts,
   shareBar,
   flaky,
-  gantt,
-  gauge,
   glyphs,
-  legend,
   parseLog,
   parseTests,
   pulse,
   scoreboard,
-  treemap,
 } from '../hooks/charts'
 
 const decode = (cells: string, columns: number, rows: number) => {
@@ -1188,112 +1176,8 @@ test('durations and turn dividers read plainly', () => {
   expect(divider({ ...turn, end: undefined, failed: 0 }, 4, 5_000)).toBe('── turn 4 · 5s… · 12 calls ──')
 })
 
-test('the gantt lays bars across time with half-cell ends', () => {
-  const columns = 35 // a 14-column label, a gap, 20 columns of bars
-  const chart = gantt(
-    [
-      { label: 'turn 1', start: 0, end: 10_000, color: 0xd97757, isSub: false },
-      { label: 'Find menu', start: 5_000, end: 7_500, color: 0x5fa8d3, isSub: true },
-      { label: 'turn 2', start: 15_000, color: 0xf0a070, isSub: false },
-    ],
-    20_000,
-    columns,
-  )
-  const { lines, words } = decode(chart.cells, columns, chart.rows)
-  // 20s over 20 columns: a column is a second, a half column half of one.
-  expect(lines).toEqual([
-    'turn 1         ██████████  ·     · ',
-    '↳ Find menu    ·    ██▌    ·     · ',
-    'turn 2         ·     ·     ·  █████',
-  ])
-  // A bar's cells carry its color; a label's do not.
-  expect(words[(0 * columns + 15) * 3 + 1]).toBe(0xd97757)
-})
-
-test('turns draw dividers in Activity and bars on the Timeline', async ($, on) => {
-  engine(on)
-  on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('turn.complete', () => ({ text: '' }))
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.turn.start({ text: 'fix it', turnId: 'turn-a' } as never)
-  await $.tool.call({ tool: 'Read', file_path: '/proj/a.gd' })
-  await $.tool.call({ tool: 'Bash', command: 'false' })
-  await $.turn.complete({ turnId: 'turn-a', reason: 'answer', answer: '', durationMs: 0, isAborted: false } as never)
-  await $.turn.start({ text: 'again', turnId: 'turn-b' } as never)
-  await $.tool.call({ tool: 'Read', file_path: '/proj/b.gd' })
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-activity' })
-  expect((await ui.find({ type: 'Text', text: /── turn 1/ }))?.text).toMatch(/^── turn 1 · \ds · 2 calls · 1 failed ──$/)
-  expect((await ui.find({ type: 'Text', text: /── turn 2/ }))?.text).toMatch(/^── turn 2 · \ds… · 1 call ──$/)
-  await ui.press({ key: 'tab-timeline' })
-  expect((await ui.find({ type: 'Text', text: /turns ·/ }))?.text).toMatch(/^2 turns · 1 running/)
-  const raster = await ui.find({ type: 'Raster' })
-  expect(raster?.props.rows).toBe(2)
-  await ui.unmount()
-
-  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await desk.press({ key: 'tab-timeline' })
-  expect((await desk.find({ type: 'Text', text: /^turn 2/ }))?.text).toMatch(/…$/)
-  await desk.unmount()
-})
-
-test('the legend swatches use the chart colors', () => {
-  const key = legend([
-    [0xd97757, 'turn'],
-    [0x5fa8d3, 'subagent'],
-  ])
-  const { lines, words } = decode(key.cells, key.columns, 1)
-  expect(lines[0]).toBe('█ turn  █ subagent')
-  expect(words[1]).toBe(0xd97757)
-  expect(words[8 * 3 + 1]).toBe(0x5fa8d3)
-})
-
-test('a running bar grows between redraws, repainted by blit, and stops when done', async ($, on) => {
-  engine(on, { isTicking: false })
-  const clock = mock.clock(on, { now: 1_000 })
-  const blits: { cells: string; columns: number; rows: number }[] = []
-  on('ui.blit', (_, e) => {
-    if ('cells' in e && e.cells !== undefined) {
-      blits.push({ cells: e.cells, columns: e.columns ?? 0, rows: e.rows ?? 0 })
-    }
-
-    return { value: {} }
-  })
-  on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('turn.complete', () => ({ text: '' }))
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.turn.start({ text: 'go', turnId: 'turn-a' } as never)
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-timeline' })
-  await clock.advance(10_000)
-  const count = blits.length
-  expect(count).toBeGreaterThan(30)
-  // The bar fills its row by now, and the leading cell pulses frame to frame.
-  const last = decode(blits.at(-1)!.cells, blits.at(-1)!.columns, 1)
-  expect(last.lines[0]?.slice(15).trim()).toMatch(/^█+$/)
-  const heads = blits.slice(-2).map(one => {
-    const words = decode(one.cells, one.columns, 1).words
-    return words[(one.columns - 1) * 3 + 1]
-  })
-  expect(new Set(heads).size).toBe(2)
-
-  await $.turn.complete({ turnId: 'turn-a', reason: 'answer', answer: '', durationMs: 0, isAborted: false } as never)
-  await clock.advance(2_000)
-  const after = blits.length
-  await clock.advance(5_000)
-  expect(blits.length).toBe(after)
-  await ui.unmount()
-})
-
-test('labels a Raster cannot draw turn to ?, and a narrow pane still fits', () => {
+test('labels a Raster cannot draw turn to ?', () => {
   expect(String.fromCharCode(...glyphs('fix 🐛 バグ ↳'))).toBe('fix ? ?? ↳')
-  const chart = gantt([{ label: 'ship 🚀', start: 0, end: 500, color: 0xd97757, isSub: true }], 1_000, 8)
-  expect(chart.columns).toBe(19)
-  const { lines } = decode(chart.cells, chart.columns, chart.rows)
-  expect(lines[0]?.slice(0, 9)).toBe('↳ ship ? ')
-  expect(gantt([], 1_000, 40)).toMatchObject({ rows: 0, cells: '' })
 })
 
 test('test output from five runners is read for counts and names', () => {
@@ -1360,40 +1244,6 @@ test('the pulse stacks calls into buckets, newest on the right', () => {
   expect(words[0 * 3 + 1]).toBe(0xe06c75)
 })
 
-test('the gauge fills by fraction, colors by level and marks compaction', () => {
-  const { lines, words } = decode(gauge(0.6, 10, 0.8).cells, 10, 1)
-  expect(lines[0]).toBe('██████░░┃░')
-  expect(words[1]).toBe(0xe0a040)
-})
-
-test('the area chart rises in eighths and draws the compaction line', () => {
-  const chart = area([0.25, 0.5, 1], 9, 4, 0.75)
-  expect(decode(chart.cells, 9, 4).lines).toEqual([
-    '──────██─',
-    '      ██ ',
-    '   ██ ██ ',
-    '██ ██ ██ ',
-  ])
-})
-
-test('the treemap covers the box and labels the tiles that fit', () => {
-  const map = treemap(
-    [
-      { label: 'player.gd', weight: 6, color: 0xb4532f },
-      { label: 'menu.gd', weight: 3, color: 0x2f5f80 },
-      { label: 'x', weight: 1, color: 0x2f5f80 },
-    ],
-    30,
-    6,
-  )
-  expect(map.placed.map(one => one.tile.label)).toEqual(['player.gd', 'menu.gd', 'x'])
-  const biggest = map.placed[0]!
-  expect(biggest.width * biggest.height).toBeGreaterThan(80)
-  const { lines, words } = decode(map.cells, 30, 6)
-  expect(lines[biggest.row]?.slice(biggest.col, biggest.col + 9)).toBe('player.gd')
-  expect(words[(biggest.row * 30 + biggest.col) * 3 + 2]).toBe(0xb4532f)
-})
-
 test('git log --graph reads into commits with stats and forks', () => {
   const out = [
     '* \x1e3d4035d\x1fadd timeline\x1f2 hours ago\x1fHEAD -> work',
@@ -1430,46 +1280,12 @@ const USAGE = {
   cost: { usd: 4.2 },
 }
 
-test('the Context tab shows the gauge, what fills it and each turn', async ($, on) => {
-  engine(on)
-  on('session.usage', () => ({ value: USAGE }))
-  on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('turn.complete', () => ({
-    text: '',
-    usage: { model: 'm', input_tokens: 12_300, output_tokens: 1_200, cache_read_input_tokens: 98_000, cache_creation_input_tokens: 3_100 },
-  }))
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.turn.start({ text: 'go', turnId: 'turn-a' } as never)
-  await $.turn.complete({ turnId: 'turn-a', reason: 'answer', answer: '', durationMs: 0, isAborted: false } as never)
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-context' })
-  expect((await ui.find({ type: 'Text', text: /compacts at/ }))?.text).toBe(
-    'Context 60% 120k / 200k · compacts at 167k · $4.20 so far',
-  )
-  expect(await ui.find({ type: 'Raster', key: 'ctx-gauge' })).toBeDefined()
-  expect(await ui.find({ type: 'Raster', key: 'ctx-area' })).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /^turn 1:/ }))?.text).toBe(
-    'turn 1: 12.3k in · 1.2k out · 98.0k cache read · 3.1k cache write',
-  )
-  expect((await ui.find({ type: 'Text', text: /^limits/ }))?.text).toBe('limits: five hour 23%')
-  await ui.press({ key: 'tab-now' })
-  // The status line shows the context and spend; the Now tab leaves them out.
-  expect(await ui.find({ type: 'Text', text: /context 60%|\$4\.20/ })).toBeUndefined()
-  await ui.unmount()
-
-  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await desk.press({ key: 'tab-context' })
-  expect((await desk.find({ type: 'Text', text: /^Messages/ }))?.text).toBe('Messages 100k')
-  await desk.unmount()
-})
-
 const BUN_OUT = (jump: boolean) =>
   `(pass) dash [1ms]\n(${jump ? 'pass' : 'fail'}) jump [2ms]\n\n ${jump ? 2 : 1} pass\n ${jump ? 0 : 1} fail\n`
 
 test('test commands land on the Tests tab as runs', async ($, on) => {
   let jump = true
-  engine(on, {
+  const filled = engine(on, {
     bash: command =>
       command.startsWith('bun test') ? { text: BUN_OUT(jump), isError: !jump } : undefined,
   })
@@ -1485,28 +1301,11 @@ test('test commands land on the Tests tab as runs', async ($, on) => {
     expect((await ui.find({ type: 'Text', text: /pass · \d fail/ }))?.text).toMatch(/^✗ 1 pass · 1 fail bun test · \d+s ago$/)
     expect((await ui.find({ type: 'Raster', key: 'tests-board' })) !== undefined).toBe(surface === 'terminal')
     expect(await ui.find({ type: 'Text', text: /^✓\s+2 pass/ })).toBeDefined()
+    await ui.press({ key: 'tests-fix' })
+    expect(filled.at(-1)).toMatch(/^Fix the failing tests from `bun test`/)
     await ui.press({ key: 'tab-now' })
     await ui.unmount()
   }
-})
-
-test('files read and edited draw as tiles; pressing one opens its diff', async ($, on) => {
-  engine(on)
-  on('process.run', () => ({
-    value: { exitCode: 0, stdout: '@@ -1 +1 @@\n-a\n+b\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'Read', file_path: '/proj/player.gd' })
-  await $.tool.call({ tool: 'Edit', file_path: '/proj/player.gd', old_string: 'a', new_string: 'b' })
-  await $.tool.call({ tool: 'Read', file_path: '/proj/menu.gd' })
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-files' })
-  expect(await ui.find({ type: 'Raster', key: 'files-map' })).toBeDefined()
-  expect((await ui.find({ type: 'Button', text: /player\.gd/ }))?.text).toBe('± player.gd 1 read · 1 edit')
-  await ui.press({ key: 'touch-player.gd' })
-  expect((await ui.find({ type: 'Code' }))?.props.source).toBe('@@ -1 +1 @@\n-a\n+b')
-  await ui.unmount()
 })
 
 test("the Commits tab draws this session's graph and refreshes after a commit", async ($, on) => {
@@ -1525,11 +1324,33 @@ test("the Commits tab draws this session's graph and refreshes after a commit", 
   expect(asked.find(argv => argv.includes('log'))?.at(-1)).toBe('^basesha')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-commits' })
+  await ui.press({ key: 'tab-git' })
   expect((await ui.find({ type: 'Text', text: /1111111/ }))?.text).toBe('● 1111111 first (HEAD -> work) +2 −0 1 minute ago')
   log = '* \x1e2222222\x1fsecond\x1fnow\x1fHEAD -> work\n' + log.replace('HEAD -> work', '')
   await $.tool.call({ tool: 'Bash', command: 'git commit -m second', description: 'Commit' })
   expect((await ui.find({ type: 'Text', text: /^This session's commits/ }))?.text).toBe("This session's commits 2")
+  await ui.unmount()
+})
+
+test('Changes stages what Claude edited and hands over to the Git tab', async ($, on) => {
+  engine(on)
+  const ran: string[][] = []
+  on('process.run', (_, e) => {
+    ran.push([...e.argv])
+
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/src/a.gd', old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/src/b.gd', old_string: 'a', new_string: 'b' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-changes' })
+  const files = (await ui.findAll({ type: 'Button', text: /^± / })).map(one => one.text)
+  expect(files).toEqual(['± src/b.gd', '± src/a.gd'])
+  await ui.press({ key: 'stage-edits' })
+  expect(ran.find(argv => argv.includes('add'))).toEqual(['git', '-C', '/proj', 'add', '--', '/proj/src/b.gd', '/proj/src/a.gd'])
+  expect(await ui.find({ type: 'Button', key: 'git-all' })).toBeDefined()
   await ui.unmount()
 })
 
@@ -1673,8 +1494,8 @@ test('the Explorer walks the tree, filters, previews a file and mentions it', as
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-explorer' })
-  expect((await ui.find({ type: 'Button', key: 'tab-explorer' }))?.text).toBe('Explorer 1')
+  await ui.press({ key: 'tab-find' })
+  expect((await ui.find({ type: 'Button', key: 'tab-find' }))?.text).toBe('Find 1')
   expect((await ui.find({ type: 'Text', text: /files/ }))?.text).toBe('5 files · 1 changed')
   await ui.press({ key: 'ex-hooks' })
   expect((await ui.find({ type: 'Button', key: 'ex-hooks/register.tsx' }))?.text).toBe('    register.tsx M')
@@ -1783,7 +1604,8 @@ test('the Search tab finds text and a hit opens the file at that line', async ($
   on('fs.read', () => ({ value: Array.from({ length: 80 }, (_, i) => `line ${i + 1}`).join('\n') }))
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-search' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'find-text' })
   await ui.input({ key: 'search-q', text: 'jump', kind: 'submit' })
   expect((await ui.find({ type: 'Text', text: /hits in/ }))?.text).toBe('3 hits in 2 files')
   expect((await ui.find({ type: 'Button', key: 'hit-hooks/a.ts:42' }))?.text).toBe('   42 jump()')

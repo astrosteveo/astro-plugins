@@ -16,7 +16,6 @@ import type {
   CommitRow,
   GitState,
   Job,
-  Meter,
   Preview,
   Search,
   TestRun,
@@ -27,14 +26,12 @@ import type {
   Note,
   NoteKind,
   Picture,
-  Plan,
   Step,
   StepStatus,
   Tab,
   Turn,
 } from '../types'
-import { GREEN, RED, gantt, legend, parseLog, parseTests, patchCounts, pulse, shareBar } from './charts'
-import type { Bar } from './charts'
+import { GREEN, RED, parseLog, parseTests, patchCounts, pulse, shareBar } from './charts'
 import { parseGit, parseHits, parseStatus, plain } from './explorer'
 import {
   FIND_BROWSER,
@@ -63,7 +60,7 @@ import {
 } from './design'
 import type { Drawn, Mark } from './design'
 import { diagramColumns, hashOf, splitMermaid } from './mermaid'
-import { contextView, commitsView, explorerView, filesView, gitView, runView, searchView, testsView } from './views'
+import { commitsView, explorerView, gitView, runView, searchView, testsView } from './views'
 
 const PANE = 'show-work'
 const TITLE = 'Show work'
@@ -80,9 +77,6 @@ const notes = atom({ plugin: 'show-work', key: 'notes' } as const, [], {
 const activity = atom({ plugin: 'show-work', key: 'activity' } as const, [], {
   shape: 'activity-2',
 })
-const changed = atom({ plugin: 'show-work', key: 'changed' } as const, [], {
-  shape: 'changed-1',
-})
 const pictures = atom({ plugin: 'show-work', key: 'pictures' } as const, [], {
   shape: 'pictures-1',
 })
@@ -98,9 +92,6 @@ const lanes = atom({ plugin: 'show-work', key: 'lanes' } as const, [], {
 })
 const turns = atom({ plugin: 'show-work', key: 'turns' } as const, [], {
   shape: 'turns-1',
-})
-const meter = atom({ plugin: 'show-work', key: 'meter' } as const, null, {
-  shape: 'meter-1',
 })
 const tests = atom({ plugin: 'show-work', key: 'tests' } as const, [], {
   shape: 'tests-1',
@@ -126,6 +117,8 @@ const cellTall = atom({ plugin: 'show-work', key: 'cellTall' } as const, 0)
 // The picture the pane shows; null shows the newest.
 const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
 const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
+// What the Find tab searches: file names, or the files' text.
+const findMode = atom({ plugin: 'show-work', key: 'findMode' } as const, 'files')
 const showEarlier = atom({ plugin: 'show-work', key: 'showEarlier' } as const, false)
 // The note opened to show its why, detail and actions; null when none is.
 const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
@@ -157,14 +150,6 @@ const TEST_COMMAND = /\b(tests?|spec|pytest|jest|vitest|mocha|rspec|ctest|gut|gd
 const GIT_MOVE = /\bgit\b.*\b(commit|merge|rebase|cherry-pick|reset|checkout|switch|pull|am|revert)\b/
 // The pulse: a column per two seconds.
 const BEAT = 2000
-// How many turns the timeline draws, newest last.
-const GANTT_TURNS = 8
-const COLORS = {
-  turn: 0xd97757,
-  live: 0xf0a070,
-  lane: 0x5fa8d3,
-  failed: 0xe06c75,
-}
 const DIFF_LINES = 300
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 // The most marks one picture takes.
@@ -348,7 +333,7 @@ const ACTIONS: Record<Exclude<NoteKind, 'question'>, { reply: string; fill: stri
 }
 
 // The field each tool's tab puts the typing in.
-const FIELDS: Partial<Record<Tab, string>> = { explorer: 'ex-filter', run: 'run-cmd', search: 'search-q' }
+const FIELDS: Partial<Record<Tab, string>> = { find: 'ex-filter', run: 'run-cmd' }
 
 const STEP_MARK: Record<StepStatus, { mark: string; color?: Color }> = {
   todo: { mark: '·' },
@@ -1056,32 +1041,6 @@ function startTicking($: EngineInterface, now: number) {
   }
 }
 
-// The window, spend and rate limits as the session reports them now.
-async function loadMeter($: EngineInterface): Promise<Meter | null> {
-  const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
-  if (usage === undefined) {
-    return null
-  }
-  const categories = usage.context.breakdown?.categories ?? []
-
-  return {
-    ...(usage.context.tokens === undefined ? {} : { tokens: usage.context.tokens }),
-    window: usage.context.window,
-    ...(usage.context.percent === undefined ? {} : { percent: usage.context.percent }),
-    ...(usage.cost === undefined ? {} : { usd: usage.cost.usd }),
-    ...(() => {
-      const buffer = categories.find(one => one.kind === 'buffer')?.tokens
-
-      return buffer === undefined ? {} : { buffer }
-    })(),
-    categories: categories
-      .filter(one => one.kind === 'used' && one.tokens > 0)
-      .map(one => ({ name: one.name, tokens: one.tokens })),
-    limits: usage.rateLimits.map(one => ({ kind: one.kind, percentUsed: one.percentUsed })),
-    at: await $.clock.now(),
-  }
-}
-
 // The project's files as git sees them, ignored ones left out; where git
 // is not, whatever find turns up a few levels down.
 async function loadTree($: EngineInterface, cwd: string): Promise<string[]> {
@@ -1289,15 +1248,11 @@ export const register: Register = on => {
     })
     void $.ui.open({ id: PANE, title: TITLE })
     const started = await next(e)
-    const [shown, rows, files, codes] = await Promise.all([
-      loadMeter($),
+    const [rows, files, codes] = await Promise.all([
       loadCommits($, cwd),
       loadTree($, cwd),
       loadStatus($, cwd),
     ])
-    if (shown !== null) {
-      await update($, meter, () => shown)
-    }
     const tall = await cellShape($)
     await update($, cellTall, () => tall ?? 2)
     await update($, commits, () => rows)
@@ -1341,7 +1296,6 @@ export const register: Register = on => {
       await update($, plan, () => null)
       await update($, notes, () => [])
       await update($, activity, () => [])
-      await update($, changed, () => [])
       await update($, pictures, () => [])
       await update($, picked, () => null)
       await update($, diff, () => null)
@@ -1510,14 +1464,10 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The turn's end carries its tokens; the session then says how full the
-  // window is, which is the turn's mark on the context chart.
+  // The turn's end closes its row in the log.
   on('turn.complete', async ($, e, next) => {
     const end = await $.clock.now()
     const done = await next(e)
-    const isMain = (await read($, turns)).some(one => one.id === e.turnId)
-    const shown = isMain ? await loadMeter($) : null
-    const used = done.usage
     await update($, turns, list =>
       list.map(one =>
         one.id === e.turnId
@@ -1525,24 +1475,10 @@ export const register: Register = on => {
               ...one,
               end,
               reason: e.reason,
-              ...(shown?.tokens === undefined ? {} : { context: shown.tokens }),
-              ...(used === undefined
-                ? {}
-                : {
-                    usage: {
-                      input: used.input_tokens,
-                      output: used.output_tokens,
-                      cacheRead: used.cache_read_input_tokens,
-                      cacheWrite: used.cache_creation_input_tokens,
-                    },
-                  }),
             }
           : one,
       ),
     )
-    if (shown !== null) {
-      await update($, meter, () => shown)
-    }
 
     return done
   })
@@ -1641,10 +1577,13 @@ export const register: Register = on => {
       const isEdit = what.kind === 'edit' && status === 'ok'
       await update($, touches, list => {
         const old = list.find(one => one.file === what.label)
+        const patch = isEdit && ran.deny === undefined ? patchCounts(ran.result) : { added: 0, removed: 0 }
         const touch: Touch = {
           file: what.label,
           reads: (old?.reads ?? 0) + (what.kind === 'read' ? 1 : 0),
           edits: (old?.edits ?? 0) + (isEdit ? 1 : 0),
+          added: (old?.added ?? 0) + patch.added,
+          removed: (old?.removed ?? 0) + patch.removed,
           at,
         }
 
@@ -1692,9 +1631,6 @@ export const register: Register = on => {
     }
     if (status === 'ok' && what.path !== undefined && what.path !== '') {
       const label = what.label
-      await update($, changed, list =>
-        list.includes(label) ? list : [...list, label],
-      )
       // A diff open on this file goes stale with the edit: refresh it.
       const open = await read($, diff)
       if (open !== null && open.file === label) {
@@ -2042,16 +1978,15 @@ export const register: Register = on => {
     const shown = await read($, plan)
     const allNotes = await read($, notes)
     const acts = await read($, activity)
-    const files = await read($, changed)
     const pics = await read($, pictures)
     const pickedId = await read($, picked)
     const tab = await read($, tabAtom)
+    const mode = await read($, findMode)
     const isShowingEarlier = await read($, showEarlier)
     const openId = await read($, openNote)
     const shownDiff = await read($, diff)
     const allLanes = await read($, lanes)
     const allTurns = await read($, turns)
-    const shownMeter = await read($, meter)
     const runs = await read($, tests)
     const touched = await read($, touches)
     const commitRows = await read($, commits)
@@ -2189,6 +2124,13 @@ export const register: Register = on => {
       await update($, diff, () => loaded)
     }
 
+    // Stage the files Claude edited, then hand over to the Git tab to write the message.
+    const stageEdits = (list: string[]) => async () => {
+      await gitDo($, cwd, ['add', '--', ...list.map(file => absolute(file, cwd))])
+      await update($, tabAtom, () => 'git')
+      await $.ui.focus({ requestId: PANE, key: 'git-msg' }).catch(() => undefined)
+    }
+
     const diffView = (shownDiff: Diff) => (
       <Box flexDirection="column">
         <Box flexDirection="row" gap={2}>
@@ -2205,82 +2147,6 @@ export const register: Register = on => {
         {shownDiff.isCut && <Text dimColor>… cut at {DIFF_LINES} lines</Text>}
       </Box>
     )
-
-    // The last few turns, each followed by the subagents that started in it.
-    const timelineView = () => {
-      const shownTurns = allTurns.slice(-GANTT_TURNS)
-      const first = shownTurns[0]?.start
-      if (first === undefined) {
-        return <Text dimColor>No turns yet. Each prompt you send draws a bar here.</Text>
-      }
-      const bars: Bar[] = []
-      for (const turn of shownTurns) {
-        const isBad = turn.reason === 'error' || turn.reason === 'aborted' || turn.failed > 0
-        bars.push({
-          label: `turn ${turn.n}`,
-          start: turn.start,
-          ...(turn.end === undefined ? {} : { end: turn.end }),
-          color: isBad ? COLORS.failed : turn.end === undefined ? COLORS.live : COLORS.turn,
-          isSub: false,
-        })
-        const next = allTurns.find(one => one.n === turn.n + 1)?.start ?? Infinity
-        for (const lane of allLanes.filter(one => one.at >= turn.start && one.at < next)) {
-          bars.push({
-            label: lane.label,
-            start: lane.at,
-            ...(lane.end === undefined ? {} : { end: lane.end }),
-            color: lane.status === 'failed' ? COLORS.failed : COLORS.lane,
-            isSub: true,
-          })
-        }
-      }
-      const running = shownTurns.filter(one => one.end === undefined).length +
-        allLanes.filter(one => one.status === 'runs').length
-
-      if (e.surface !== 'terminal') {
-        return (
-          <Box flexDirection="column">
-            {bars.map(bar => (
-              <Text dimColor={bar.isSub}>
-                {bar.isSub ? '↳ ' : ''}
-                {bar.label} · {duration((bar.end ?? now) - bar.start)}
-                {bar.end === undefined ? '…' : ''}
-              </Text>
-            ))}
-          </Box>
-        )
-      }
-
-      const { Raster } = $.ui.resolve(e)
-      const columns = Math.max(24, Math.min(512, e.props.bodyColumns))
-      const chart = gantt(bars, now, columns, ticker.frame)
-      paint({
-        site: PANE,
-        key: 'gantt',
-        draw: (at, frame) => gantt(bars, at, columns, frame),
-        isLive: () => bars.some(bar => bar.end === undefined),
-      })
-      const key = legend([
-        [COLORS.turn, 'turn'],
-        [COLORS.lane, 'subagent'],
-        [COLORS.failed, 'failed'],
-      ])
-
-      return (
-        <Box flexDirection="column">
-          <Text dimColor>
-            {shownTurns.length} turns · {running} running · · ={' '}
-            {duration(((now - chart.from) / Math.max(1, columns - 15)) * 6)}
-          </Text>
-          <Raster key="gantt" columns={columns} rows={chart.rows} cells={chart.cells} />
-          <Box flexDirection="row" justifyContent="space-between">
-            <Text dimColor>{''.padEnd(15)}0s</Text>
-            <Text dimColor>{duration(now - chart.from)} now</Text>
-          </Box>
-          <Raster key="gantt-key" columns={key.columns} rows={1} cells={key.cells} />
-        </Box>
-      )
-    }
 
     // Calls over the last stretch, newest on the right: what Claude is doing
     // at a glance. The context and spend stay in the status line.
@@ -2337,6 +2203,60 @@ export const register: Register = on => {
         </Box>
       )
     }
+
+    const findNames = () =>
+      explorerView(
+        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }), Code },
+        {
+          files: projectFiles,
+          codes,
+          touched: touched,
+          open: opened,
+          filter: filterText,
+          preview: shownPreview,
+          onFilter: text => update($, filter, () => text),
+          onToggle: dir => () =>
+            update($, openDirs, list => (list.includes(dir) ? list.filter(one => one !== dir) : [...list, dir])),
+          onOpen: file => async () => {
+            const loaded = await loadPreview($, cwd, file)
+            await update($, preview, () => loaded)
+            await $.ui.focus({ requestId: PANE, key: 'ex-mention' }).catch(() => undefined)
+          },
+          onClose: () => update($, preview, () => null),
+          onMention: file => async () => {
+            await $.prompt.fill({ text: `@${file} `, mode: 'insert' })
+          },
+          onDiff: file => async () => {
+            const loaded = await loadDiff($, absolute(file, cwd), file)
+            await update($, diff, () => loaded)
+            await update($, tabAtom, () => 'changes')
+          },
+          onRefresh: async () => {
+            const [listed, status] = await Promise.all([loadTree($, cwd), loadStatus($, cwd)])
+            await update($, tree, () => listed)
+            await update($, gitStatus, () => status)
+          },
+        },
+      )
+
+    const findText = () =>
+      searchView(
+        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }) },
+        {
+          search: found,
+          onSearch: query => async () => {
+            const result = await runSearch($, cwd, query)
+            await update($, search, () => result)
+            await $.ui.focus({ requestId: PANE, key: 'tab-find' }).catch(() => undefined)
+          },
+          onOpen: (file, line) => async () => {
+            const loaded = await loadPreview($, cwd, file, line)
+            await update($, preview, () => loaded)
+            await update($, findMode, () => 'files')
+            await update($, tabAtom, () => 'find')
+          },
+        },
+      )
 
     let body
     if (tab === 'notes') {
@@ -2421,64 +2341,33 @@ export const register: Register = on => {
                 ))}
           </Box>
         )
-    } else if (tab === 'timeline') {
-      body = timelineView()
-    } else if (tab === 'context') {
-      body = contextView(
-        kit,
-        { shown: shownMeter, turns: allTurns, columns: bodyColumns },
-      )
     } else if (tab === 'tests') {
       body = testsView(
         kit,
-        { runs, columns: bodyColumns, now },
-      )
-    } else if (tab === 'files') {
-      body = filesView(
-        kit,
         {
-          list: touched,
+          runs,
           columns: bodyColumns,
-          onOpen: file => async () => {
-            const loaded = await loadDiff($, absolute(file, cwd), file)
-            await update($, diff, () => loaded)
-            await update($, tabAtom, () => 'activity')
+          now,
+          onFix: run => async () => {
+            const names = run.names.filter(one => !one.ok).map(one => `- ${one.name}`)
+            const which = names.length === 0 ? '' : `:\n${names.slice(0, 20).join('\n')}\n`
+            await $.prompt.fill({ text: `Fix the failing tests from \`${run.command}\`${which}`, mode: 'insert' })
           },
         },
       )
-    } else if (tab === 'explorer') {
-      body = explorerView(
-        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }), Code },
-        {
-          files: projectFiles,
-          codes,
-          touched: touched,
-          open: opened,
-          filter: filterText,
-          preview: shownPreview,
-          onFilter: text => update($, filter, () => text),
-          onToggle: dir => () =>
-            update($, openDirs, list => (list.includes(dir) ? list.filter(one => one !== dir) : [...list, dir])),
-          onOpen: file => async () => {
-            const loaded = await loadPreview($, cwd, file)
-            await update($, preview, () => loaded)
-            await $.ui.focus({ requestId: PANE, key: 'ex-mention' }).catch(() => undefined)
-          },
-          onClose: () => update($, preview, () => null),
-          onMention: file => async () => {
-            await $.prompt.fill({ text: `@${file} `, mode: 'insert' })
-          },
-          onDiff: file => async () => {
-            const loaded = await loadDiff($, absolute(file, cwd), file)
-            await update($, diff, () => loaded)
-            await update($, tabAtom, () => 'activity')
-          },
-          onRefresh: async () => {
-            const [listed, status] = await Promise.all([loadTree($, cwd), loadStatus($, cwd)])
-            await update($, tree, () => listed)
-            await update($, gitStatus, () => status)
-          },
-        },
+    } else if (tab === 'find') {
+      body = (
+        <Box flexDirection="column" gap={1}>
+          <Box flexDirection="row" columnGap={2}>
+            <Button key="find-files" plain dimColor={mode !== 'files'} hotkey="o" onPress={() => update($, findMode, () => 'files')}>
+              <Text weight={mode === 'files' ? 'bold' : 'regular'}>Names</Text>
+            </Button>
+            <Button key="find-text" plain dimColor={mode !== 'text'} hotkey="t" onPress={() => update($, findMode, () => 'text')}>
+              <Text weight={mode === 'text' ? 'bold' : 'regular'}>Text</Text>
+            </Button>
+          </Box>
+          {mode === 'text' ? findText() : findNames()}
+        </Box>
       )
     } else if (tab === 'run') {
       body = runView(
@@ -2512,7 +2401,7 @@ export const register: Register = on => {
           onDiff: file => async () => {
             const loaded = await loadDiff($, absolute(file, cwd), file)
             await update($, diff, () => loaded)
-            await update($, tabAtom, () => 'activity')
+            await update($, tabAtom, () => 'changes')
           },
           onStageAll: () => void gitDo($, cwd, ['add', '-A']),
           onUnstageAll: () => void gitDo($, cwd, ['reset', '-q']),
@@ -2524,69 +2413,75 @@ export const register: Register = on => {
           },
         },
       )
-    } else if (tab === 'search') {
-      body = searchView(
-        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }) },
-        {
-          search: found,
-          onSearch: query => async () => {
-            const result = await runSearch($, cwd, query)
-            await update($, search, () => result)
-            await $.ui.focus({ requestId: PANE, key: 'tab-search' }).catch(() => undefined)
-          },
-          onOpen: (file, line) => async () => {
-            const loaded = await loadPreview($, cwd, file, line)
-            await update($, preview, () => loaded)
-            await update($, tabAtom, () => 'explorer')
-          },
-        },
-      )
-    } else if (tab === 'commits') {
-      body = commitsView(
-        kit,
-        {
-          rows: commitRows,
-          onRefresh: async () => {
-            const rows = await loadCommits($, cwd)
-            await update($, commits, () => rows)
-          },
-        },
-      )
-    } else if (tab === 'activity' && shownDiff !== null) {
-      body = diffView(shownDiff)
-    } else if (tab === 'activity') {
       body = (
-        <Box flexDirection="column">
-          {files.length > 0 && (
-            <Box flexDirection="column" marginBottom={1}>
-              <Text weight="bold">
-                Changed <Text dimColor>press for the diff</Text>
-              </Text>
-              {files.slice(-12).map(file => (
-                <Button key={`file-${file}`} plain onPress={openDiff(file)}>
-                  <Text color="warning">±</Text> {file}
+        <Box flexDirection="column" gap={1}>
+          {body}
+          {commitsView(kit, {
+            rows: commitRows,
+            onRefresh: async () => {
+              const rows = await loadCommits($, cwd)
+              await update($, commits, () => rows)
+            },
+          })}
+        </Box>
+      )
+    } else if (tab === 'changes' && shownDiff !== null) {
+      body = diffView(shownDiff)
+    } else if (tab === 'changes') {
+      // What Claude edited, newest first, then the commands it ran. Reads
+      // fold into a count: the Find tab and the Now tab hold the rest.
+      const edited = touched.filter(touch => touch.edits > 0).sort((a, b) => b.at - a.at)
+      const ran = acts.filter(act => act.kind !== 'read' && act.kind !== 'edit')
+      const reads = acts.filter(act => act.kind === 'read').reduce((sum, act) => sum + (act.count ?? 1), 0)
+      body = (
+        <Box flexDirection="column" gap={1}>
+          {edited.length === 0 ? (
+            <Text dimColor>No files edited yet. Each file Claude edits is listed here, newest first.</Text>
+          ) : (
+            <Box flexDirection="column">
+              <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+                <Text weight="bold">
+                  Edited <Text dimColor>{edited.length} · press for the diff</Text>
+                </Text>
+                <Button key="stage-edits" plain hotkey="c" onPress={stageEdits(edited.map(touch => touch.file))}>
+                  <Text color="success">stage these and commit →</Text>
+                </Button>
+              </Box>
+              {edited.slice(0, 15).map(touch => (
+                <Button key={`file-${touch.file}`} plain onPress={openDiff(touch.file)}>
+                  <Text color="warning">±</Text> {touch.file}
+                  {(touch.added ?? 0) + (touch.removed ?? 0) > 0 && (
+                    <Text>
+                      {' '}
+                      <Text color="success">+{touch.added}</Text> <Text color="error">−{touch.removed ?? 0}</Text>
+                    </Text>
+                  )}
+                  {touch.edits > 1 && <Text dimColor> ×{touch.edits}</Text>}
                 </Button>
               ))}
             </Box>
           )}
-          <Text dimColor>
-            {acts.reduce((sum, act) => sum + (act.count ?? 1), 0)} calls,{' '}
-            {files.length} files changed
-            {failed > 0 ? `, ${failed} failed` : ''}
-          </Text>
-          {acts.slice(-40).flatMap((act, i, list) =>
-            act.turn !== undefined && act.turn !== list[i - 1]?.turn
-              ? [
-                  <Text key={`turn-${act.turn}-${act.id}`} color="claude" dimColor wrap="truncate-end">
-                    {divider(
-                      allTurns.find(one => one.n === act.turn),
-                      act.turn,
-                      now,
-                    )}
-                  </Text>,
-                  actRow(act),
-                ]
-              : [actRow(act)],
+          {(ran.length > 0 || reads > 0) && (
+            <Box flexDirection="column">
+              <Text dimColor>
+                {ran.length} commands and searches · {reads} reads folded
+                {failed > 0 ? ` · ${failed} failed` : ''}
+              </Text>
+              {ran.slice(-30).flatMap((act, i, list) =>
+                act.turn !== undefined && act.turn !== list[i - 1]?.turn
+                  ? [
+                      <Text key={`turn-${act.turn}-${act.id}`} color="claude" dimColor wrap="truncate-end">
+                        {divider(
+                          allTurns.find(one => one.n === act.turn),
+                          act.turn,
+                          now,
+                        )}
+                      </Text>,
+                      actRow(act),
+                    ]
+                  : [actRow(act)],
+              )}
+            </Box>
           )}
         </Box>
       )
@@ -2594,22 +2489,22 @@ export const register: Register = on => {
       body = (
         <Text dimColor>
           Nothing yet. Claude posts its plan, decisions and questions here as it works, and logs the files and
-          commands it touches. Meanwhile: 0 explores the files, u runs a command, g is git, f searches.
+          commands it touches. Meanwhile: f finds files and text, u runs a command, g is git.
         </Text>
       )
     } else {
       body = (
         <Box flexDirection="column" gap={1}>
-          {pulseView()}
-          {planView()}
           {open.length > 0 && (
             <Box flexDirection="column">
-              <Text weight="bold">
+              <Text color="warning" weight="bold">
                 Waiting on you <Text dimColor>press to reply</Text>
               </Text>
               {open.map(note => noteRow(note))}
             </Box>
           )}
+          {planView()}
+          {pulseView()}
           {currentLanes.length > 0 && (
             <Box flexDirection="column">
               <Text weight="bold">
@@ -2636,16 +2531,11 @@ export const register: Register = on => {
       // A note replied to or OK'd is done: it greys out and stops counting.
       { id: 'notes', label: 'Notes', count: current.filter(note => !note.isReplied && note.isOk !== true).length, hotkey: '2' },
       { id: 'pictures', label: 'Pictures', count: pics.length, hotkey: '3' },
-      { id: 'activity', label: 'Activity', count: acts.length, hotkey: '4' },
-      { id: 'timeline', label: 'Timeline', count: allTurns.length, hotkey: '5' },
-      { id: 'context', label: 'Context', hotkey: '6' },
-      { id: 'tests', label: 'Tests', count: runs.length, hotkey: '7' },
-      { id: 'files', label: 'Files', count: touched.length, hotkey: '8' },
-      { id: 'commits', label: 'Commits', count: commitRows.filter(row => row.sha !== undefined).length, hotkey: '9' },
-      { id: 'explorer', label: 'Explorer', count: Object.keys(codes).length, hotkey: '0' },
-      { id: 'run', label: 'Run', count: allJobs.filter(job => job.status === 'running').length, hotkey: 'u' },
+      { id: 'changes', label: 'Changes', count: touched.filter(touch => touch.edits > 0).length, hotkey: '4' },
+      { id: 'tests', label: 'Tests', count: runs.length, hotkey: '5' },
       { id: 'git', label: 'Git', count: gitState?.files.length ?? 0, hotkey: 'g' },
-      { id: 'search', label: 'Search', count: found?.hits.length ?? 0, hotkey: 'f' },
+      { id: 'find', label: 'Find', count: mode === 'text' ? found?.hits.length ?? 0 : Object.keys(codes).length, hotkey: 'f' },
+      { id: 'run', label: 'Run', count: allJobs.filter(job => job.status === 'running').length, hotkey: 'u' },
     ]
 
     startTicking($, now)
@@ -2663,7 +2553,7 @@ export const register: Register = on => {
                 await update($, tabAtom, () => one.id)
                 // A tool's tab takes the typing at once; Enter there gives
                 // the keys back to the tabs.
-                const field = FIELDS[one.id]
+                const field = one.id === 'find' && mode === 'text' ? 'search-q' : FIELDS[one.id]
                 if (field !== undefined) {
                   await $.ui.focus({ requestId: PANE, key: field }).catch(() => undefined)
                 }

@@ -18,20 +18,7 @@ export type Note = {
   isOk?: boolean
 }
 
-export type Tab =
-  | 'now'
-  | 'notes'
-  | 'pictures'
-  | 'activity'
-  | 'timeline'
-  | 'context'
-  | 'tests'
-  | 'files'
-  | 'commits'
-  | 'explorer'
-  | 'run'
-  | 'git'
-  | 'search'
+export type Tab = 'now' | 'notes' | 'pictures' | 'changes' | 'tests' | 'git' | 'find' | 'run'
 
 export type ActKind = 'read' | 'edit' | 'run' | 'search' | 'web' | 'agent' | 'tool'
 export type ActStatus = 'runs' | 'ok' | 'failed'
@@ -61,22 +48,6 @@ export type Turn = {
   reason?: 'answer' | 'aborted' | 'refusal' | 'error'
   calls: number
   failed: number
-  /** Tokens in the context window when it ended. */
-  context?: number
-  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
-}
-
-/** The context window and spend as the session last reported them. */
-export type Meter = {
-  tokens?: number
-  window: number
-  percent?: number
-  usd?: number
-  /** The autocompact buffer: compaction comes at window minus this. */
-  buffer?: number
-  categories: { name: string; tokens: number }[]
-  limits: { kind: string; percentUsed: number }[]
-  at: number
 }
 
 /** One test run read from a test command's output. */
@@ -93,7 +64,7 @@ export type TestRun = {
 }
 
 /** How often a file was read and edited. */
-export type Touch = { file: string; reads: number; edits: number; at: number }
+export type Touch = { file: string; reads: number; edits: number; at: number; added?: number; removed?: number }
 
 /** A file open in the Explorer's preview. */
 export type Preview = {
@@ -216,13 +187,11 @@ declare module 'claude-code' {
       plan: Shaped<Plan | null>
       notes: Shaped<Note[]>
       activity: Shaped<Act[]>
-      changed: Shaped<string[]>
       pictures: Shaped<Picture[]>
       diagrams: Shaped<Diagram[]>
       diff: Shaped<Diff | null>
       lanes: Shaped<Lane[]>
       turns: Shaped<Turn[]>
-      meter: Shaped<Meter | null>
       tests: Shaped<TestRun[]>
       touches: Shaped<Touch[]>
       commits: Shaped<CommitRow[]>
@@ -239,6 +208,8 @@ declare module 'claude-code' {
       search: Shaped<Search | null>
       picked: string | null
       tab: Tab
+      /** What the Find tab searches: file names or text. */
+      findMode: 'files' | 'text'
       showEarlier: boolean
       openNote: string | null
     }
