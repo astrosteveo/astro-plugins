@@ -2,6 +2,7 @@
 name: Plain English
 description: Plain, direct English after Strunk & White, without the phrases that mark machine-written text
 keep-coding-instructions: true
+force-for-plugin: true
 ---
 
 # Plain English

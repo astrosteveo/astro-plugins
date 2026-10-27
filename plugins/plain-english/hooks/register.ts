@@ -67,15 +67,15 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Every agent the session starts writes under the style too, while the style is chosen. A hook
-  // that fails leaves the spawn as it was, so a fault here never stops the work.
+  // Every agent the session starts writes under the style too. The style is forced while the mod is
+  // on, so no setting is checked. A hook that fails leaves the spawn as it was, so a fault here
+  // never stops the work.
   on('agent.spawn', async ($, e, next) => {
     // A resumed run keeps its prompt, and one that holds the rules already is left as it is.
     if (e.resume !== undefined || hasRules(e.prompt)) return next(e)
     const file = await $.fs.read(`${$.plugin.root}/${STYLE_FILE}`)
     const style = typeof file === 'string' ? parseStyle(file) : undefined
     if (style === undefined) return next(e)
-    if ((await $.settings.read({ key: 'outputStyle' })) !== `${$.plugin.name}:${style.name}`) return next(e)
     return next({ ...e, prompt: withRules(e.prompt, style.body, e.fork) })
   }).catch((_, e, next) => next(e))
 
