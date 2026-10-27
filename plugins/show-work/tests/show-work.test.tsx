@@ -1663,7 +1663,7 @@ test('letting go of a drag puts a marker in the prompt, and a later drag takes i
   expect(await ui.find({ type: 'Button', key: 'chip-clear' })).toBeUndefined()
   await ui.post({ id: 'a.ts', from: 1, to: 2 }, { in: 'viewer-source' })
   expect(filled).toEqual(['[a.ts lines 2 to 3] '])
-  expect((await ui.find({ type: 'Text', text: /in your prompt/ }))?.text).toBe('in your prompt: lines 2 to 3')
+  expect((await ui.find({ type: 'Text', text: /in your prompt/ }))?.text).toBe('in your prompt: lines 2 to 3 · alt-click extends')
   // The person types after it; the next drag swaps the marker and keeps the words.
   draft = { text: '[a.ts lines 2 to 3] why', cursor: 23 }
   await ui.post({ id: 'a.ts', from: 0, to: 0 }, { in: 'viewer-source' })

@@ -141,7 +141,7 @@ export function Viewer({
       <Box flexDirection="row" height={1} columnGap={2}>
         <Box flexGrow={1} flexShrink={1}>
           <Text dimColor wrap="truncate-end">
-            {sel === null ? 'click or drag lines to quote them' : `in your prompt: ${label}`}
+            {sel === null ? 'click or drag lines to quote them' : `in your prompt: ${label} · alt-click extends`}
           </Text>
         </Box>
         {sel !== null && (
