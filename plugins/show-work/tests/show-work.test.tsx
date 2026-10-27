@@ -1663,7 +1663,7 @@ test('letting go of a drag puts a marker in the prompt, and a later drag takes i
   expect(await ui.find({ type: 'Button', key: 'chip-clear' })).toBeUndefined()
   await ui.post({ id: 'a.ts', from: 1, to: 2 }, { in: 'viewer-source' })
   expect(filled).toEqual(['[a.ts lines 2 to 3] '])
-  expect((await ui.find({ type: 'Text', text: /In your prompt/ }))?.text).toBe('In your prompt: lines 2 to 3')
+  expect((await ui.find({ type: 'Text', text: /in your prompt/ }))?.text).toBe('in your prompt: lines 2 to 3')
   // The person types after it; the next drag swaps the marker and keeps the words.
   draft = { text: '[a.ts lines 2 to 3] why', cursor: 23 }
   await ui.post({ id: 'a.ts', from: 0, to: 0 }, { in: 'viewer-source' })
@@ -1673,6 +1673,12 @@ test('letting go of a drag puts a marker in the prompt, and a later drag takes i
   await ui.press({ key: 'chip-clear' })
   expect(filled.at(-1)).toBe(' why')
   expect(await ui.find({ type: 'Button', key: 'chip-clear' })).toBeUndefined()
+  // A click on the one line picked puts it back: the viewer posts a clear, and the marker leaves the box.
+  await ui.post({ id: 'a.ts', from: 1, to: 1 }, { in: 'viewer-source' })
+  draft = { text: '[a.ts line 2] why', cursor: 17 }
+  await ui.post({ id: 'a.ts', clear: true }, { in: 'viewer-source' })
+  expect(filled.at(-1)).toBe(' why')
+  expect((await ui.find({ type: 'Text', text: /in your prompt/ }))).toBeUndefined()
   // A drag taken in another file puts nothing in the prompt.
   const before = filled.length
   await ui.post({ id: 'other.ts', from: 0, to: 0 }, { in: 'viewer-source' })

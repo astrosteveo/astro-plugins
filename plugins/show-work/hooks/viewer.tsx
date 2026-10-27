@@ -14,7 +14,16 @@ export type ViewerProps = {
   sel: { from: number; to: number } | null
 }
 
-type Live = { rows: number[]; id: string; drag: { a: number; b: number } | null; from: string; moved: boolean }
+type Live = {
+  rows: number[]
+  id: string
+  sel: { from: number; to: number } | null
+  // What was just picked, drawn until the hooks hand back the same as `sel`: no flicker back to the old pick.
+  hold: { from: number; to: number } | null | undefined
+  drag: { a: number; b: number } | null
+  from: string
+  moved: boolean
+}
 type State = { live: Live }
 
 const Viewer: ClientModule<ViewerProps, State> = (props, surface) => {
@@ -25,13 +34,19 @@ const Viewer: ClientModule<ViewerProps, State> = (props, surface) => {
   const last = isDiff ? 0 : props.startLine + lines.length - 1
   const rows = lineRows(lines, surface.columns - 1 - gutterWidth(isDiff ? lines.length : last, isDiff), props.isWrapped)
 
-  const drag = surface.state?.live.drag ?? null
-  const range = drag === null ? props.sel : { from: Math.min(drag.a, drag.b), to: Math.max(drag.a, drag.b) }
-
   // The listener is set once, on the first draw; `live` holds what it reads.
-  const live = surface.state?.live ?? { rows, id: props.id, drag: null as { a: number; b: number } | null, from: '', moved: false }
+  const live = surface.state?.live ?? { rows, id: props.id, sel: props.sel, hold: undefined as { from: number; to: number } | null | undefined, drag: null as { a: number; b: number } | null, from: '', moved: false }
   live.rows = rows
   live.id = props.id
+  live.sel = props.sel
+  const same = (a: { from: number; to: number } | null, b: { from: number; to: number } | null) =>
+    a === b || (a !== null && b !== null && a.from === b.from && a.to === b.to)
+  if (live.hold !== undefined && same(live.hold, props.sel)) {
+    live.hold = undefined
+  }
+  const drag = live.drag
+  const range = drag !== null ? { from: Math.min(drag.a, drag.b), to: Math.max(drag.a, drag.b) } : live.hold !== undefined ? live.hold : props.sel
+
   if (surface.state === undefined) {
     surface.onPointer(event => {
       if (event.button !== undefined && event.button !== 'left') {
@@ -49,9 +64,21 @@ const Viewer: ClientModule<ViewerProps, State> = (props, surface) => {
       } else if (event.type === 'up' && live.drag !== null) {
         const { a } = live.drag
         live.drag = null
-        // A click that goes nowhere picks nothing.
+        const pick = (from: number, to: number) => {
+          live.hold = { from, to }
+          surface.post({ id: live.id, from, to })
+        }
         if (live.moved) {
-          surface.post({ id: live.id, from: Math.min(a, at), to: Math.max(a, at) })
+          pick(Math.min(a, at), Math.max(a, at))
+        } else if (live.sel !== null && live.sel.from === at && live.sel.to === at) {
+          // A click on the one line picked puts it back.
+          live.hold = null
+          surface.post({ id: live.id, clear: true })
+        } else if ((event.shift === true || event.alt === true) && live.sel !== null) {
+          // Alt-click (shift-click, where the terminal passes it on) stretches the pick from where it began to this line.
+          pick(Math.min(live.sel.from, at), Math.max(live.sel.from, at))
+        } else {
+          pick(at, at)
         }
       }
       surface.setState({ live })

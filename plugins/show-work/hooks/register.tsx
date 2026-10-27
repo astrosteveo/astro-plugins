@@ -2201,6 +2201,10 @@ export const register: Register = on => {
       await update($, preview, () => loaded)
       await update($, findMode, () => 'files')
       await update($, viewSel, () => null)
+    } else if (typeof data.id === 'string' && data.clear === true) {
+      // A click on what was picked puts it back: the marker leaves the prompt too.
+      await dropRef($)
+      await update($, viewSel, () => null)
     } else if (typeof data.id === 'string' && typeof data.from === 'number' && typeof data.to === 'number') {
       const sel = { id: data.id, from: data.from, to: data.to }
       await update($, viewSel, () => sel)

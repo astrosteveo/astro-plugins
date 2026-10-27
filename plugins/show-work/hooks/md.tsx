@@ -38,9 +38,19 @@ const Block: ClientModule<MdProps, State> = (props, surface) => {
         live.moved = live.moved || here !== live.from
       } else if (event.type === 'up' && live.drag) {
         live.drag = false
+        const id = `${live.props.file}#md`
+        const sel = live.props.sel
+        const at = live.props.index
         if (live.moved) {
-          const end = blockAt(live.props.heights, live.props.index, event.y)
-          surface.post({ id: `${live.props.file}#md`, from: Math.min(live.props.index, end), to: Math.max(live.props.index, end) })
+          const end = blockAt(live.props.heights, at, event.y)
+          surface.post({ id, from: Math.min(at, end), to: Math.max(at, end) })
+        } else if (sel !== null && sel.from === at && sel.to === at) {
+          // A click on the one block picked puts it back.
+          surface.post({ id, clear: true })
+        } else if ((event.shift === true || event.alt === true) && sel !== null) {
+          surface.post({ id, from: Math.min(sel.from, at), to: Math.max(sel.from, at) })
+        } else {
+          surface.post({ id, from: at, to: at })
         }
       }
     })

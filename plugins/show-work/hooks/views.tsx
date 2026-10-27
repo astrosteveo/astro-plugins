@@ -137,14 +137,21 @@ export function Viewer({
   // What the drag put in the prompt rides above the lines, where a long file cannot push it off screen.
   return (
     <Box flexDirection="column">
-      {sel !== null && (
-        <Box flexDirection="row" columnGap={2}>
-          <Text dimColor>In your prompt: {label}</Text>
-          <Button key="chip-clear" plain dimColor onPress={onClearChip}>
-            ✗ drop it
-          </Button>
+      {/* One row, always there and never wrapped, so picking never moves the lines under the pointer. */}
+      <Box flexDirection="row" height={1} columnGap={2}>
+        <Box flexGrow={1} flexShrink={1}>
+          <Text dimColor wrap="truncate-end">
+            {sel === null ? 'click or drag lines to quote them' : `in your prompt: ${label}`}
+          </Text>
         </Box>
-      )}
+        {sel !== null && (
+          <Box flexShrink={0}>
+            <Button key="chip-clear" plain dimColor onPress={onClearChip}>
+              ✗ drop it
+            </Button>
+          </Box>
+        )}
+      </Box>
       <Client
         key={`viewer-${format}`}
         module="./viewer.tsx"
