@@ -1127,8 +1127,8 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
   await ui.unmount()
 })
 
-import { askText, duration, joinPath } from '../hooks/register'
-import { locateSelection } from '../hooks/explorer'
+import { askDiffText, askText, duration, joinPath } from '../hooks/register'
+import { locateDiffRows, locateSelection, splitFences } from '../hooks/explorer'
 import {
   base64,
   patchCounts,
@@ -1701,5 +1701,68 @@ test('pressing ask puts the selected lines in the prompt, or says what to do', a
   picked = { text: 'two' }
   await ui.press({ key: 'ex-ask' })
   expect(filled).toEqual(['About `a.ts`, line 2:\n```ts\ntwo\n```\n'])
+  await ui.unmount()
+})
+
+test('markdown splits into prose and fenced code, and a diff pick finds its rows', () => {
+  expect(splitFences('Intro\n\n```ts\nconst a = 1\n```\n\nOutro\n')).toEqual([
+    { text: 'Intro\n\n' },
+    { code: 'const a = 1', lang: 'ts' },
+    { text: '\n\nOutro\n' },
+  ])
+  expect(splitFences('no fences here')).toEqual([{ text: 'no fences here' }])
+  expect(splitFences('````md\n```\nnested\n```\n````\n')[0]).toEqual({ code: '```\nnested\n```', lang: 'md' })
+  const rows = ['-old line one', '+new line one', ' same', '+added']
+  // Whole rows come back with their markers, though the pick had none.
+  expect(locateDiffRows(rows, 'line one\nnew line')).toBe('-old line one\n+new line one')
+  expect(locateDiffRows(rows, 'same')).toBe(' same')
+  expect(locateDiffRows(rows, 'nowhere')).toBeUndefined()
+  expect(askDiffText('src/a.ts', '-a\n+b')).toBe('About my change to `src/a.ts`:\n```diff\n-a\n+b\n```\n')
+})
+
+test('the wrap button turns wrapping off and on in the preview and the diff', async ($, on) => {
+  engine(on)
+  on('process.run', (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : e.argv.includes('HEAD') ? DIFF : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('fs.read', () => ({ value: 'one\ntwo\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/a.ts', old_string: 'a', new_string: 'b' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-a.ts' })
+  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('wrap')
+  expect((await ui.find({ type: 'Button', key: 'ex-wrap' }))?.text).toBe('wrap: on')
+  await ui.press({ key: 'ex-wrap' })
+  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('truncate-end')
+  expect((await ui.find({ type: 'Button', key: 'ex-wrap' }))?.text).toBe('wrap: off')
+  await ui.press({ key: 'tab-changes' })
+  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('truncate-end')
+  await ui.press({ key: 'diff-wrap' })
+  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('wrap')
+  await ui.unmount()
+})
+
+test('a markdown fence draws as highlighted code between prose', async ($, on) => {
+  engine(on)
+  on('process.run', (_, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv.includes('ls-files') ? 'logo.png\nREADME.md\n' : e.argv.includes('identify') ? '64 32' : '',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/t' : undefined }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.read', () => ({ value: 'Text\n\n```ts\nconst a = 1\n```\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-README.md' })
+  const code = await ui.find({ type: 'Code' })
+  expect(code?.props).toMatchObject({ source: 'const a = 1', language: 'ts' })
+  expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('Text\n\n')
   await ui.unmount()
 })

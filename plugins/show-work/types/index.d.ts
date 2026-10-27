@@ -80,6 +80,8 @@ export type Preview = {
   /** A markdown file, drawn as markdown; `isRaw` shows its source instead. */
   isMarkdown?: boolean
   isRaw?: boolean
+  /** An image file, drawn as a picture: its one entry in `images`. */
+  isImage?: boolean
   /** The local pictures it draws, each copied into the cache as a PNG. */
   images?: { ref: string; alt: string; file: string; width: number; height: number }[]
 }
@@ -189,6 +191,8 @@ declare module 'claude-code' {
       /** What the Find tab searches: file names or text. */
       findMode: 'files' | 'text'
       showEarlier: boolean
+      /** Whether the viewers wrap long lines or cut them at the edge. */
+      wrapLines: boolean
       openNote: string | null
     }
   }

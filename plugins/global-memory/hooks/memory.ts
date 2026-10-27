@@ -115,3 +115,21 @@ The index below is loaded at the start of every session. When an entry looks rel
 
 ${listing}`
 }
+
+// A save call's input as its row prints it: the long description cut to a
+// line and the body by its size, where the engine would print all of it.
+export function briefWrite(input: unknown) {
+  const given = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
+  const brief: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(given)) {
+    if (key === 'body' && typeof value === 'string') {
+      brief[key] = `${value.length} characters`
+    } else if (key === 'description' && typeof value === 'string' && value.length > 80) {
+      brief[key] = `${value.slice(0, 79).trimEnd()}…`
+    } else {
+      brief[key] = value
+    }
+  }
+
+  return brief
+}

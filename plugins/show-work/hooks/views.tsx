@@ -4,7 +4,7 @@
 import type { Color, Elements, RenderElement } from 'claude-code'
 
 import type { GitFile, GitState, Preview, Search, TestRun, Touch } from '../types'
-import { matches, treeRows } from './explorer'
+import { matches, splitFences, treeRows } from './explorer'
 
 export type Kit = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'> & {
   Raster?: Elements['terminal']['Raster']
@@ -93,14 +93,43 @@ export type ExplorerKit = Kit & {
 const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
 const LOCAL_LINK = /\]\(\s*<?(?![a-z][a-z0-9+.-]*:|#|\/\/)([^)\s>]+)/gi
 
+// An image file as a picture, sized to the pane; elsewhere its name and size.
+function imageBody(
+  { Box, Text, Image }: ExplorerKit,
+  shown: Preview,
+  data: { place: (size: { width: number; height: number }) => { columns: number; rows: number } },
+) {
+  const one = shown.images?.[0]
+  if (one === undefined) {
+    return <Text dimColor>No picture.</Text>
+  }
+
+  return (
+    <Box flexDirection="column">
+      {Image === undefined ? (
+        <Text dimColor>An image, {one.width}x{one.height}; this surface cannot draw it.</Text>
+      ) : (
+        <Image key="view-pic" source={{ file: one.file, format: 'png' }} {...data.place(one)} alt={one.alt || ' '} />
+      )}
+      <Text dimColor>
+        {one.width}x{one.height}
+      </Text>
+    </Box>
+  )
+}
+
 // A markdown file as the screen draws it: its prose as markdown, its local
 // pictures as pictures, in the order the file has them.
 function markdownBody(
-  { Box, Text, Markdown, Image }: ExplorerKit,
+  { Box, Text, Markdown, Image, Code }: ExplorerKit,
   shown: Preview,
-  data: { place: (size: { width: number; height: number }) => { columns: number; rows: number }; onLink: (href: string) => void },
+  data: { wraps: boolean; place: (size: { width: number; height: number }) => { columns: number; rows: number }; onLink: (href: string) => void },
 ) {
-  const parts: ({ text: string } | { image: NonNullable<Preview['images']>[number] })[] = []
+  const parts: (
+    | { text: string }
+    | { image: NonNullable<Preview['images']>[number] }
+    | { code: string; lang: string }
+  )[] = []
   let at = 0
   let text = ''
   for (const match of shown.source.matchAll(MD_IMAGE)) {
@@ -114,12 +143,22 @@ function markdownBody(
     text = ''
   }
   parts.push({ text: text + shown.source.slice(at) })
+  // Fenced code is drawn as highlighted code; the prose between as markdown.
+  const drawn: typeof parts = parts.flatMap((part): typeof parts => ('text' in part ? splitFences(part.text) : [part]))
   const links = [...new Set([...shown.source.matchAll(LOCAL_LINK)].map(one => one[1] ?? ''))].filter(one => one !== '')
 
   return (
     <Box flexDirection="column">
-      {parts.map((part, n) =>
-        'image' in part ? (
+      {drawn.map((part, n) =>
+        'code' in part ? (
+          <Box key={`md-code-${n}`} flexDirection="column" marginY={1}>
+            <Code
+              source={part.code === '' ? ' ' : part.code}
+              {...(part.lang === '' ? {} : { language: part.lang })}
+              wrap={data.wraps ? 'wrap' : 'truncate-end'}
+            />
+          </Box>
+        ) : 'image' in part ? (
           Image === undefined ? null : (
             <Box key={`md-img-${n}`} flexDirection="column">
               <Image
@@ -163,6 +202,8 @@ export function explorerView(
     onDiff: (file: string) => () => void
     onRefresh: () => void
     onRaw: () => void
+    wraps: boolean
+    onWrap: () => void
     onLink: (href: string) => void
     place: (size: { width: number; height: number }) => { columns: number; rows: number }
   },
@@ -195,7 +236,11 @@ export function explorerView(
             <Text weight="bold">{shown.file}</Text>
             <Text dimColor>
               {' '}
-              {shown.hit === undefined ? `${shown.lines} lines` : `line ${shown.hit} of ${shown.lines}`}
+              {shown.isImage === true
+                ? 'image'
+                : shown.hit === undefined
+                  ? `${shown.lines} lines`
+                  : `line ${shown.hit} of ${shown.lines}`}
             </Text>
             {marks(shown.file)}
           </Text>
@@ -203,9 +248,11 @@ export function explorerView(
             <Button key="ex-mention" variant="primary" hotkey="m" onPress={data.onMention(shown.file)}>
               @ mention
             </Button>
-            <Button key="ex-ask" variant="primary" hotkey="a" onPress={data.onAsk(shown.file)}>
-              ask about selection
-            </Button>
+            {shown.isImage !== true && shown.isBinary !== true && (
+              <Button key="ex-ask" variant="primary" hotkey="a" onPress={data.onAsk(shown.file)}>
+                ask about selection
+              </Button>
+            )}
             {code !== undefined && code !== '??' && (
               <Button key="ex-diff" variant="secondary" hotkey="d" onPress={data.onDiff(shown.file)}>
                 diff
@@ -216,6 +263,11 @@ export function explorerView(
                 {shown.isRaw === true ? 'rendered' : 'source'}
               </Button>
             )}
+            {shown.isImage !== true && shown.isBinary !== true && (shown.isMarkdown !== true || shown.isRaw === true) && (
+              <Button key="ex-wrap" plain dimColor hotkey="w" onPress={data.onWrap}>
+                wrap: {data.wraps ? 'on' : 'off'}
+              </Button>
+            )}
             <Button key="ex-close" plain dimColor hotkey="x" onPress={data.onClose}>
               ✗ close
             </Button>
@@ -223,10 +275,17 @@ export function explorerView(
         </Box>
         {shown.isBinary ? (
           <Text dimColor>A binary file: nothing to preview.</Text>
+        ) : shown.isImage === true ? (
+          imageBody(kit, shown, data)
         ) : shown.isMarkdown === true && shown.isRaw !== true ? (
           markdownBody(kit, shown, data)
         ) : (
-          <Code source={shown.source === '' ? ' ' : shown.source} path={shown.file} startLine={shown.start ?? 1} />
+          <Code
+            source={shown.source === '' ? ' ' : shown.source}
+            path={shown.file}
+            startLine={shown.start ?? 1}
+            wrap={data.wraps ? 'wrap' : 'truncate-end'}
+          />
         )}
         {shown.isCut && (
           <Text dimColor>

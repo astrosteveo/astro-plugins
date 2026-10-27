@@ -26,7 +26,7 @@ import type {
   Tab,
 } from '../types'
 import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
-import { locateSelection, parseGit, parseHits, parseStatus, plain } from './explorer'
+import { locateDiffRows, locateSelection, parseGit, parseHits, parseStatus, plain } from './explorer'
 import {
   FIND_BROWSER,
   LONGEST,
@@ -109,6 +109,8 @@ const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
 // What the Find tab searches: file names, or the files' text.
 const findMode = atom({ plugin: 'show-work', key: 'findMode' } as const, 'files')
 const showEarlier = atom({ plugin: 'show-work', key: 'showEarlier' } as const, false)
+// Long lines in the viewers: wrapped (true) or cut at the edge.
+const wrapLines = atom({ plugin: 'show-work', key: 'wrapLines' } as const, true)
 // The note opened to show its why, detail and actions; null when none is.
 const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
@@ -1055,6 +1057,14 @@ export function askText(file: string, at: { from?: number | undefined; to?: numb
   return `About \`${file}\`${where}:\n${fence}${lang}\n${at.text}\n${fence}\n`
 }
 
+// What the prompt starts with to ask about part of a change: the file and the
+// diff rows picked, with their + and - kept.
+export function askDiffText(file: string, rows: string) {
+  const fence = rows.includes('```') ? '````' : '```'
+
+  return `About my change to \`${file}\`:\n${fence}diff\n${rows}\n${fence}\n`
+}
+
 const MARKDOWN = /\.(md|markdown|mdx)$/i
 const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
 const MD_IMAGES_MOST = 8
@@ -1101,6 +1111,23 @@ async function markdownImages($: EngineInterface, cwd: string, file: string, tex
 }
 
 async function loadPreview($: EngineInterface, cwd: string, file: string, hit?: number): Promise<Preview> {
+  if (IMAGE.test(file)) {
+    const path = absolute(file, cwd)
+    const made = (await $.fs.exists(path)) ? await freeze($, { src: path }, `view-${hashOf(path)}`, nameOf(file), 'read') : 'missing'
+    if (typeof made === 'string') {
+      return { file, source: '', lines: 0, isCut: false, isBinary: true }
+    }
+
+    return {
+      file,
+      source: '',
+      lines: 0,
+      isCut: false,
+      isBinary: false,
+      isImage: true,
+      images: [{ ref: file, alt: nameOf(file), file: made.file, width: made.width, height: made.height }],
+    }
+  }
   const text = await $.fs.read(absolute(file, cwd)).catch(() => '')
   const source = typeof text === 'string' ? text : ''
   if (source.includes('\u0000')) {
@@ -1914,6 +1941,7 @@ export const register: Register = on => {
     const pickedId = await read($, picked)
     const tab = await read($, tabAtom)
     const mode = await read($, findMode)
+    const wraps = await read($, wrapLines)
     const isShowingEarlier = await read($, showEarlier)
     const openId = await read($, openNote)
     const shownDiff = await read($, diff)
@@ -2034,12 +2062,29 @@ export const register: Register = on => {
       await update($, diff, () => loaded)
     }
 
+    const toggleWrap = () => update($, wrapLines, is => !is)
+
+    const askDiff = (file: string, rows: string[]) => async () => {
+      const picked = await $.ui.selection()
+      if (picked === undefined || picked.text.trim() === '') {
+        await $.ui.toast('Drag over some of the diff first, then press a.')
+
+        return
+      }
+      await $.prompt.fill({ text: askDiffText(file, locateDiffRows(rows, picked.text) ?? picked.text.trim()), mode: 'insert' })
+    }
+
     const diffView = (shownDiff: Diff) => (
       <Box flexDirection="column">
         {shownDiff.lines.length === 0 ? (
           <Text dimColor>No changes against git HEAD.</Text>
         ) : (
-          <Code source={shownDiff.lines.join('\n')} format="diff" path={shownDiff.file} />
+          <Code
+            source={shownDiff.lines.join('\n')}
+            format="diff"
+            path={shownDiff.file}
+            wrap={wraps ? 'wrap' : 'truncate-end'}
+          />
         )}
         {shownDiff.isCut && <Text dimColor>… cut at {DIFF_LINES} lines</Text>}
       </Box>
@@ -2125,6 +2170,8 @@ export const register: Register = on => {
           },
           onClose: () => update($, preview, () => null),
           onRaw: () => update($, preview, one => (one === null ? one : { ...one, isRaw: one.isRaw !== true })),
+          wraps,
+          onWrap: toggleWrap,
           onLink: href => {
             const target = joinPath(absolute(shownPreview?.file ?? '', cwd).replace(/\/[^/]*$/, '') || '/', decodeURI(href.split('#')[0] ?? ''))
             void loadPreview($, cwd, relative(target, cwd)).then(loaded => update($, preview, () => loaded))
@@ -2325,6 +2372,16 @@ export const register: Register = on => {
                 </Button>
               ))}
             </Box>
+            {shownDiff !== null && (
+              <Box flexDirection="row" columnGap={2}>
+                <Button key="diff-ask" variant="primary" hotkey="a" onPress={askDiff(shownDiff.file, shownDiff.lines)}>
+                  ask about selection
+                </Button>
+                <Button key="diff-wrap" plain dimColor hotkey="w" onPress={toggleWrap}>
+                  wrap: {wraps ? 'on' : 'off'} <Text dimColor>w</Text>
+                </Button>
+              </Box>
+            )}
             {shownDiff === null ? <Text dimColor>Press a file for its diff.</Text> : diffView(shownDiff)}
           </Box>
         )

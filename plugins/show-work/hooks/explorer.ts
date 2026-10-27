@@ -168,3 +168,37 @@ export function locateSelection(source: string, text: string) {
 
   return { from: undefined, to: undefined, text: picked }
 }
+
+// Markdown cut into prose and fenced code, in order, so the fences can be
+// drawn as highlighted code and the prose as markdown.
+export function splitFences(text: string) {
+  const parts: ({ text: string } | { code: string; lang: string })[] = []
+  const fence = /^(`{3,})[ \t]*([\w+#.-]*)[^\n]*\n([\s\S]*?)^\1[ \t]*$/gm
+  let at = 0
+  for (const match of text.matchAll(fence)) {
+    parts.push({ text: text.slice(at, match.index) }, { code: (match[3] ?? '').replace(/\n$/, ''), lang: match[2] ?? '' })
+    at = (match.index ?? 0) + match[0].length
+  }
+  parts.push({ text: text.slice(at) })
+
+  return parts.filter(part => !('text' in part) || part.text.trim() !== '')
+}
+
+// The diff rows a selection covers, whole and with their + or -. The drawn
+// diff keeps its gutter and markers out of a selection, so the picked text is
+// matched against each row's text: the first picked line may be the tail of its
+// row, the last the head of its own.
+export function locateDiffRows(rows: string[], text: string) {
+  const picked = text.replace(/\s+$/, '').split('\n').map(line => line.trim())
+  if (picked.every(line => line === '')) {
+    return undefined
+  }
+  const body = rows.map(row => row.slice(1))
+  for (let at = 0; at + picked.length <= rows.length; at += 1) {
+    if (picked.every((line, k) => (body[at + k] ?? '').includes(line))) {
+      return rows.slice(at, at + picked.length).join('\n')
+    }
+  }
+
+  return undefined
+}
