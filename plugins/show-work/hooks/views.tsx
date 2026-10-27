@@ -4,7 +4,7 @@
 import type { Color, Elements, RenderElement } from 'claude-code'
 
 import type { GitFile, GitState, Preview, Search, TestRun, Touch } from '../types'
-import { matches, splitFences, treeRows } from './explorer'
+import { hitItems, matches, mdBlocks, splitFences, treeRows } from './explorer'
 
 export type Kit = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'> & {
   Raster?: Elements['terminal']['Raster']
@@ -182,6 +182,82 @@ function imageBody(
 
 // A markdown file as the screen draws it: its prose as markdown, its local
 // pictures as pictures, in the order the file has them.
+function markdownBlocks(
+  { Box, Text, Button, Image, Client }: ExplorerKit,
+  shown: Preview,
+  data: {
+    onLink: (href: string) => void
+    place: (size: { width: number; height: number }) => { columns: number; rows: number }
+    rows: number[]
+    sel: { from: number; to: number } | null
+  },
+) {
+  const blocks = mdBlocks(shown.source, shown.images?.map(one => one.ref) ?? [])
+  const heights = blocks.map((block, index) => {
+    if (block.kind !== 'image') {
+      return data.rows[index] ?? 1
+    }
+    const picture = shown.images?.find(one => one.ref === block.ref)
+
+    return (picture === undefined || Image === undefined ? 0 : data.place(picture).rows) + (block.alt === '' ? 0 : 1)
+  })
+
+  // A block is drawn in a region of its own, which cannot answer a link; links to
+  // files of the project are listed below the file instead.
+  const links = [...new Set([...shown.source.matchAll(LOCAL_LINK)].map(one => one[1] ?? ''))].filter(one => one !== '')
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      {blocks.map((block, index) => {
+        if (block.kind === 'image') {
+          const picture = shown.images?.find(one => one.ref === block.ref)
+          if (picture === undefined || Image === undefined) {
+            return null
+          }
+
+          return (
+            <Box key={`md-img-${index}`} flexDirection="column">
+              <Image
+                key={`md-pic-${index}`}
+                source={{ file: picture.file, format: 'png' }}
+                {...data.place(picture)}
+                alt={block.alt || ' '}
+              />
+              {block.alt !== '' && <Text dimColor>{block.alt}</Text>}
+            </Box>
+          )
+        }
+
+        return Client === undefined ? null : (
+          <Client
+            key={`md-block-${index}`}
+            module="./md.tsx"
+            props={{
+              file: shown.file,
+              index,
+              kind: block.kind,
+              text: block.text,
+              lang: block.kind === 'code' ? block.lang : '',
+              heights,
+              sel: data.sel,
+            }}
+          />
+        )
+      })}
+      {links.length > 0 && (
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          <Text dimColor>links:</Text>
+          {links.slice(0, 12).map(href => (
+            <Button key={`md-link-${href}`} plain onPress={() => data.onLink(href)}>
+              → {href}
+            </Button>
+          ))}
+        </Box>
+      )}
+    </Box>
+  )
+}
+
 function markdownBody(
   { Box, Text, Markdown, Image, Code }: ExplorerKit,
   shown: Preview,
@@ -264,6 +340,9 @@ export function explorerView(
     onDiff: (file: string) => () => void
     onRefresh: () => void
     onRaw: () => void
+    // Rendered markdown, block by block: the rows each drew at, and the blocks dragged over.
+    mdRows: number[]
+    mdSel: { from: number; to: number } | null
     wraps: boolean
     onWrap: () => void
     // The lines dragged over, 0-based, and what the chip does with them.
@@ -343,7 +422,7 @@ export function explorerView(
         ) : shown.isImage === true ? (
           imageBody(kit, shown, data)
         ) : shown.isMarkdown === true && shown.isRaw !== true ? (
-          markdownBody(kit, shown, data)
+          kit.Client === undefined ? markdownBody(kit, shown, data) : markdownBlocks(kit, shown, { place: data.place, onLink: data.onLink, rows: data.mdRows, sel: data.mdSel })
         ) : (
           <Viewer
             kit={kit}
@@ -546,6 +625,9 @@ export function searchView(
     search: Search | null
     onSearch: (query: string) => () => void
     onOpen: (file: string, line?: number) => () => void
+    // Where the terminal has one: the list the pointer can drag over, and the rows dragged.
+    Client?: Elements['terminal']['Client']
+    sel: { from: number; to: number } | null
   },
 ): RenderElement {
   const found = data.search
@@ -576,6 +658,12 @@ export function searchView(
       </Box>
       {found === null || found.query === '' ? (
         <Text dimColor>Type a word or a pattern and press Enter. A hit opens its file at that line.</Text>
+      ) : data.Client !== undefined ? (
+        <data.Client
+          key="search-hits"
+          module="./hits.tsx"
+          props={{ items: hitItems(found.hits), sel: data.sel }}
+        />
       ) : (
         <Box flexDirection="column">
           {[...byFile].slice(0, 40).map(([file, hits]) => (

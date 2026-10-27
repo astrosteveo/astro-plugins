@@ -202,3 +202,124 @@ export function locateDiffRows(rows: string[], text: string) {
 
   return undefined
 }
+
+// The rows of a search's result list: each file, then its first hits.
+export type HitItem =
+  | { kind: 'file'; file: string; count: number }
+  | { kind: 'hit'; file: string; line: number; text: string }
+
+export function hitItems(hits: readonly { file: string; line: number; text: string }[]) {
+  const byFile = new Map<string, { line: number; text: string }[]>()
+  for (const hit of hits) {
+    byFile.set(hit.file, [...(byFile.get(hit.file) ?? []), hit])
+  }
+
+  return [...byFile].slice(0, 40).flatMap(([file, list]): HitItem[] => [
+    { kind: 'file', file, count: list.length },
+    ...list.slice(0, 8).map((hit): HitItem => ({ kind: 'hit', file, line: hit.line, text: hit.text })),
+  ])
+}
+
+// What a row of the result list shows, as one line of text.
+export const hitRowText = (item: HitItem) =>
+  item.kind === 'file' ? `${item.file} ${item.count}` : `${String(item.line).padStart(5)} ${item.text}`
+
+// The hits a drag over the list picked, as a prompt: where each is and what it says.
+export function hitsQuote(query: string, items: HitItem[], from: number, to: number) {
+  const picked = items.slice(from, to + 1).filter((item): item is Extract<HitItem, { kind: 'hit' }> => item.kind === 'hit')
+  if (picked.length === 0) {
+    return undefined
+  }
+  const rows = picked.map(hit => `${hit.file}:${hit.line}: ${hit.text.trim()}`).join('\n')
+  const word = picked.length === 1 ? 'hit' : 'hits'
+
+  return {
+    marker: `[search "${query}" ${picked.length} ${word}]`,
+    text: `About ${picked.length === 1 ? 'this search hit' : 'these search hits'} for \`${query}\`:\n\`\`\`\n${rows}\n\`\`\`\n`,
+  }
+}
+
+// A markdown file cut into the blocks the viewer draws one by one: prose
+// (a paragraph, heading, list or table), fenced code, and the local pictures
+// it names, each with the source lines it came from, 0-based and inclusive.
+export type MdBlock =
+  | { kind: 'md'; text: string; from: number; to: number }
+  | { kind: 'code'; text: string; lang: string; from: number; to: number }
+  | { kind: 'image'; ref: string; alt: string; from: number; to: number }
+
+const IMAGE_MD = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
+
+export function mdBlocks(source: string, pictures: readonly string[] = []) {
+  const lines = source.split('\n')
+  const blocks: MdBlock[] = []
+  let para: { text: string[]; from: number } | undefined
+  const flush = (to: number) => {
+    if (para === undefined) {
+      return
+    }
+    const text = para.text.join('\n')
+    const base = para.from
+    let at = 0
+    const lineAt = (offset: number) => base + text.slice(0, offset).split('\n').length - 1
+    const prose = (end: number) => {
+      const piece = text.slice(at, end)
+      if (piece.trim() !== '') {
+        blocks.push({ kind: 'md', text: piece.trim(), from: lineAt(at + (piece.length - piece.trimStart().length)), to: lineAt(end) })
+      }
+    }
+    for (const match of text.matchAll(IMAGE_MD)) {
+      if (!pictures.includes(match[2] ?? '')) {
+        continue
+      }
+      prose(match.index ?? 0)
+      const line = lineAt(match.index ?? 0)
+      blocks.push({ kind: 'image', ref: match[2] ?? '', alt: match[1] ?? '', from: line, to: line })
+      at = (match.index ?? 0) + match[0].length
+    }
+    prose(text.length)
+    para = undefined
+    void to
+  }
+  for (let n = 0; n < lines.length; n += 1) {
+    const line = lines[n] ?? ''
+    const open = line.match(/^(`{3,})[ \t]*([\w+#.-]*)/)
+    if (open !== null) {
+      flush(n - 1)
+      const mark = open[1] ?? '```'
+      const body: string[] = []
+      let end = n + 1
+      while (end < lines.length && !new RegExp(`^${mark}[ \\t]*$`).test(lines[end] ?? '')) {
+        body.push(lines[end] ?? '')
+        end += 1
+      }
+      blocks.push({ kind: 'code', text: body.join('\n'), lang: open[2] ?? '', from: n, to: Math.min(end, lines.length - 1) })
+      n = end
+    } else if (line.trim() === '') {
+      flush(n - 1)
+    } else if (para === undefined) {
+      para = { text: [line], from: n }
+    } else {
+      para.text.push(line)
+    }
+  }
+  flush(lines.length - 1)
+
+  return blocks
+}
+
+// The block a row of a stack of blocks falls in, where `y` counts rows from the
+// top of block `start` (negative above it) and a row of gap lies between blocks.
+export function blockAt(heights: number[], start: number, y: number) {
+  let at = Math.max(0, Math.min(start, heights.length - 1))
+  let off = y
+  while (off < 0 && at > 0) {
+    at -= 1
+    off += (heights[at] ?? 1) + 1
+  }
+  while (at < heights.length - 1 && off >= (heights[at] ?? 1)) {
+    off -= (heights[at] ?? 1) + 1
+    at += 1
+  }
+
+  return at
+}

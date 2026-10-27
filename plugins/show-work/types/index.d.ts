@@ -195,6 +195,8 @@ declare module 'claude-code' {
       wrapLines: boolean
       /** The lines dragged over in a viewer, 0-based, and which viewer: a file path, or `diff:` and one. */
       /** Quoted lines waiting in the prompt behind a short marker, swapped in on send. */
+      /** The rows each block of the rendered markdown file drew at, as the blocks told. */
+      mdRows: { file: string; rows: number[] }
       refs: { marker: string; text: string }[]
       viewSel: { id: string; from: number; to: number } | null
       openNote: string | null

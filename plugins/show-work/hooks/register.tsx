@@ -27,7 +27,7 @@ import type {
 } from '../types'
 import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
 import { shownRows } from './lines'
-import { locateDiffRows, locateSelection, parseGit, parseHits, parseStatus, plain } from './explorer'
+import { hitItems, hitsQuote, mdBlocks, locateDiffRows, locateSelection, parseGit, parseHits, parseStatus, plain } from './explorer'
 import {
   FIND_BROWSER,
   LONGEST,
@@ -116,6 +116,8 @@ const wrapLines = atom({ plugin: 'show-work', key: 'wrapLines' } as const, true)
 const viewSel = atom({ plugin: 'show-work', key: 'viewSel' } as const, null)
 // Quoted lines behind the short markers in the prompt box, swapped in on send.
 const refs = atom({ plugin: 'show-work', key: 'refs' } as const, [])
+// The rows each block of the rendered markdown file drew at.
+const mdRows = atom({ plugin: 'show-work', key: 'mdRows' } as const, { file: '', rows: [] })
 // The note opened to show its why, detail and actions; null when none is.
 const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
@@ -1155,7 +1157,28 @@ export function askFromSel(
   sel: { id: string; from: number; to: number },
   pv: Preview | null,
   df: Diff | null,
+  found: Search | null = null,
 ): { label: string; text: string; marker: string } | undefined {
+  if (sel.id.endsWith('#md')) {
+    if (pv === null || `${pv.file}#md` !== sel.id) {
+      return undefined
+    }
+    const blocks = mdBlocks(pv.source, pv.images?.map(one => one.ref) ?? [])
+    const first = blocks[sel.from]
+    const last = blocks[sel.to]
+    if (first === undefined || last === undefined) {
+      return undefined
+    }
+    const text = pv.source.split('\n').slice(first.from, last.to + 1).join('\n')
+    const label = rangeLabel(first.from + 1, last.to + 1)
+
+    return { label, text: askText(pv.file, { from: first.from + 1, to: last.to + 1, text }), marker: `[${pv.file} ${label}]` }
+  }
+  if (sel.id === 'hits') {
+    const quote = found === null ? undefined : hitsQuote(found.query, hitItems(found.hits), sel.from, sel.to)
+
+    return quote === undefined ? undefined : { label: quote.marker, text: quote.text, marker: quote.marker }
+  }
   if (sel.id.startsWith('diff:')) {
     if (df === null || `diff:${df.file}` !== sel.id) {
       return undefined
@@ -2072,10 +2095,25 @@ export const register: Register = on => {
   // A drag in a viewer let go: its lines wait on the chip.
   on('ui.message', async ($, e, next) => {
     const data = (typeof e.data === 'object' && e.data !== null ? e.data : {}) as Record<string, unknown>
-    if (typeof data.id === 'string' && typeof data.from === 'number' && typeof data.to === 'number') {
+    if (typeof data.rows === 'number' && typeof data.index === 'number' && typeof data.file === 'string') {
+      // A block of rendered markdown says how tall it drew.
+      const { file, index, rows } = data as { file: string; index: number; rows: number }
+      await update($, mdRows, now => {
+        const kept = now.file === file ? [...now.rows] : []
+        kept[index] = rows
+
+        return { file, rows: kept }
+      })
+    } else if (typeof data.open === 'string') {
+      // A click on a search hit opens its file at that line.
+      const loaded = await loadPreview($, cwd, data.open, typeof data.line === 'number' ? data.line : undefined)
+      await update($, preview, () => loaded)
+      await update($, findMode, () => 'files')
+      await update($, viewSel, () => null)
+    } else if (typeof data.id === 'string' && typeof data.from === 'number' && typeof data.to === 'number') {
       const sel = { id: data.id, from: data.from, to: data.to }
       await update($, viewSel, () => sel)
-      const at = askFromSel(sel, await read($, preview), await read($, diff))
+      const at = askFromSel(sel, await read($, preview), await read($, diff), await read($, search))
       if (at !== undefined) {
         await fillRef($, at.marker, at.text)
       }
@@ -2096,6 +2134,7 @@ export const register: Register = on => {
     const mode = await read($, findMode)
     const wraps = await read($, wrapLines)
     const dragged = await read($, viewSel)
+    const blockRows = await read($, mdRows)
     const isShowingEarlier = await read($, showEarlier)
     const openId = await read($, openNote)
     const shownDiff = await read($, diff)
@@ -2351,6 +2390,8 @@ export const register: Register = on => {
           },
           place: size => fit(size, Math.min(255, e.props.bodyColumns), 18, tall),
           sel: dragged !== null && dragged.id === shownPreview?.file ? { from: dragged.from, to: dragged.to } : null,
+          mdRows: blockRows.file === shownPreview?.file ? blockRows.rows : [],
+          mdSel: dragged !== null && dragged.id === `${shownPreview?.file}#md` ? { from: dragged.from, to: dragged.to } : null,
           onClearChip: clearDrag,
           onAsk: file => async () => {
             const picked = await $.ui.selection()
@@ -2393,9 +2434,12 @@ export const register: Register = on => {
         { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }) },
         {
           search: found,
+          ...(Client === undefined ? {} : { Client }),
+          sel: dragged !== null && dragged.id === 'hits' ? { from: dragged.from, to: dragged.to } : null,
           onSearch: query => async () => {
             const result = await runSearch($, cwd, query)
             await update($, search, () => result)
+            await update($, viewSel, () => null)
             await $.ui.focus({ requestId: PANE, key: 'tab-find' }).catch(() => undefined)
           },
           onOpen: (file, line) => async () => {

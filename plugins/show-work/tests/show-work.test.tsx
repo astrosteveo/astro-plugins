@@ -1135,7 +1135,7 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
 })
 
 import { askDiffText, askText, duration, expandRefs, joinPath, markerRuns } from '../hooks/register'
-import { locateDiffRows, locateSelection, splitFences } from '../hooks/explorer'
+import { blockAt, hitItems, hitRowText, hitsQuote, mdBlocks, locateDiffRows, locateSelection, splitFences } from '../hooks/explorer'
 import { gutterWidth, lineAtRow, lineRows, rowOf, rowsIn, shownRows } from '../hooks/lines'
 import {
   base64,
@@ -1500,8 +1500,9 @@ test('the Search tab finds text and a hit opens the file at that line', async ($
   await ui.press({ key: 'find-text' })
   await ui.input({ key: 'search-q', text: 'jump', kind: 'submit' })
   expect((await ui.find({ type: 'Text', text: /hits in/ }))?.text).toBe('3 hits in 2 files')
-  expect((await ui.find({ type: 'Button', key: 'hit-hooks/a.ts:42' }))?.text).toBe('   42 jump()')
-  await ui.press({ key: 'hit-hooks/a.ts:42' })
+  // The results are a list the pointer drags over; a click on a hit posts it open.
+  expect(await ui.find({ type: 'Client', key: 'search-hits' })).toBeDefined()
+  await ui.post({ open: 'hooks/a.ts', line: 42 }, { in: 'search-hits' })
   const code = await ui.find({ type: 'Code', in: 'viewer-source' })
   expect(code?.props).toMatchObject({ path: 'hooks/a.ts', startLine: 32 })
   expect(code?.props.source).toMatch(/^line 32\n/)
@@ -1647,12 +1648,14 @@ test('a markdown file previews as markdown, with a button for its source', async
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-find' })
   await ui.press({ key: 'ex-README.md' })
-  const md = await ui.find({ type: 'Markdown' })
+  const md = await ui.find({ type: 'Markdown', in: 'md-block-0' })
   expect(md?.props.text).toMatch(/^# Title/)
-  expect(md?.props.pressableLinks).toEqual(['docs/guide.md'])
+  // A block cannot answer a link, so the file's local links are buttons below it.
+  expect((await ui.find({ type: 'Button', key: 'md-link-docs/guide.md' }))?.text).toBe('→ docs/guide.md')
+  expect(await ui.find({ type: 'Button', key: 'md-link-https://example.com' })).toBeUndefined()
   expect(await ui.find({ type: 'Client', key: 'viewer-source' })).toBeUndefined()
   await ui.press({ key: 'ex-raw' })
-  expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  expect(await ui.find({ type: 'Client', key: 'md-block-0' })).toBeUndefined()
   expect((await ui.find({ type: 'Code', in: 'viewer-source' }))?.props.source).toMatch(/^# Title/)
   expect((await ui.find({ type: 'Button', key: 'ex-raw' }))?.text).toBe('rendered')
   await ui.unmount()
@@ -1769,9 +1772,9 @@ test('a markdown fence draws as highlighted code between prose', async ($, on) =
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-find' })
   await ui.press({ key: 'ex-README.md' })
-  const code = await ui.find({ type: 'Code' })
+  const code = await ui.find({ type: 'Code', in: 'md-block-1' })
   expect(code?.props).toMatchObject({ source: 'const a = 1', language: 'ts' })
-  expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('Text\n\n')
+  expect((await ui.find({ type: 'Markdown', in: 'md-block-0' }))?.props.text).toBe('Text')
   await ui.unmount()
 })
 
@@ -1853,5 +1856,77 @@ test('letting go of a drag puts a marker in the prompt, and a later drag takes i
   const before = filled.length
   await ui.post({ id: 'other.ts', from: 0, to: 0 }, { in: 'viewer-source' })
   expect(filled).toHaveLength(before)
+  await ui.unmount()
+})
+
+test('search hits list by file, and a drag over them quotes the hits with their places', () => {
+  const items = hitItems([
+    { file: 'a.ts', line: 42, text: 'jump()' },
+    { file: 'a.ts', line: 50, text: 'jump(2)' },
+    { file: 'b.md', line: 3, text: 'jump here' },
+  ])
+  expect(items.map(hitRowText)).toEqual(['a.ts 2', '   42 jump()', '   50 jump(2)', 'b.md 1', '    3 jump here'])
+  // A drag from the second row to the fourth picks two hits; the file rows add none.
+  expect(hitsQuote('jump', items, 1, 3)).toEqual({
+    marker: '[search "jump" 2 hits]',
+    text: 'About these search hits for `jump`:\n```\na.ts:42: jump()\na.ts:50: jump(2)\n```\n',
+  })
+  expect(hitsQuote('jump', items, 4, 4)?.marker).toBe('[search "jump" 1 hit]')
+  expect(hitsQuote('jump', items, 0, 0)).toBeUndefined()
+})
+
+test('a drag over the hit list puts a marker in the prompt', async ($, on) => {
+  const filled = engine(on)
+  on('process.run', (_, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv[0] === 'rg' ? 'hooks/a.ts:42:  jump()\nhooks/a.ts:50:jump(2)\n' : '',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'find-text' })
+  await ui.input({ key: 'search-q', text: 'jump', kind: 'submit' })
+  await ui.post({ id: 'hits', from: 1, to: 2 }, { in: 'search-hits' })
+  expect(filled).toEqual(['[search "jump" 2 hits] '])
+  await ui.unmount()
+})
+
+test('markdown is cut into blocks with their source lines, and a drag finds the block it ends in', () => {
+  const source = '# Title\n\nFirst para\nstill first\n\n```ts\nconst a = 1\n```\n\n![The banner](docs/shot.png)\n\n| a | b |\n| - | - |\n| 1 | 2 |\n'
+  expect(mdBlocks(source, ['docs/shot.png'])).toEqual([
+    { kind: 'md', text: '# Title', from: 0, to: 0 },
+    { kind: 'md', text: 'First para\nstill first', from: 2, to: 3 },
+    { kind: 'code', text: 'const a = 1', lang: 'ts', from: 5, to: 7 },
+    { kind: 'image', ref: 'docs/shot.png', alt: 'The banner', from: 9, to: 9 },
+    { kind: 'md', text: '| a | b |\n| - | - |\n| 1 | 2 |', from: 11, to: 13 },
+  ])
+  // A picture the file names but is not here stays in its prose.
+  expect(mdBlocks('See ![x](nope.png) here\n', []).map(block => block.kind)).toEqual(['md'])
+  // Blocks 1, 3 and 1 rows tall with a row of gap between: from block 1, rows 0 to 2 are its own,
+  // row 3 is the gap and counts with the block below, and past the last block stays in it.
+  const heights = [1, 3, 1]
+  expect([-2, 0, 2, 3, 4, 9].map(y => blockAt(heights, 1, y))).toEqual([0, 1, 1, 2, 2, 2])
+  expect(blockAt(heights, 0, -4)).toBe(0)
+})
+
+test('a drag over blocks of rendered markdown puts the whole lines in the prompt', async ($, on) => {
+  const filled = engine(on)
+  on('process.run', (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'README.md\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('fs.read', () => ({ value: '# Title\n\nFirst para\nstill first\n\nLast para\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-README.md' })
+  // The blocks tell the hooks how tall they drew.
+  await ui.post({ file: 'README.md', index: 0, rows: 1 }, { in: 'md-block-0' })
+  await ui.post({ id: 'README.md#md', from: 1, to: 2 }, { in: 'md-block-0' })
+  expect(filled).toEqual(['[README.md lines 3 to 6] '])
   await ui.unmount()
 })
