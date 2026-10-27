@@ -14,7 +14,7 @@ export type ViewerProps = {
   sel: { from: number; to: number } | null
 }
 
-type Live = { rows: number[]; id: string; drag: { a: number; b: number } | null }
+type Live = { rows: number[]; id: string; drag: { a: number; b: number } | null; from: string; moved: boolean }
 type State = { live: Live }
 
 const Viewer: ClientModule<ViewerProps, State> = (props, surface) => {
@@ -29,7 +29,7 @@ const Viewer: ClientModule<ViewerProps, State> = (props, surface) => {
   const range = drag === null ? props.sel : { from: Math.min(drag.a, drag.b), to: Math.max(drag.a, drag.b) }
 
   // The listener is set once, on the first draw; `live` holds what it reads.
-  const live = surface.state?.live ?? { rows, id: props.id, drag: null as { a: number; b: number } | null }
+  const live = surface.state?.live ?? { rows, id: props.id, drag: null as { a: number; b: number } | null, from: '', moved: false }
   live.rows = rows
   live.id = props.id
   if (surface.state === undefined) {
@@ -38,14 +38,21 @@ const Viewer: ClientModule<ViewerProps, State> = (props, surface) => {
         return
       }
       const at = lineAtRow(live.rows, event.y)
+      const here = `${event.x},${event.y}`
       if (event.type === 'down') {
         live.drag = { a: at, b: at }
+        live.from = here
+        live.moved = false
       } else if (event.type === 'move' && live.drag !== null) {
         live.drag = { a: live.drag.a, b: at }
+        live.moved = live.moved || here !== live.from
       } else if (event.type === 'up' && live.drag !== null) {
         const { a } = live.drag
         live.drag = null
-        surface.post({ id: live.id, from: Math.min(a, at), to: Math.max(a, at) })
+        // A click that goes nowhere picks nothing.
+        if (live.moved) {
+          surface.post({ id: live.id, from: Math.min(a, at), to: Math.max(a, at) })
+        }
       }
       surface.setState({ live })
     })

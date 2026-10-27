@@ -1788,52 +1788,6 @@ test('rows map to lines, wrapped or cut, and a diff hides its hunk headers', () 
   expect(shownRows(['@@ -1 +1 @@', '-a', '+b'])).toEqual(['-a', '+b'])
 })
 
-test('letting go of a drag in the viewer offers a chip, and pressing it fills the prompt', async ($, on) => {
-  const filled = engine(on)
-  on('process.run', (_, e) => ({
-    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
-  on('fs.read', () => ({ value: 'one\ntwo\nthree\nfour\n' }))
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-find' })
-  await ui.press({ key: 'ex-a.ts' })
-  expect(await ui.find({ type: 'Button', key: 'chip-ask' })).toBeUndefined()
-  await ui.post({ id: 'a.ts', from: 1, to: 2 }, { in: 'viewer-source' })
-  expect((await ui.find({ type: 'Button', key: 'chip-ask' }))?.text).toBe('Ask Claude about lines 2 to 3 ↩')
-  await ui.press({ key: 'chip-ask' })
-  expect(filled).toEqual(['[a.ts lines 2 to 3] '])
-  expect(await ui.find({ type: 'Button', key: 'chip-ask' })).toBeUndefined()
-  // A drag taken in another file does not light this one.
-  await ui.post({ id: 'other.ts', from: 0, to: 0 }, { in: 'viewer-source' })
-  expect(await ui.find({ type: 'Button', key: 'chip-ask' })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('the lines dragged over are offered in the band above the prompt, idle or working', async ($, on) => {
-  const filled = engine(on)
-  on('clock.every', () => ({ value: undefined }))
-  on('ui.render', ENGINE_ROW)
-  on('process.run', (_, e) => ({
-    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
-  on('fs.read', () => ({ value: 'one\ntwo\nthree\n' }))
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await pane.press({ key: 'tab-find' })
-  await pane.press({ key: 'ex-a.ts' })
-
-  const band = await $.ui.mount({ ...BAND(false), surface: 'terminal' })
-  expect(await band.find({ type: 'Button', key: 'band-chip' })).toBeUndefined()
-  await pane.post({ id: 'a.ts', from: 0, to: 1 }, { in: 'viewer-source' })
-  expect((await band.find({ type: 'Button', key: 'band-chip' }))?.text).toBe('Ask Claude about a.ts lines 1 to 2 ↩')
-  await band.press({ key: 'band-chip' })
-  expect(filled).toEqual(['[a.ts lines 1 to 2] '])
-  expect(await band.find({ type: 'Button', key: 'band-chip' })).toBeUndefined()
-  await band.unmount()
-  await pane.unmount()
-})
-
 test('a marker is painted in the draft and swapped for its quote on send', () => {
   const list = [{ marker: '[a.ts lines 1 to 2]', text: 'About `a.ts`, lines 1 to 2:\n```ts\none\ntwo\n```\n' }]
   expect(markerRuns('see [a.ts lines 1 to 2] why', list)).toEqual([
@@ -1862,11 +1816,42 @@ test('sending a draft with the marker puts the quoted lines in the prompt', asyn
   await ui.press({ key: 'tab-find' })
   await ui.press({ key: 'ex-a.ts' })
   await ui.post({ id: 'a.ts', from: 1, to: 1 }, { in: 'viewer-source' })
-  await ui.press({ key: 'chip-ask' })
   await $.prompt.submit({ text: '[a.ts line 2] is this right?', wait: false, origin: { kind: 'composer' } })
   expect(sent).toEqual(['About `a.ts`, line 2:\n```ts\ntwo\n```\nis this right?'])
   // The reference is spent: the same marker typed again is only text.
   await $.prompt.submit({ text: '[a.ts line 2] again', wait: false, origin: { kind: 'composer' } })
   expect(sent.at(-1)).toBe('[a.ts line 2] again')
+  await ui.unmount()
+})
+
+test('letting go of a drag puts a marker in the prompt, and a later drag takes its place', async ($, on) => {
+  const filled = engine(on)
+  let draft = { text: '', cursor: 0 }
+  on('prompt.read', () => ({ value: draft }))
+  on('process.run', (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('fs.read', () => ({ value: 'one\ntwo\nthree\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-a.ts' })
+  expect(await ui.find({ type: 'Button', key: 'chip-clear' })).toBeUndefined()
+  await ui.post({ id: 'a.ts', from: 1, to: 2 }, { in: 'viewer-source' })
+  expect(filled).toEqual(['[a.ts lines 2 to 3] '])
+  expect((await ui.find({ type: 'Text', text: /In your prompt/ }))?.text).toBe('In your prompt: lines 2 to 3')
+  // The person types after it; the next drag swaps the marker and keeps the words.
+  draft = { text: '[a.ts lines 2 to 3] why', cursor: 23 }
+  await ui.post({ id: 'a.ts', from: 0, to: 0 }, { in: 'viewer-source' })
+  expect(filled.at(-1)).toBe('[a.ts line 1] why')
+  // Dropping it takes the marker out of the box.
+  draft = { text: '[a.ts line 1] why', cursor: 17 }
+  await ui.press({ key: 'chip-clear' })
+  expect(filled.at(-1)).toBe(' why')
+  expect(await ui.find({ type: 'Button', key: 'chip-clear' })).toBeUndefined()
+  // A drag taken in another file puts nothing in the prompt.
+  const before = filled.length
+  await ui.post({ id: 'other.ts', from: 0, to: 0 }, { in: 'viewer-source' })
+  expect(filled).toHaveLength(before)
   await ui.unmount()
 })

@@ -110,7 +110,6 @@ export function Viewer({
   isWrapped,
   sel,
   label,
-  onChip,
   onClearChip,
 }: {
   kit: Pick<ExplorerKit, 'Box' | 'Text' | 'Button' | 'Code' | 'Client'>
@@ -122,10 +121,9 @@ export function Viewer({
   isWrapped: boolean
   sel: { from: number; to: number } | null
   label: string
-  onChip: () => void
   onClearChip: () => void
 }) {
-  const { Box, Button, Code, Client } = kit
+  const { Box, Text, Button, Code, Client } = kit
   if (Client === undefined) {
     return (
       <Code
@@ -137,16 +135,14 @@ export function Viewer({
     )
   }
 
-  // The chip rides above the lines, where a long file cannot push it off screen.
+  // What the drag put in the prompt rides above the lines, where a long file cannot push it off screen.
   return (
     <Box flexDirection="column">
       {sel !== null && (
         <Box flexDirection="row" columnGap={2}>
-          <Button key="chip-ask" variant="primary" hotkey="c" onPress={onChip}>
-            Ask Claude about {label} ↩
-          </Button>
+          <Text dimColor>In your prompt: {label}</Text>
           <Button key="chip-clear" plain dimColor onPress={onClearChip}>
-            ✗
+            ✗ drop it
           </Button>
         </Box>
       )}
@@ -272,7 +268,6 @@ export function explorerView(
     onWrap: () => void
     // The lines dragged over, 0-based, and what the chip does with them.
     sel: { from: number; to: number } | null
-    onChip: () => void
     onClearChip: () => void
     onLink: (href: string) => void
     place: (size: { width: number; height: number }) => { columns: number; rows: number }
@@ -359,7 +354,6 @@ export function explorerView(
             isWrapped={data.wraps}
             sel={data.sel}
             label={data.sel === null ? '' : rangeLabel((shown.start ?? 1) + data.sel.from, (shown.start ?? 1) + data.sel.to)}
-            onChip={data.onChip}
             onClearChip={data.onClearChip}
           />
         )}

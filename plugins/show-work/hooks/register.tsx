@@ -1108,14 +1108,45 @@ export function expandRefs(text: string, list: Ref[]) {
   return { text: out, used }
 }
 
-// Puts a marker in the prompt, painted, and keeps what it stands for.
+// The marker the last drag put in the prompt, so the next drag takes its place.
+let lastMarker: string | null = null
+
+// Puts a marker in the prompt, painted, and keeps what it stands for. A marker
+// from an earlier drag still in the box is swapped for it.
 async function fillRef($: EngineInterface, marker: string, quote: string) {
-  await update($, refs, list => [...list.filter(one => one.marker !== marker), { marker, text: quote }])
+  const previous = lastMarker
+  await update($, refs, list => [...list.filter(one => one.marker !== marker && one.marker !== previous), { marker, text: quote }])
+  lastMarker = marker
+  const box = await $.prompt.read().catch(() => undefined)
+  const at = previous === null || box === undefined ? -1 : box.text.indexOf(previous)
+  if (box !== undefined && previous !== null && at >= 0) {
+    const text = box.text.slice(0, at) + marker + box.text.slice(at + previous.length)
+    const cursor = box.cursor <= at ? box.cursor : Math.max(at, box.cursor + marker.length - previous.length)
+    await $.prompt.fill({ text, mode: 'replace', cursor, decorations: markerRuns(text, await read($, refs)) })
+
+    return
+  }
   await $.prompt.fill({
     text: `${marker} `,
     mode: 'insert',
     decorations: [{ start: 0, end: marker.length, color: 'claude', underline: true }],
   })
+}
+
+// Takes the last drag's marker out of the prompt and forgets what it stood for.
+async function dropRef($: EngineInterface) {
+  const marker = lastMarker
+  lastMarker = null
+  if (marker === null) {
+    return
+  }
+  await update($, refs, list => list.filter(one => one.marker !== marker))
+  const box = await $.prompt.read().catch(() => undefined)
+  const at = box === undefined ? -1 : box.text.indexOf(marker)
+  if (box !== undefined && at >= 0) {
+    const text = (box.text.slice(0, at) + box.text.slice(at + marker.length)).replace(/ {2,}/g, ' ')
+    await $.prompt.fill({ text, mode: 'replace', cursor: Math.min(at, text.length), decorations: markerRuns(text, await read($, refs)) })
+  }
 }
 
 // The prompt text and the label for the lines dragged over in a viewer, read
@@ -1337,6 +1368,9 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     const expanded = expandRefs(e.text, await read($, refs))
     if (expanded.used.length > 0) {
+      if (lastMarker !== null && expanded.used.includes(lastMarker)) {
+        lastMarker = null
+      }
       await update($, refs, list => list.filter(one => !expanded.used.includes(one.marker)))
     }
     const entered = await next(expanded.used.length === 0 ? e : { ...e, text: expanded.text })
@@ -1846,39 +1880,12 @@ export const register: Register = on => {
     const open = allNotes.filter(
       note => note.kind === 'question' && !note.isReplied && isCurrent(note, shownPlan?.startedAt),
     ).length
-    const picked = await read($, viewSel)
-    const asked = picked === null ? undefined : askFromSel(picked, await read($, preview), await read($, diff))
     forget(e.requestId)
     if (e.props.hasSurvey) {
       return next(e)
     }
-    // The lines dragged over in a viewer, offered where the person types.
-    const chip =
-      picked === null || asked === undefined
-        ? undefined
-        : (() => {
-            const { Box, Button } = $.ui.resolve(e)
-
-            return (
-              <Box flexDirection="row" gap={1}>
-                <Button
-                  key="band-chip"
-                  variant="primary"
-                  onPress={async () => {
-                    await fillRef($, asked.marker, asked.text)
-                    await update($, viewSel, () => null)
-                  }}
-                >
-                  Ask Claude about {picked.id.replace(/^diff:/, '')} {asked.label} ↩
-                </Button>
-                <Button key="band-chip-clear" plain dimColor onPress={() => update($, viewSel, () => null)}>
-                  ✗
-                </Button>
-              </Box>
-            )
-          })()
     if (!e.props.isWorking && running === 0 && open === 0) {
-      return chip === undefined ? next(e) : chip
+      return next(e)
     }
 
     const { Box, Text } = $.ui.resolve(e)
@@ -1893,10 +1900,7 @@ export const register: Register = on => {
     ]
     if (e.surface !== 'terminal') {
       return (
-        <Box flexDirection="column">
-          {chip}
-          <Text dimColor>{bits.join(' · ')}</Text>
-        </Box>
+        <Text dimColor>{bits.join(' · ')}</Text>
       )
     }
 
@@ -1912,14 +1916,11 @@ export const register: Register = on => {
     startTicking($, now)
 
     return (
-      <Box flexDirection="column">
-        {chip}
-        <Box flexDirection="row" gap={1}>
-          <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
-          <Text wrap="truncate-end" dimColor>
-            {bits.join(' · ')}
-          </Text>
-        </Box>
+      <Box flexDirection="row" gap={1}>
+        <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
+        <Text wrap="truncate-end" dimColor>
+          {bits.join(' · ')}
+        </Text>
       </Box>
     )
   })
@@ -2072,7 +2073,12 @@ export const register: Register = on => {
   on('ui.message', async ($, e, next) => {
     const data = (typeof e.data === 'object' && e.data !== null ? e.data : {}) as Record<string, unknown>
     if (typeof data.id === 'string' && typeof data.from === 'number' && typeof data.to === 'number') {
-      await update($, viewSel, () => ({ id: data.id as string, from: data.from as number, to: data.to as number }))
+      const sel = { id: data.id, from: data.from, to: data.to }
+      await update($, viewSel, () => sel)
+      const at = askFromSel(sel, await read($, preview), await read($, diff))
+      if (at !== undefined) {
+        await fillRef($, at.marker, at.text)
+      }
     }
 
     return next(e)
@@ -2212,6 +2218,11 @@ export const register: Register = on => {
 
     const toggleWrap = () => update($, wrapLines, is => !is)
 
+    const clearDrag = async () => {
+      await dropRef($)
+      await update($, viewSel, () => null)
+    }
+
     const askDiff = (file: string, rows: string[]) => async () => {
       const picked = await $.ui.selection()
       if (picked === undefined || picked.text.trim() === '') {
@@ -2225,14 +2236,6 @@ export const register: Register = on => {
     // The rows of a diff dragged over, if the drag was in this diff.
     const diffSel = (shownDiff: Diff) =>
       dragged !== null && dragged.id === `diff:${shownDiff.file}` ? { from: dragged.from, to: dragged.to } : null
-
-    const askDiffChip = (shownDiff: Diff) => async () => {
-      const at = dragged === null ? undefined : askFromSel(dragged, null, shownDiff)
-      if (at !== undefined) {
-        await fillRef($, at.marker, at.text)
-      }
-      await update($, viewSel, () => null)
-    }
 
     const diffView = (shownDiff: Diff) => (
       <Box flexDirection="column">
@@ -2249,8 +2252,7 @@ export const register: Register = on => {
             isWrapped={wraps}
             sel={diffSel(shownDiff)}
             label={diffSel(shownDiff) === null ? '' : rangeLabel(diffSel(shownDiff)!.from + 1, diffSel(shownDiff)!.to + 1)}
-            onChip={askDiffChip(shownDiff)}
-            onClearChip={() => update($, viewSel, () => null)}
+            onClearChip={clearDrag}
           />
         )}
         {shownDiff.isCut && <Text dimColor>… cut at {DIFF_LINES} lines</Text>}
@@ -2349,14 +2351,7 @@ export const register: Register = on => {
           },
           place: size => fit(size, Math.min(255, e.props.bodyColumns), 18, tall),
           sel: dragged !== null && dragged.id === shownPreview?.file ? { from: dragged.from, to: dragged.to } : null,
-          onChip: async () => {
-            const at = dragged === null ? undefined : askFromSel(dragged, shownPreview, null)
-            if (at !== undefined) {
-              await fillRef($, at.marker, at.text)
-            }
-            await update($, viewSel, () => null)
-          },
-          onClearChip: () => update($, viewSel, () => null),
+          onClearChip: clearDrag,
           onAsk: file => async () => {
             const picked = await $.ui.selection()
             const at = picked === undefined ? undefined : locateSelection(shownPreview?.source ?? '', picked.text)
