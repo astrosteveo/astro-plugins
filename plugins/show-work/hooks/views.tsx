@@ -137,13 +137,9 @@ export function Viewer({
     )
   }
 
+  // The chip rides above the lines, where a long file cannot push it off screen.
   return (
     <Box flexDirection="column">
-      <Client
-        key={`viewer-${format}`}
-        module="./viewer.tsx"
-        props={{ id, source, path, startLine, format, isWrapped, sel }}
-      />
       {sel !== null && (
         <Box flexDirection="row" columnGap={2}>
           <Button key="chip-ask" variant="primary" hotkey="c" onPress={onChip}>
@@ -154,6 +150,11 @@ export function Viewer({
           </Button>
         </Box>
       )}
+      <Client
+        key={`viewer-${format}`}
+        module="./viewer.tsx"
+        props={{ id, source, path, startLine, format, isWrapped, sel }}
+      />
     </Box>
   )
 }
