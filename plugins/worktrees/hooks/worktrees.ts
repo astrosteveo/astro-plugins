@@ -10,6 +10,8 @@ export type Entry = {
   branch: string
   // The ref the branch was cut from, for the status text.
   base: string
+  // The commit the branch was cut at: a HEAD that has moved past it means the session committed work.
+  baseSha?: string
   createdAt: number
   // Set first when the session ends, before any removal is tried.
   endedAt?: number
@@ -57,6 +59,11 @@ export function judge(a: Assessment): Verdict {
   if (a.unmerged.length > 0) return { remove: false, reason: `commits not in main (${a.unmerged.join(', ')})` }
   return { remove: true }
 }
+
+// Whether the session has committed since it entered. A fresh worktree is as merged as `main` itself,
+// so "merged" means something only once there is work to merge.
+export const hasWork = (head: string, baseSha: string | undefined) =>
+  baseSha !== undefined && head !== '' && head !== baseSha
 
 // The path is inside `dir`, or is it.
 export const isInside = (path: string, dir: string) => path === dir || path.startsWith(dir + '/')

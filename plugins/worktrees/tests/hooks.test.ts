@@ -17,10 +17,12 @@ type World = {
   hasOrigin: boolean
   localBehindOrigin: boolean
   // Worktrees git lists besides the main one, by path.
-  trees: Map<string, { dirty: boolean; unmerged: boolean }>
+  trees: Map<string, { dirty: boolean; unmerged: boolean; head?: string }>
   branches: Set<string>
   addFails: boolean
   enterFails: boolean
+  exitFails: boolean
+  exited: number
   added: { branch: string; path: string; base: string }[]
   removed: { path: string; force: boolean }[]
   deleted: string[]
@@ -43,6 +45,8 @@ const world = (over: Partial<World> = {}): World => ({
   branches: new Set(['main']),
   addFails: false,
   enterFails: false,
+  exitFails: false,
+  exited: 0,
   added: [],
   removed: [],
   deleted: [],
@@ -73,6 +77,7 @@ function git(w: World, argv: readonly string[], cwd: string) {
       ? done(`${cwd}\n${ROOT}/.git/worktrees/x\n${ROOT}/.git\n`)
       : done(`${ROOT}\n${ROOT}/.git\n${ROOT}/.git\n`)
   }
+  if (a === 'rev-parse' && b !== '--verify') return done(`${b === 'HEAD' ? (treeAt(cwd)?.head ?? 'base0') : 'base0'}\n`)
   if (a === 'symbolic-ref') return w.hasOrigin ? done('origin/main\n') : done('', 128)
   if (a === 'rev-parse' && b === '--verify') {
     const ref = String(argv[4]).replace('^{commit}', '').replace(/^refs\/(heads|remotes)\//, '')
@@ -132,6 +137,7 @@ function engine(on: On, w: World, store: Record<string, unknown> = {}) {
   on('session.id', () => ({ value: w.sessionId }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
   on('command.register', () => ({ value: { command: 'worktrees' } }))
   on('prompt.submit', (_, e) => {
     w.context = e.context ?? []
@@ -148,6 +154,13 @@ function engine(on: On, w: World, store: Record<string, unknown> = {}) {
     return { value: undefined }
   })
   on('tool.call', (_, e) => {
+    if (e.tool === 'ExitWorktree') {
+      if (w.exitFails) return { deny: 'refused' }
+      w.cwd = ROOT
+      w.isLinked = false
+      w.exited++
+      return { result: {} }
+    }
     if (e.tool !== 'EnterWorktree') return { result: {} }
     if (w.enterFails) return { deny: 'refused' }
     w.cwd = String(e.path)
@@ -412,4 +425,74 @@ test('a /clear gives the session a new id, and the worktree still goes when it e
   expect(w.added.length).toBe(1)
   await finish($, w)
   expect(w.removed).toEqual([{ path: PATH, force: false }])
+})
+
+const TURN = { reason: 'answer', answer: 'done', durationMs: 1, isAborted: false, turnId: 't1' } as const
+const MERGED = { dirty: false, unmerged: false, head: 'work1' }
+
+test('once the work is merged and the tree is clean, the session steps back out to main', async ($, on) => {
+  const w = world()
+  engine(on, w, { enabled: true })
+  await $.session.start(START)
+  await $.prompt.submit(PROMPT)
+  w.trees.set(PATH, MERGED)
+  await $.turn.complete(TURN)
+
+  expect(w.exited).toBe(1)
+  expect(w.cwd).toBe(ROOT)
+  expect(w.removed).toEqual([{ path: PATH, force: false }])
+  expect(w.deleted).toEqual([`wt/${NAME}`])
+  expect([...w.kv.keys()]).toEqual(['enabled'])
+  expect(w.toasts.some(t => t.includes('back on the main checkout'))).toBe(true)
+
+  // The next task gets a worktree of its own, and the model is told what happened to the last one.
+  await $.prompt.submit({ ...PROMPT, text: 'next task' })
+  expect(w.added.length).toBe(2)
+  expect(w.context.join('\n')).toContain('its branch is merged')
+  expect(w.context.join('\n')).toContain('next-task-abcd')
+})
+
+test('with the toggle turned off meanwhile, the next prompt stays on main and the model is still told', async ($, on) => {
+  const w = world()
+  engine(on, w, { enabled: true })
+  await $.session.start(START)
+  await $.prompt.submit(PROMPT)
+  w.trees.set(PATH, MERGED)
+  await $.turn.complete(TURN)
+  w.kv.set('enabled', false)
+  await $.prompt.submit({ ...PROMPT, text: 'next task' })
+  expect(w.added.length).toBe(1)
+  expect(w.context.join('\n')).toContain('its branch is merged')
+})
+
+const STAYS_PUT = [
+  ['the session has committed nothing yet', { dirty: false, unmerged: false }, TURN],
+  ['the commits are not in main', { dirty: false, unmerged: true, head: 'work1' }, TURN],
+  ['the tree still has changes', { dirty: true, unmerged: false, head: 'work1' }, TURN],
+  ['the turn was a subagent\'s', MERGED, { ...TURN, agentId: 'a1' }],
+] as const
+
+for (const [why, state, turn] of STAYS_PUT) {
+  test(`the session stays in its worktree while ${why}`, async ($, on) => {
+    const w = world()
+    engine(on, w, { enabled: true })
+    await $.session.start(START)
+    await $.prompt.submit(PROMPT)
+    w.trees.set(PATH, state)
+    await $.turn.complete(turn)
+    expect(w.exited).toBe(0)
+    expect(w.removed).toEqual([])
+    expect(w.cwd).toBe(PATH)
+  })
+}
+
+test('when the engine will not step out, the worktree is left alone', async ($, on) => {
+  const w = world({ exitFails: true })
+  engine(on, w, { enabled: true })
+  await $.session.start(START)
+  await $.prompt.submit(PROMPT)
+  w.trees.set(PATH, MERGED)
+  await $.turn.complete(TURN)
+  expect(w.removed).toEqual([])
+  expect(w.cwd).toBe(PATH)
 })

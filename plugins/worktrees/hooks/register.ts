@@ -6,6 +6,7 @@ import {
   EXCLUDE_LINE,
   ago,
   entryKey,
+  hasWork,
   isInside,
   isSweepable,
   judge,
@@ -86,7 +87,16 @@ async function enter($: EngineInterface, text: string): Promise<string | undefin
   const path = `${repo.root}/.claude/worktrees/${name}`
   const branch = `wt/${name}`
   const base = await chooseBase(run, repo.root)
-  const entry: Entry = { sessionId: await $.session.id(), repo: repo.root, path, branch, base, createdAt: await $.clock.now() }
+  const baseSha = (await run(['git', 'rev-parse', base], repo.root)).stdout.trim() || undefined
+  const entry: Entry = {
+    sessionId: await $.session.id(),
+    repo: repo.root,
+    path,
+    branch,
+    base,
+    baseSha,
+    createdAt: await $.clock.now(),
+  }
 
   // The record comes first: a crash between here and the end leaves something a sweep can find.
   await save($, entry)
@@ -119,9 +129,41 @@ async function enter($: EngineInterface, text: string): Promise<string | undefin
   return `The worktrees plugin has just moved this session into a git worktree. The working directory is now ${path}, on branch ${branch}. Use paths under it. The main checkout at ${repo.root} refuses writes.`
 }
 
+// After a turn: once the work in this session's worktree has been merged and nothing is left in the tree,
+// steps the session back out to the main checkout and removes the worktree. Resolves to the note the
+// model reads with the next prompt, or undefined when the session stays.
+async function leaveIfMerged($: EngineInterface): Promise<string | undefined> {
+  const run = runner($)
+  const id = await $.session.id()
+  const cwd = await $.session.cwd()
+  const entry = (await entries($)).find(entry => entry.sessionId === id && isInside(cwd, entry.path))
+  if (entry === undefined) return undefined
+
+  // No commit yet: a fresh worktree is as merged as main itself, and the task has only begun.
+  const head = (await run(['git', 'rev-parse', 'HEAD'], entry.path)).stdout.trim()
+  if (!hasWork(head, entry.baseSha)) return undefined
+
+  const seen = await assess(run, entry)
+  if (!seen.exists || !judge(seen).remove) return undefined
+
+  const left = await $.tool.call({ tool: 'ExitWorktree', action: 'keep' })
+  if (left.deny !== undefined || left.isError === true) return undefined
+
+  const failed = await removeWorktree(run, entry, { deleteBranch: true })
+  if (failed !== undefined) {
+    await save($, { ...entry, endedAt: await $.clock.now(), keptBecause: failed })
+    return undefined
+  }
+  await drop($, entry)
+  $.ui.toast(`worktrees: ${entry.branch} is merged, so the worktree is removed and you are back on the main checkout`)
+  return `The worktrees plugin removed the worktree ${entry.path}, because its branch is merged. The working directory is back at ${entry.repo}.`
+}
+
 export const register: Register = on => {
   // Whether a person is at the prompt: a headless run is never moved into a worktree.
   let interactive = false
+  // What the model reads with the next prompt after the session stepped out of a merged worktree.
+  let left: string | undefined
   // The prompt that turned the toggle on or the first after it tries once; a failure is not retried each prompt.
   let tried = false
 
@@ -164,14 +206,35 @@ export const register: Register = on => {
       const mine = (await entries($)).find(entry => isInside(cwd, entry.path) && entry.sessionId !== id)
       if (mine !== undefined) await save($, { ...mine, sessionId: id, endedAt: undefined, keptBecause: undefined })
     }
-    if (!interactive || !isUsers || e.command || e.isMeta || e.turnId !== undefined || tried) return next(e)
-    if (!(await isOn($))) return next(e)
-    tried = true
-    const note = await enter($, e.text)
-    return next(note === undefined ? e : { ...e, context: [...(e.context ?? []), note] })
+    if (!interactive || !isUsers || e.command || e.isMeta || e.turnId !== undefined) return next(e)
+    const notes: string[] = left === undefined ? [] : [left]
+    left = undefined
+    if (!tried && (await isOn($))) {
+      tried = true
+      const note = await enter($, e.text)
+      if (note !== undefined) notes.push(note)
+    }
+    return next(notes.length === 0 ? e : { ...e, context: [...(e.context ?? []), ...notes] })
   }).catch(($, e, next) => {
     // A broken worktree step never costs the person their prompt.
     $.ui.toast('worktrees: it failed, so this prompt runs in the main checkout.')
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    // The main loop's turns only; a subagent finishing says nothing about the task.
+    if (interactive && e.agentId === undefined && e.reason === 'answer') {
+      try {
+        const note = await leaveIfMerged($)
+        if (note !== undefined) {
+          left = note
+          // The next task gets a worktree of its own.
+          tried = false
+        }
+      } catch {
+        // Stepping out is a courtesy; session end and the next start clean up all the same.
+      }
+    }
     return next(e)
   })
 
