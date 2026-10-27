@@ -26,6 +26,8 @@ It does nothing when the session is already in a worktree, is outside a reposito
 
 Otherwise it stays, marked with the reason. The next time you start Claude in that repository, a note lists what was left. Once you merge the branch and clean the tree, the next start removes it.
 
+**Back on main.** After each turn, if the session has committed work in its worktree, that work is now in `main` or `origin/main`, and the tree is clean, the mod steps the session back out to the main checkout and removes the worktree and its branch. Your next prompt gets a new worktree, so each task has one of its own. A fresh worktree with no commits is never stepped out of, however "merged" it looks.
+
 A `/clear` or a resume ends nothing. A session that dies without a goodbye is cleaned up by the next one; the mod treats a worktree as abandoned after a week.
 
 ## Limits
