@@ -2208,6 +2208,10 @@ export const register: Register = on => {
     } else if (typeof data.id === 'string' && typeof data.from === 'number' && typeof data.to === 'number') {
       const sel = { id: data.id, from: data.from, to: data.to }
       await update($, viewSel, () => sel)
+      // A drag still going only lights what it passes; the marker waits for the pointer to let go.
+      if (data.drag === true) {
+        return next(e)
+      }
       const at = askFromSel(sel, await read($, preview), await read($, diff), await read($, search))
       if (at !== undefined) {
         await fillRef($, at.marker, at.text)

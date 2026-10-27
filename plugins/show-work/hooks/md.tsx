@@ -16,12 +16,12 @@ export type MdProps = {
   sel: { from: number; to: number } | null
 }
 
-type Live = { props: MdProps; reported: number; drag: boolean; moved: boolean; from: string }
+type Live = { props: MdProps; reported: number; drag: boolean; moved: boolean; from: string; end: number }
 type State = { live: Live }
 
 const Block: ClientModule<MdProps, State> = (props, surface) => {
   const { Box, Code, Markdown, Text } = surface.elements
-  const live = surface.state?.live ?? { props, reported: 0, drag: false, moved: false, from: '' }
+  const live = surface.state?.live ?? { props, reported: 0, drag: false, moved: false, from: '', end: -1 }
   live.props = props
 
   if (surface.state === undefined) {
@@ -34,8 +34,16 @@ const Block: ClientModule<MdProps, State> = (props, surface) => {
         live.drag = true
         live.moved = false
         live.from = here
+        live.end = -1
       } else if (event.type === 'move' && live.drag) {
         live.moved = live.moved || here !== live.from
+        // The blocks passed over light up as the pointer goes, told to the hooks as each new one is reached.
+        const end = blockAt(live.props.heights, live.props.index, event.y)
+        if (live.moved && end !== live.end) {
+          live.end = end
+          const at = live.props.index
+          surface.post({ id: `${live.props.file}#md`, from: Math.min(at, end), to: Math.max(at, end), drag: true })
+        }
       } else if (event.type === 'up' && live.drag) {
         live.drag = false
         const id = `${live.props.file}#md`

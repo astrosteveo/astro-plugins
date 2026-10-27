@@ -1753,6 +1753,9 @@ test('a drag over blocks of rendered markdown puts the whole lines in the prompt
   await ui.press({ key: 'ex-README.md' })
   // The blocks tell the hooks how tall they drew.
   await ui.post({ file: 'README.md', index: 0, rows: 1 }, { in: 'md-block-0' })
+  // While the pointer is still down the blocks it passes light up, and nothing is put in the prompt.
+  await ui.post({ id: 'README.md#md', from: 1, to: 2, drag: true }, { in: 'md-block-0' })
+  expect(filled).toEqual([])
   await ui.post({ id: 'README.md#md', from: 1, to: 2 }, { in: 'md-block-0' })
   expect(filled).toEqual(['[README.md lines 3 to 6] '])
   await ui.unmount()
