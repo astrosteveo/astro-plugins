@@ -26,6 +26,7 @@ import type {
   Tab,
 } from '../types'
 import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
+import { shownRows } from './lines'
 import { locateDiffRows, locateSelection, parseGit, parseHits, parseStatus, plain } from './explorer'
 import {
   FIND_BROWSER,
@@ -54,7 +55,7 @@ import {
 } from './design'
 import type { Drawn, Mark } from './design'
 import { diagramColumns, hashOf, splitMermaid } from './mermaid'
-import { explorerView, gitView, searchView, testsView } from './views'
+import { Viewer, explorerView, gitView, rangeLabel, searchView, testsView } from './views'
 
 const PANE = 'show-work'
 const TITLE = 'Show work'
@@ -111,6 +112,8 @@ const findMode = atom({ plugin: 'show-work', key: 'findMode' } as const, 'files'
 const showEarlier = atom({ plugin: 'show-work', key: 'showEarlier' } as const, false)
 // Long lines in the viewers: wrapped (true) or cut at the edge.
 const wrapLines = atom({ plugin: 'show-work', key: 'wrapLines' } as const, true)
+// The lines the person dragged over in a viewer, waiting on the chip.
+const viewSel = atom({ plugin: 'show-work', key: 'viewSel' } as const, null)
 // The note opened to show its why, detail and actions; null when none is.
 const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
@@ -1596,6 +1599,7 @@ export const register: Register = on => {
       // The Changes tab opens on the latest edit's diff.
       const fresh = await loadDiff($, what.path, label)
       await update($, diff, () => fresh)
+      await update($, viewSel, () => null)
     }
 
     return ran
@@ -1932,8 +1936,19 @@ export const register: Register = on => {
     },
   )
 
+  // A drag in a viewer let go: its lines wait on the chip.
+  on('ui.message', async ($, e, next) => {
+    const data = (typeof e.data === 'object' && e.data !== null ? e.data : {}) as Record<string, unknown>
+    if (typeof data.id === 'string' && typeof data.from === 'number' && typeof data.to === 'number') {
+      await update($, viewSel, () => ({ id: data.id as string, from: data.from as number, to: data.to as number }))
+    }
+
+    return next(e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Code, Text } = $.ui.resolve(e)
+    const Client = e.surface === 'terminal' ? $.ui.resolve(e).Client : undefined
     const shown = await read($, plan)
     const allNotes = await read($, notes)
     const acts = await read($, activity)
@@ -1942,6 +1957,7 @@ export const register: Register = on => {
     const tab = await read($, tabAtom)
     const mode = await read($, findMode)
     const wraps = await read($, wrapLines)
+    const dragged = await read($, viewSel)
     const isShowingEarlier = await read($, showEarlier)
     const openId = await read($, openNote)
     const shownDiff = await read($, diff)
@@ -2074,16 +2090,37 @@ export const register: Register = on => {
       await $.prompt.fill({ text: askDiffText(file, locateDiffRows(rows, picked.text) ?? picked.text.trim()), mode: 'insert' })
     }
 
+    // The rows of a diff dragged over, if the drag was in this diff.
+    const diffSel = (shownDiff: Diff) =>
+      dragged !== null && dragged.id === `diff:${shownDiff.file}` ? { from: dragged.from, to: dragged.to } : null
+
+    const askDiffChip = (shownDiff: Diff) => async () => {
+      const at = diffSel(shownDiff)
+      if (at === null) {
+        return
+      }
+      const rows = shownRows(shownDiff.lines).slice(at.from, at.to + 1).join('\n')
+      await $.prompt.fill({ text: askDiffText(shownDiff.file, rows), mode: 'insert' })
+      await update($, viewSel, () => null)
+    }
+
     const diffView = (shownDiff: Diff) => (
       <Box flexDirection="column">
         {shownDiff.lines.length === 0 ? (
           <Text dimColor>No changes against git HEAD.</Text>
         ) : (
-          <Code
+          <Viewer
+            kit={{ Box, Text, Button, Code, ...(Client === undefined ? {} : { Client }) }}
+            id={`diff:${shownDiff.file}`}
             source={shownDiff.lines.join('\n')}
-            format="diff"
             path={shownDiff.file}
-            wrap={wraps ? 'wrap' : 'truncate-end'}
+            startLine={1}
+            format="diff"
+            isWrapped={wraps}
+            sel={diffSel(shownDiff)}
+            label={diffSel(shownDiff) === null ? '' : rangeLabel(diffSel(shownDiff)!.from + 1, diffSel(shownDiff)!.to + 1)}
+            onChip={askDiffChip(shownDiff)}
+            onClearChip={() => update($, viewSel, () => null)}
           />
         )}
         {shownDiff.isCut && <Text dimColor>… cut at {DIFF_LINES} lines</Text>}
@@ -2152,6 +2189,7 @@ export const register: Register = on => {
           Code,
           Markdown: $.ui.resolve(e).Markdown,
           ...(e.surface === 'terminal' ? { Image: $.ui.resolve(e).Image } : {}),
+          ...(Client === undefined ? {} : { Client }),
         },
         {
           files: projectFiles,
@@ -2168,7 +2206,10 @@ export const register: Register = on => {
             await update($, preview, () => loaded)
             await $.ui.focus({ requestId: PANE, key: 'ex-mention' }).catch(() => undefined)
           },
-          onClose: () => update($, preview, () => null),
+          onClose: async () => {
+            await update($, preview, () => null)
+            await update($, viewSel, () => null)
+          },
           onRaw: () => update($, preview, one => (one === null ? one : { ...one, isRaw: one.isRaw !== true })),
           wraps,
           onWrap: toggleWrap,
@@ -2177,6 +2218,18 @@ export const register: Register = on => {
             void loadPreview($, cwd, relative(target, cwd)).then(loaded => update($, preview, () => loaded))
           },
           place: size => fit(size, Math.min(255, e.props.bodyColumns), 18, tall),
+          sel: dragged !== null && dragged.id === shownPreview?.file ? { from: dragged.from, to: dragged.to } : null,
+          onChip: async () => {
+            const at = dragged !== null && shownPreview !== null && dragged.id === shownPreview.file ? dragged : undefined
+            if (at === undefined || shownPreview === null) {
+              return
+            }
+            const start = shownPreview.start ?? 1
+            const text = shownPreview.source.split('\n').slice(at.from, at.to + 1).join('\n')
+            await $.prompt.fill({ text: askText(shownPreview.file, { from: start + at.from, to: start + at.to, text }), mode: 'insert' })
+            await update($, viewSel, () => null)
+          },
+          onClearChip: () => update($, viewSel, () => null),
           onAsk: file => async () => {
             const picked = await $.ui.selection()
             const at = picked === undefined ? undefined : locateSelection(shownPreview?.source ?? '', picked.text)
@@ -2185,7 +2238,15 @@ export const register: Register = on => {
 
               return
             }
-            await $.prompt.fill({ text: askText(file, at), mode: 'insert' })
+            const shift = (shownPreview?.start ?? 1) - 1
+            await $.prompt.fill({
+              text: askText(file, {
+                text: at.text,
+                from: at.from === undefined ? undefined : at.from + shift,
+                to: at.to === undefined ? undefined : at.to + shift,
+              }),
+              mode: 'insert',
+            })
           },
           onMention: file => async () => {
             await $.prompt.fill({ text: `@${file} `, mode: 'insert' })

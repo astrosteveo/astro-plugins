@@ -193,6 +193,8 @@ declare module 'claude-code' {
       showEarlier: boolean
       /** Whether the viewers wrap long lines or cut them at the edge. */
       wrapLines: boolean
+      /** The lines dragged over in a viewer, 0-based, and which viewer: a file path, or `diff:` and one. */
+      viewSel: { id: string; from: number; to: number } | null
       openNote: string | null
     }
   }

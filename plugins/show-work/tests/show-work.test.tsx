@@ -1068,11 +1068,11 @@ test('Changes opens on the latest edit, colored, and a chip shows its diff', asy
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-changes' })
   // The latest edit's diff is already open; pressing its chip loads it again.
-  expect(await ui.find({ type: 'Code' })).toBeDefined()
+  expect(await ui.find({ type: 'Code', in: 'viewer-diff' })).toBeDefined()
   await ui.press({ key: 'file-src/menu.gd' })
   expect(asked.at(-1)).toEqual(['git', '-C', '/proj/src', 'diff', '--no-color', 'HEAD', '--', '/proj/src/menu.gd'])
   // The hunks go to Code as a diff, which highlights them; the headers do not.
-  const code = await ui.find({ type: 'Code' })
+  const code = await ui.find({ type: 'Code', in: 'viewer-diff' })
   expect(code?.props).toMatchObject({ format: 'diff', path: 'src/menu.gd' })
   expect(code?.props.source).toBe('@@ -1,2 +1,2 @@\n extends Control\n-var open = false\n+var is_open := false')
   expect(await ui.find({ type: 'Button', text: /menu\.gd/ })).toBeDefined()
@@ -1095,7 +1095,7 @@ test('a new file diffs against nothing', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-changes' })
   await ui.press({ key: 'file-new.txt' })
-  expect((await ui.find({ type: 'Code' }))?.props.source).toBe('@@ -0,0 +1 @@\n+hello')
+  expect((await ui.find({ type: 'Code', in: 'viewer-diff' }))?.props.source).toBe('@@ -0,0 +1 @@\n+hello')
   await ui.unmount()
 })
 
@@ -1129,6 +1129,7 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
 
 import { askDiffText, askText, duration, joinPath } from '../hooks/register'
 import { locateDiffRows, locateSelection, splitFences } from '../hooks/explorer'
+import { gutterWidth, lineAtRow, lineRows, rowOf, rowsIn, shownRows } from '../hooks/lines'
 import {
   base64,
   patchCounts,
@@ -1413,14 +1414,14 @@ test('the Explorer walks the tree, filters, previews a file and mentions it', as
   await ui.input({ key: 'ex-filter', text: 'chts', kind: 'change' })
   expect((await ui.findAll({ type: 'Button', text: /charts/ })).map(one => one.key)).toEqual(['ex-hooks/charts.ts'])
   await ui.input({ key: 'ex-filter', text: 'reg', kind: 'submit' })
-  const code = await ui.find({ type: 'Code' })
+  const code = await ui.find({ type: 'Code', in: 'viewer-source' })
   expect(code?.props).toMatchObject({ path: 'hooks/register.tsx', startLine: 1 })
   expect(code?.props.source).toMatch(/^export const register = 1/)
   expect(await ui.find({ type: 'Button', key: 'ex-diff' })).toBeDefined()
   await ui.press({ key: 'ex-mention' })
   expect(filled).toEqual(['@hooks/register.tsx '])
   await ui.press({ key: 'ex-close' })
-  expect(await ui.find({ type: 'Code' })).toBeUndefined()
+  expect(await ui.find({ type: 'Client', key: 'viewer-source' })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -1494,7 +1495,7 @@ test('the Search tab finds text and a hit opens the file at that line', async ($
   expect((await ui.find({ type: 'Text', text: /hits in/ }))?.text).toBe('3 hits in 2 files')
   expect((await ui.find({ type: 'Button', key: 'hit-hooks/a.ts:42' }))?.text).toBe('   42 jump()')
   await ui.press({ key: 'hit-hooks/a.ts:42' })
-  const code = await ui.find({ type: 'Code' })
+  const code = await ui.find({ type: 'Code', in: 'viewer-source' })
   expect(code?.props).toMatchObject({ path: 'hooks/a.ts', startLine: 32 })
   expect(code?.props.source).toMatch(/^line 32\n/)
   expect((await ui.find({ type: 'Text', text: /line 42 of/ }))?.text).toBe('hooks/a.ts line 42 of 80')
@@ -1642,10 +1643,10 @@ test('a markdown file previews as markdown, with a button for its source', async
   const md = await ui.find({ type: 'Markdown' })
   expect(md?.props.text).toMatch(/^# Title/)
   expect(md?.props.pressableLinks).toEqual(['docs/guide.md'])
-  expect(await ui.find({ type: 'Code' })).toBeUndefined()
+  expect(await ui.find({ type: 'Client', key: 'viewer-source' })).toBeUndefined()
   await ui.press({ key: 'ex-raw' })
   expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
-  expect((await ui.find({ type: 'Code' }))?.props.source).toMatch(/^# Title/)
+  expect((await ui.find({ type: 'Code', in: 'viewer-source' }))?.props.source).toMatch(/^# Title/)
   expect((await ui.find({ type: 'Button', key: 'ex-raw' }))?.text).toBe('rendered')
   await ui.unmount()
 })
@@ -1731,15 +1732,15 @@ test('the wrap button turns wrapping off and on in the preview and the diff', as
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-find' })
   await ui.press({ key: 'ex-a.ts' })
-  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('wrap')
+  expect((await ui.find({ type: 'Code', in: 'viewer-source' }))?.props.wrap).toBe('wrap')
   expect((await ui.find({ type: 'Button', key: 'ex-wrap' }))?.text).toBe('wrap: on')
   await ui.press({ key: 'ex-wrap' })
-  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('truncate-end')
+  expect((await ui.find({ type: 'Code', in: 'viewer-source' }))?.props.wrap).toBe('truncate-end')
   expect((await ui.find({ type: 'Button', key: 'ex-wrap' }))?.text).toBe('wrap: off')
   await ui.press({ key: 'tab-changes' })
-  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('truncate-end')
+  expect((await ui.find({ type: 'Code', in: 'viewer-diff' }))?.props.wrap).toBe('truncate-end')
   await ui.press({ key: 'diff-wrap' })
-  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('wrap')
+  expect((await ui.find({ type: 'Code', in: 'viewer-diff' }))?.props.wrap).toBe('wrap')
   await ui.unmount()
 })
 
@@ -1764,5 +1765,40 @@ test('a markdown fence draws as highlighted code between prose', async ($, on) =
   const code = await ui.find({ type: 'Code' })
   expect(code?.props).toMatchObject({ source: 'const a = 1', language: 'ts' })
   expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('Text\n\n')
+  await ui.unmount()
+})
+
+test('rows map to lines, wrapped or cut, and a diff hides its hunk headers', () => {
+  const lines = ['short', 'x'.repeat(25), '']
+  expect(lineRows(lines, 10, false)).toEqual([1, 1, 1])
+  expect(lineRows(lines, 10, true)).toEqual([1, 3, 1])
+  const rows = [1, 3, 1]
+  expect([0, 1, 3, 4, 9].map(y => lineAtRow(rows, y))).toEqual([0, 1, 1, 2, 2])
+  expect(rowOf(rows, 2)).toBe(4)
+  expect(rowsIn(rows, 1, 2)).toBe(4)
+  expect(gutterWidth(9)).toBe(2)
+  expect(gutterWidth(120, true)).toBe(5)
+  expect(shownRows(['@@ -1 +1 @@', '-a', '+b'])).toEqual(['-a', '+b'])
+})
+
+test('letting go of a drag in the viewer offers a chip, and pressing it fills the prompt', async ($, on) => {
+  const filled = engine(on)
+  on('process.run', (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('fs.read', () => ({ value: 'one\ntwo\nthree\nfour\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-a.ts' })
+  expect(await ui.find({ type: 'Button', key: 'chip-ask' })).toBeUndefined()
+  await ui.post({ id: 'a.ts', from: 1, to: 2 }, { in: 'viewer-source' })
+  expect((await ui.find({ type: 'Button', key: 'chip-ask' }))?.text).toBe('Ask Claude about lines 2 to 3 ↩')
+  await ui.press({ key: 'chip-ask' })
+  expect(filled).toEqual(['About `a.ts`, lines 2 to 3:\n```ts\ntwo\nthree\n```\n'])
+  expect(await ui.find({ type: 'Button', key: 'chip-ask' })).toBeUndefined()
+  // A drag taken in another file does not light this one.
+  await ui.post({ id: 'other.ts', from: 0, to: 0 }, { in: 'viewer-source' })
+  expect(await ui.find({ type: 'Button', key: 'chip-ask' })).toBeUndefined()
   await ui.unmount()
 })

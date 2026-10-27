@@ -88,10 +88,75 @@ export type ExplorerKit = Kit & {
   Code: Elements['terminal']['Code']
   Markdown: Elements['terminal']['Markdown']
   Image?: Elements['terminal']['Image']
+  // Where the terminal has one: the viewer the pointer can drag over.
+  Client?: Elements['terminal']['Client']
 }
 
 const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
 const LOCAL_LINK = /\]\(\s*<?(?![a-z][a-z0-9+.-]*:|#|\/\/)([^)\s>]+)/gi
+
+// `line 4` or `lines 4 to 9`.
+export const rangeLabel = (from: number, to: number) => (from === to ? `line ${from}` : `lines ${from} to ${to}`)
+
+// Code or a diff in the viewer a drag can pick lines in, with the chip that
+// offers to ask about them; plain code where the surface has no Client.
+export function Viewer({
+  kit,
+  id,
+  source,
+  path,
+  startLine,
+  format = 'source',
+  isWrapped,
+  sel,
+  label,
+  onChip,
+  onClearChip,
+}: {
+  kit: Pick<ExplorerKit, 'Box' | 'Text' | 'Button' | 'Code' | 'Client'>
+  id: string
+  source: string
+  path: string
+  startLine: number
+  format?: 'source' | 'diff'
+  isWrapped: boolean
+  sel: { from: number; to: number } | null
+  label: string
+  onChip: () => void
+  onClearChip: () => void
+}) {
+  const { Box, Button, Code, Client } = kit
+  if (Client === undefined) {
+    return (
+      <Code
+        source={source === '' ? ' ' : source}
+        path={path}
+        {...(format === 'diff' ? { format } : { startLine })}
+        wrap={isWrapped ? 'wrap' : 'truncate-end'}
+      />
+    )
+  }
+
+  return (
+    <Box flexDirection="column">
+      <Client
+        key={`viewer-${format}`}
+        module="./viewer.tsx"
+        props={{ id, source, path, startLine, format, isWrapped, sel }}
+      />
+      {sel !== null && (
+        <Box flexDirection="row" columnGap={2}>
+          <Button key="chip-ask" variant="primary" hotkey="c" onPress={onChip}>
+            Ask Claude about {label} ↩
+          </Button>
+          <Button key="chip-clear" plain dimColor onPress={onClearChip}>
+            ✗
+          </Button>
+        </Box>
+      )}
+    </Box>
+  )
+}
 
 // An image file as a picture, sized to the pane; elsewhere its name and size.
 function imageBody(
@@ -204,11 +269,15 @@ export function explorerView(
     onRaw: () => void
     wraps: boolean
     onWrap: () => void
+    // The lines dragged over, 0-based, and what the chip does with them.
+    sel: { from: number; to: number } | null
+    onChip: () => void
+    onClearChip: () => void
     onLink: (href: string) => void
     place: (size: { width: number; height: number }) => { columns: number; rows: number }
   },
 ): RenderElement {
-  const { Box, Text, Button, Input, Code } = kit
+  const { Box, Text, Button, Input } = kit
   const changed = Object.keys(data.codes).length
   const touch = new Map(data.touched.map(one => [one.file, one]))
   const marks = (path: string) => {
@@ -280,11 +349,17 @@ export function explorerView(
         ) : shown.isMarkdown === true && shown.isRaw !== true ? (
           markdownBody(kit, shown, data)
         ) : (
-          <Code
-            source={shown.source === '' ? ' ' : shown.source}
+          <Viewer
+            kit={kit}
+            id={shown.file}
+            source={shown.source}
             path={shown.file}
             startLine={shown.start ?? 1}
-            wrap={data.wraps ? 'wrap' : 'truncate-end'}
+            isWrapped={data.wraps}
+            sel={data.sel}
+            label={data.sel === null ? '' : rangeLabel((shown.start ?? 1) + data.sel.from, (shown.start ?? 1) + data.sel.to)}
+            onChip={data.onChip}
+            onClearChip={data.onClearChip}
           />
         )}
         {shown.isCut && (
