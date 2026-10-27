@@ -163,7 +163,7 @@ test('pressing another note opens it to its why, detail and actions', async ($, 
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-notes' })
-  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes 2')
+  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes')
   expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeUndefined()
 
   const decision = await ui.find({ type: 'Button', text: /CanvasLayer/ })
@@ -179,7 +179,7 @@ test('pressing another note opens it to its why, detail and actions', async ($, 
   expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeUndefined()
   await $.prompt.submit({ text: `${filled[0]}use a Control.`, wait: false, origin: { kind: 'composer' } })
   expect((await ui.find({ type: 'Button', text: /CanvasLayer/ }))?.text).toMatch(/↩ replied$/)
-  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes 1')
+  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes')
 
   // Got it marks the finding read without a reply.
   const finding = await ui.find({ type: 'Button', text: /user:\/\// })
@@ -199,7 +199,7 @@ test('a note without text is refused', async ($, on) => {
   expect(ran.deny).toBe('A note needs text.')
 })
 
-test('changes list edits and failed commands, and count reads', async ($, on) => {
+test('changes list the edited files and nothing else', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Read', file_path: '/proj/scenes/main.tscn' })
@@ -216,23 +216,16 @@ test('changes list edits and failed commands, and count reads', async ($, on) =>
     const ui = await $.ui.mount({ ...PANE, surface })
     expect((await ui.find({ type: 'Text', text: /idle/ }))?.text).toBe('○ idle')
     await ui.press({ key: 'tab-changes' })
-    expect((await ui.find({ type: 'Text', text: /commands and searches/ }))?.text).toBe(
-      '1 commands and searches · 1 reads · 1 failed',
-    )
     expect(await ui.find({ type: 'Button', key: 'file-scripts/pause.gd' })).toBeDefined()
+    // Reads and commands are not Changes' business.
     expect(await ui.find({ type: 'Text', text: /main\.tscn/ })).toBeUndefined()
-    expect((await ui.find({ type: 'Text', text: /Run the tests/ }))?.text).toBe(
-      '✗ run    Run the tests',
-    )
-    expect((await ui.find({ type: 'Text', text: /\$ false/ }))?.text).toBe(
-      '         $ false && echo',
-    )
+    expect(await ui.find({ type: 'Text', text: /Run the tests/ })).toBeUndefined()
     await ui.press({ key: 'tab-now' })
     await ui.unmount()
   }
 })
 
-test('repeated edits of a file fold into one row with a count, newest first', async ($, on) => {
+test('repeated edits of a file make one chip', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   const edit = { tool: 'Edit', file_path: '/proj/scripts/pause.gd', old_string: 'a', new_string: 'b' } as const
@@ -243,8 +236,7 @@ test('repeated edits of a file fold into one row with a count, newest first', as
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-changes' })
-  expect((await ui.find({ type: 'Button', key: 'file-scripts/pause.gd' }))?.text).toBe('± scripts/pause.gd ×3')
-  expect((await ui.find({ type: 'Text', text: /commands and searches/ }))?.text).toBe('0 commands and searches · 1 reads')
+  expect((await ui.findAll({ type: 'Button', text: /\.gd$/ })).map(one => one.text)).toEqual(['scripts/pause.gd'])
   await ui.unmount()
 })
 
@@ -1001,7 +993,7 @@ test('a screenshot Claude reads lands in the pane, and the list picks one', asyn
   ])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Button', key: 'tab-pictures' }))?.text).toBe('Pictures 2')
+  expect((await ui.find({ type: 'Button', key: 'tab-pictures' }))?.text).toBe('Pictures')
   await ui.press({ key: 'tab-pictures' })
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({
     source: { file: '/home/u/.cache/show-work/toolu_r2.png' },
@@ -1038,7 +1030,7 @@ test('a new goal starts a new task and hides the old notes', async ($, on) => {
   await $.tool.call({ tool: 'mcp__show-work__note', kind: 'risk', text: 'Fresh' })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes 1')
+  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes')
   await ui.press({ key: 'tab-notes' })
   expect(await ui.find({ type: 'Button', text: /Old news/ })).toBeUndefined()
   expect((await ui.find({ type: 'Button', key: 'earlier' }))?.text).toBe(
@@ -1059,7 +1051,7 @@ const DIFF = `diff --git a/src/menu.gd b/src/menu.gd
 +var is_open := false
 `
 
-test('pressing a changed file shows its diff, colored, and close returns', async ($, on) => {
+test('Changes opens on the latest edit, colored, and a chip shows its diff', async ($, on) => {
   engine(on)
   const asked: string[][] = []
   on('process.run', (_, e) => {
@@ -1075,14 +1067,14 @@ test('pressing a changed file shows its diff, colored, and close returns', async
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-changes' })
+  // The latest edit's diff is already open; pressing its chip loads it again.
+  expect(await ui.find({ type: 'Code' })).toBeDefined()
   await ui.press({ key: 'file-src/menu.gd' })
   expect(asked.at(-1)).toEqual(['git', '-C', '/proj/src', 'diff', '--no-color', 'HEAD', '--', '/proj/src/menu.gd'])
   // The hunks go to Code as a diff, which highlights them; the headers do not.
   const code = await ui.find({ type: 'Code' })
   expect(code?.props).toMatchObject({ format: 'diff', path: 'src/menu.gd' })
   expect(code?.props.source).toBe('@@ -1,2 +1,2 @@\n extends Control\n-var open = false\n+var is_open := false')
-  await ui.press({ key: 'diff-close' })
-  expect(await ui.find({ type: 'Code' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', text: /menu\.gd/ })).toBeDefined()
   await ui.unmount()
 })
@@ -1135,7 +1127,7 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
   await ui.unmount()
 })
 
-import { divider, duration } from '../hooks/register'
+import { duration, joinPath } from '../hooks/register'
 import {
   base64,
   patchCounts,
@@ -1166,11 +1158,11 @@ test('base64 matches the standard padded form', () => {
   expect([enc(''), enc('f'), enc('fo'), enc('foo'), enc('foob')]).toEqual(['', 'Zg==', 'Zm8=', 'Zm9v', 'Zm9vYg=='])
 })
 
-test('durations and turn dividers read plainly', () => {
+test('durations read plainly, and a path joins with its dots resolved', () => {
   expect([duration(38_000), duration(252_000), duration(60_000)]).toEqual(['38s', '4m12s', '1m00s'])
-  const turn = { id: 't', n: 4, start: 0, end: 38_000, calls: 12, failed: 1 }
-  expect(divider(turn, 4, 99_000)).toBe('── turn 4 · 38s · 12 calls · 1 failed ──')
-  expect(divider({ ...turn, end: undefined, failed: 0 }, 4, 5_000)).toBe('── turn 4 · 5s… · 12 calls ──')
+  expect(joinPath('/proj/docs', '../img/a.png')).toBe('/proj/img/a.png')
+  expect(joinPath('/proj/docs', './b.md')).toBe('/proj/docs/b.md')
+  expect(joinPath('/proj/docs', '/abs/c.md')).toBe('/abs/c.md')
 })
 
 test('labels a Raster cannot draw turn to ?', () => {
@@ -1269,28 +1261,6 @@ test('test commands land on the Tests tab as runs', async ($, on) => {
     await ui.press({ key: 'tab-now' })
     await ui.unmount()
   }
-})
-
-test('Changes stages what Claude edited and hands over to the Git tab', async ($, on) => {
-  engine(on)
-  const ran: string[][] = []
-  on('process.run', (_, e) => {
-    ran.push([...e.argv])
-
-    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'Edit', file_path: '/proj/src/a.gd', old_string: 'a', new_string: 'b' })
-  await $.tool.call({ tool: 'Edit', file_path: '/proj/src/b.gd', old_string: 'a', new_string: 'b' })
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-changes' })
-  const files = (await ui.findAll({ type: 'Button', text: /^± / })).map(one => one.text)
-  expect(files).toEqual(['± src/b.gd', '± src/a.gd'])
-  await ui.press({ key: 'stage-edits' })
-  expect(ran.find(argv => argv.includes('add'))).toEqual(['git', '-C', '/proj', 'add', '--', '/proj/src/b.gd', '/proj/src/a.gd'])
-  expect(await ui.find({ type: 'Button', key: 'git-all' })).toBeDefined()
-  await ui.unmount()
 })
 
 test('a share bar keeps its parts in proportion and shows each that has any', () => {
@@ -1434,7 +1404,7 @@ test('the Explorer walks the tree, filters, previews a file and mentions it', as
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-find' })
-  expect((await ui.find({ type: 'Button', key: 'tab-find' }))?.text).toBe('Find 1')
+  expect((await ui.find({ type: 'Button', key: 'tab-find' }))?.text).toBe('Find')
   expect((await ui.find({ type: 'Text', text: /files/ }))?.text).toBe('5 files · 1 changed')
   await ui.press({ key: 'ex-hooks' })
   expect((await ui.find({ type: 'Button', key: 'ex-hooks/register.tsx' }))?.text).toBe('    register.tsx M')
@@ -1638,5 +1608,43 @@ test('a mermaid block that will not render shows its code and why', async ($, on
   expect(why?.text).toBe('Diagram: Error: Parse error on line 2')
   expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('```mermaid\ngraph LR\n  A-->\n```')
   expect(await ui.find({ type: 'Image' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a waiting question puts a dot on Notes, and nothing else does', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'finding', text: 'FYI' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes')
+  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'question', text: 'Proceed?' })
+  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes ●')
+  await ui.unmount()
+})
+
+test('a markdown file previews as markdown, with a button for its source', async ($, on) => {
+  engine(on)
+  on('process.run', (_, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv.includes('ls-files') ? 'README.md\nsrc/a.ts\n' : '',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  on('fs.read', () => ({ value: '# Title\n\nSee [the guide](docs/guide.md) and [the web](https://example.com).\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-README.md' })
+  const md = await ui.find({ type: 'Markdown' })
+  expect(md?.props.text).toMatch(/^# Title/)
+  expect(md?.props.pressableLinks).toEqual(['docs/guide.md'])
+  expect(await ui.find({ type: 'Code' })).toBeUndefined()
+  await ui.press({ key: 'ex-raw' })
+  expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  expect((await ui.find({ type: 'Code' }))?.props.source).toMatch(/^# Title/)
+  expect((await ui.find({ type: 'Button', key: 'ex-raw' }))?.text).toBe('rendered')
   await ui.unmount()
 })

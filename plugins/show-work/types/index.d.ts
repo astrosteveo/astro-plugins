@@ -77,6 +77,11 @@ export type Preview = {
   start?: number
   /** The line a search hit landed on. */
   hit?: number
+  /** A markdown file, drawn as markdown; `isRaw` shows its source instead. */
+  isMarkdown?: boolean
+  isRaw?: boolean
+  /** The local pictures it draws, each copied into the cache as a PNG. */
+  images?: { ref: string; alt: string; file: string; width: number; height: number }[]
 }
 
 /** A file `git status` names: its index and worktree columns. */

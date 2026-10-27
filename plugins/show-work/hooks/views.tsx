@@ -86,12 +86,67 @@ const statusColor = (code: string) => STATUS_COLOR[code] ?? STATUS_COLOR[code[0]
 export type ExplorerKit = Kit & {
   Input?: Elements['terminal']['Input']
   Code: Elements['terminal']['Code']
+  Markdown: Elements['terminal']['Markdown']
+  Image?: Elements['terminal']['Image']
+}
+
+const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
+const LOCAL_LINK = /\]\(\s*<?(?![a-z][a-z0-9+.-]*:|#|\/\/)([^)\s>]+)/gi
+
+// A markdown file as the screen draws it: its prose as markdown, its local
+// pictures as pictures, in the order the file has them.
+function markdownBody(
+  { Box, Text, Markdown, Image }: ExplorerKit,
+  shown: Preview,
+  data: { place: (size: { width: number; height: number }) => { columns: number; rows: number }; onLink: (href: string) => void },
+) {
+  const parts: ({ text: string } | { image: NonNullable<Preview['images']>[number] })[] = []
+  let at = 0
+  let text = ''
+  for (const match of shown.source.matchAll(MD_IMAGE)) {
+    const image = Image === undefined ? undefined : shown.images?.find(one => one.ref === match[2])
+    if (image === undefined) {
+      continue
+    }
+    text += shown.source.slice(at, match.index)
+    at = (match.index ?? 0) + match[0].length
+    parts.push({ text }, { image })
+    text = ''
+  }
+  parts.push({ text: text + shown.source.slice(at) })
+  const links = [...new Set([...shown.source.matchAll(LOCAL_LINK)].map(one => one[1] ?? ''))].filter(one => one !== '')
+
+  return (
+    <Box flexDirection="column">
+      {parts.map((part, n) =>
+        'image' in part ? (
+          Image === undefined ? null : (
+            <Box key={`md-img-${n}`} flexDirection="column">
+              <Image
+                key={`md-pic-${n}`}
+                source={{ file: part.image.file, format: 'png' }}
+                {...data.place(part.image)}
+                alt={part.image.alt || ' '}
+              />
+              {part.image.alt !== '' && <Text dimColor>{part.image.alt}</Text>}
+            </Box>
+          )
+        ) : part.text.trim() === '' ? null : (
+          <Markdown
+            key={`md-${n}`}
+            text={part.text}
+            {...(links.length === 0 ? {} : { pressableLinks: links, onLinkPress: link => data.onLink(link.href) })}
+          />
+        ),
+      )}
+    </Box>
+  )
 }
 
 // The project's files: a tree to walk, a filter that finds a file by a few
 // of its letters, and a preview with a button that mentions it in the prompt.
 export function explorerView(
-  { Box, Text, Button, Input, Code }: ExplorerKit,
+  kit: ExplorerKit,
   data: {
     files: string[]
     codes: Record<string, string>
@@ -106,8 +161,12 @@ export function explorerView(
     onMention: (file: string) => () => void
     onDiff: (file: string) => () => void
     onRefresh: () => void
+    onRaw: () => void
+    onLink: (href: string) => void
+    place: (size: { width: number; height: number }) => { columns: number; rows: number }
   },
 ): RenderElement {
+  const { Box, Text, Button, Input, Code } = kit
   const changed = Object.keys(data.codes).length
   const touch = new Map(data.touched.map(one => [one.file, one]))
   const marks = (path: string) => {
@@ -148,6 +207,11 @@ export function explorerView(
                 diff
               </Button>
             )}
+            {shown.isMarkdown === true && (
+              <Button key="ex-raw" variant="secondary" hotkey="v" onPress={data.onRaw}>
+                {shown.isRaw === true ? 'rendered' : 'source'}
+              </Button>
+            )}
             <Button key="ex-close" plain dimColor hotkey="x" onPress={data.onClose}>
               ✗ close
             </Button>
@@ -155,6 +219,8 @@ export function explorerView(
         </Box>
         {shown.isBinary ? (
           <Text dimColor>A binary file: nothing to preview.</Text>
+        ) : shown.isMarkdown === true && shown.isRaw !== true ? (
+          markdownBody(kit, shown, data)
         ) : (
           <Code source={shown.source === '' ? ' ' : shown.source} path={shown.file} startLine={shown.start ?? 1} />
         )}

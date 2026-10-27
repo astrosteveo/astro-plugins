@@ -24,7 +24,6 @@ import type {
   Step,
   StepStatus,
   Tab,
-  Turn,
 } from '../types'
 import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
 import { parseGit, parseHits, parseStatus, plain } from './explorer'
@@ -567,18 +566,6 @@ export function duration(ms: number) {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 }
 
-// The line between two turns in the activity log.
-export function divider(turn: Turn | undefined, n: number, now: number) {
-  if (turn === undefined) {
-    return `── turn ${n} ──`
-  }
-  const took = turn.end === undefined ? `${duration(now - turn.start)}…` : duration(turn.end - turn.start)
-  const calls = `${turn.calls} ${turn.calls === 1 ? 'call' : 'calls'}`
-  const failed = turn.failed > 0 ? ` · ${turn.failed} failed` : ''
-
-  return `── turn ${n} · ${took} · ${calls}${failed} ──`
-}
-
 // How often a running chart repaints, in ms.
 const FRAME = 250
 // The color of a diff line by its first character.
@@ -600,11 +587,11 @@ export function diffColor(line: string): Color | undefined {
 // nothing when it is new.
 async function loadDiff($: EngineInterface, path: string, label: string): Promise<Diff> {
   const dir = path.slice(0, path.lastIndexOf('/')) || '/'
-  let out = (await $.process.run(['git', '-C', dir, 'diff', '--no-color', 'HEAD', '--', path])).stdout
+  const gitOut = (argv: string[]) =>
+    $.process.run(['git', '-C', dir, ...argv]).then(ran => ran.stdout, () => '')
+  let out = await gitOut(['diff', '--no-color', 'HEAD', '--', path])
   if (out.trim() === '') {
-    out = (
-      await $.process.run(['git', '-C', dir, 'diff', '--no-color', '--no-index', '/dev/null', path])
-    ).stdout
+    out = await gitOut(['diff', '--no-color', '--no-index', '/dev/null', path])
   }
   // The header lines before the first hunk say nothing the title doesn't.
   const all = out.split('\n')
@@ -1058,6 +1045,51 @@ async function loadStatus($: EngineInterface, cwd: string): Promise<Record<strin
 
 // A file's text for the preview: the head of a long one, or the stretch
 // around a search hit; none of a binary one.
+const MARKDOWN = /\.(md|markdown|mdx)$/i
+const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
+const MD_IMAGES_MOST = 8
+const MD_CHARS = 100_000
+
+// `dir/ref` with its dots resolved: `a/b` and `../c` make `a/c`.
+export function joinPath(dir: string, ref: string) {
+  const parts = (ref.startsWith('/') ? ref : `${dir}/${ref}`).split('/')
+  const out: string[] = []
+  for (const part of parts) {
+    if (part === '..') {
+      out.pop()
+    } else if (part !== '' && part !== '.') {
+      out.push(part)
+    }
+  }
+
+  return `${ref.startsWith('/') || dir.startsWith('/') ? '/' : ''}${out.join('/')}`
+}
+
+// The local pictures a markdown file draws, copied into the cache as PNGs.
+async function markdownImages($: EngineInterface, cwd: string, file: string, text: string) {
+  const dir = absolute(file, cwd).slice(0, absolute(file, cwd).lastIndexOf('/')) || '/'
+  const found: NonNullable<Preview['images']> = []
+  for (const match of text.matchAll(MD_IMAGE)) {
+    const ref = match[2] ?? ''
+    if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith('//') || !IMAGE.test(ref) || found.some(one => one.ref === ref)) {
+      continue
+    }
+    if (found.length >= MD_IMAGES_MOST) {
+      break
+    }
+    const path = joinPath(dir, decodeURI(ref))
+    if (!(await $.fs.exists(path))) {
+      continue
+    }
+    const made = await freeze($, { src: path }, `md-${hashOf(path)}`, match[1] ?? '', 'read')
+    if (typeof made !== 'string') {
+      found.push({ ref, alt: match[1] ?? '', file: made.file, width: made.width, height: made.height })
+    }
+  }
+
+  return found
+}
+
 async function loadPreview($: EngineInterface, cwd: string, file: string, hit?: number): Promise<Preview> {
   const text = await $.fs.read(absolute(file, cwd)).catch(() => '')
   const source = typeof text === 'string' ? text : ''
@@ -1065,6 +1097,19 @@ async function loadPreview($: EngineInterface, cwd: string, file: string, hit?: 
     return { file, source: '', lines: 0, isCut: false, isBinary: true }
   }
   const lines = source.split('\n')
+  if (hit === undefined && MARKDOWN.test(file)) {
+    const shown = source.slice(0, MD_CHARS)
+
+    return {
+      file,
+      source: shown,
+      lines: lines.length,
+      isCut: source.length > MD_CHARS,
+      isBinary: false,
+      isMarkdown: true,
+      images: await markdownImages($, cwd, file, shown),
+    }
+  }
   const start = hit === undefined ? 1 : Math.max(1, hit - 10)
 
   return {
@@ -1511,12 +1556,9 @@ export const register: Register = on => {
     }
     if (status === 'ok' && what.path !== undefined && what.path !== '') {
       const label = what.label
-      // A diff open on this file goes stale with the edit: refresh it.
-      const open = await read($, diff)
-      if (open !== null && open.file === label) {
-        const fresh = await loadDiff($, what.path, label)
-        await update($, diff, () => fresh)
-      }
+      // The Changes tab opens on the latest edit's diff.
+      const fresh = await loadDiff($, what.path, label)
+      await update($, diff, () => fresh)
     }
 
     return ran
@@ -1876,6 +1918,7 @@ export const register: Register = on => {
     const shownPreview = await read($, preview)
     const gitState = await read($, git)
     const found = await read($, search)
+    const tall = await shapeOf($)
     const now = await $.clock.now()
     // Only what this drawing holds can be repainted between drawings.
     forget(PANE)
@@ -1958,24 +2001,6 @@ export const register: Register = on => {
       )
     }
 
-    const actRow = (act: Act) => (
-      <Box flexDirection="column">
-        <Text wrap="truncate-end" dimColor={act.status === 'ok'}>
-          <Text color={ACT_MARK[act.status].color}>{ACT_MARK[act.status].mark}</Text>{' '}
-          {act.isSubagent ? '↳ ' : ''}
-          {act.kind.padEnd(6)}{' '}
-          {act.count === undefined ? '' : <Text weight="bold">×{act.count} </Text>}
-          {act.label}
-        </Text>
-        {act.detail !== undefined && (
-          <Text wrap="truncate-end" dimColor>
-            {'         $ '}
-            {act.detail}
-          </Text>
-        )}
-      </Box>
-    )
-
     const laneRow = (lane: Lane) => (
       <Box key={`lane-${lane.id}`} flexDirection="column">
         <Text wrap="truncate-end" dimColor={lane.status === 'ok'}>
@@ -1999,21 +2024,8 @@ export const register: Register = on => {
       await update($, diff, () => loaded)
     }
 
-    // Stage the files Claude edited, then hand over to the Git tab to write the message.
-    const stageEdits = (list: string[]) => async () => {
-      await gitDo($, cwd, ['add', '--', ...list.map(file => absolute(file, cwd))])
-      await update($, tabAtom, () => 'git')
-      await $.ui.focus({ requestId: PANE, key: 'git-msg' }).catch(() => undefined)
-    }
-
     const diffView = (shownDiff: Diff) => (
       <Box flexDirection="column">
-        <Box flexDirection="row" gap={2}>
-          <Text weight="bold">{shownDiff.file}</Text>
-          <Button key="diff-close" plain dimColor hotkey="x" onPress={() => update($, diff, () => null)}>
-            ✗ close
-          </Button>
-        </Box>
         {shownDiff.lines.length === 0 ? (
           <Text dimColor>No changes against git HEAD.</Text>
         ) : (
@@ -2079,7 +2091,13 @@ export const register: Register = on => {
 
     const findNames = () =>
       explorerView(
-        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }), Code },
+        {
+          ...kit,
+          ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }),
+          Code,
+          Markdown: $.ui.resolve(e).Markdown,
+          ...(e.surface === 'terminal' ? { Image: $.ui.resolve(e).Image } : {}),
+        },
         {
           files: projectFiles,
           codes,
@@ -2096,6 +2114,12 @@ export const register: Register = on => {
             await $.ui.focus({ requestId: PANE, key: 'ex-mention' }).catch(() => undefined)
           },
           onClose: () => update($, preview, () => null),
+          onRaw: () => update($, preview, one => (one === null ? one : { ...one, isRaw: one.isRaw !== true })),
+          onLink: href => {
+            const target = joinPath(absolute(shownPreview?.file ?? '', cwd).replace(/\/[^/]*$/, '') || '/', decodeURI(href.split('#')[0] ?? ''))
+            void loadPreview($, cwd, relative(target, cwd)).then(loaded => update($, preview, () => loaded))
+          },
+          place: size => fit(size, Math.min(255, e.props.bodyColumns), 18, tall),
           onMention: file => async () => {
             await $.prompt.fill({ text: `@${file} `, mode: 'insert' })
           },
@@ -2263,67 +2287,27 @@ export const register: Register = on => {
           },
         },
       )
-    } else if (tab === 'changes' && shownDiff !== null) {
-      body = diffView(shownDiff)
     } else if (tab === 'changes') {
-      // What Claude edited, newest first, then the commands it ran. Reads
-      // fold into a count: the Find tab and the Now tab hold the rest.
+      // The files Claude edited, newest first, and the diff of the one shown.
       const edited = touched.filter(touch => touch.edits > 0).sort((a, b) => b.at - a.at)
-      const ran = acts.filter(act => act.kind !== 'read' && act.kind !== 'edit')
-      const broke = ran.filter(act => act.status === 'failed')
-      const reads = acts.filter(act => act.kind === 'read').reduce((sum, act) => sum + (act.count ?? 1), 0)
-      body = (
-        <Box flexDirection="column" gap={1}>
-          {edited.length === 0 ? (
-            <Text dimColor>No files edited yet. Each file Claude edits is listed here, newest first.</Text>
-          ) : (
-            <Box flexDirection="column">
-              <Box flexDirection="row" columnGap={2} flexWrap="wrap">
-                <Text weight="bold">
-                  Edited <Text dimColor>{edited.length} · press for the diff</Text>
-                </Text>
-                <Button key="stage-edits" plain hotkey="c" onPress={stageEdits(edited.map(touch => touch.file))}>
-                  <Text color="success">stage these and commit →</Text>
-                </Button>
-              </Box>
-              {edited.slice(0, 15).map(touch => (
-                <Button key={`file-${touch.file}`} plain onPress={openDiff(touch.file)}>
-                  <Text color="warning">±</Text> {touch.file}
-                  {(touch.added ?? 0) + (touch.removed ?? 0) > 0 && (
-                    <Text>
-                      {' '}
-                      <Text color="success">+{touch.added}</Text> <Text color="error">−{touch.removed ?? 0}</Text>
-                    </Text>
-                  )}
-                  {touch.edits > 1 && <Text dimColor> ×{touch.edits}</Text>}
+      const names = edited.some(touch => touch.file === shownDiff?.file) || shownDiff === null
+        ? edited.map(touch => touch.file)
+        : [shownDiff.file, ...edited.map(touch => touch.file)]
+      body =
+        names.length === 0 ? (
+          <Text dimColor>No files edited yet. The diff of each file Claude edits shows here.</Text>
+        ) : (
+          <Box flexDirection="column" gap={1}>
+            <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+              {names.slice(0, 12).map(file => (
+                <Button key={`file-${file}`} plain dimColor={file !== shownDiff?.file} onPress={openDiff(file)}>
+                  <Text weight={file === shownDiff?.file ? 'bold' : 'regular'}>{file}</Text>
                 </Button>
               ))}
             </Box>
-          )}
-          {(ran.length > 0 || reads > 0) && (
-            <Box flexDirection="column">
-              <Text dimColor>
-                {ran.length} commands and searches · {reads} reads
-                {broke.length > 0 ? ` · ${broke.length} failed` : ''}
-              </Text>
-              {broke.slice(-15).flatMap((act, i, list) =>
-                act.turn !== undefined && act.turn !== list[i - 1]?.turn
-                  ? [
-                      <Text key={`turn-${act.turn}-${act.id}`} color="claude" dimColor wrap="truncate-end">
-                        {divider(
-                          allTurns.find(one => one.n === act.turn),
-                          act.turn,
-                          now,
-                        )}
-                      </Text>,
-                      actRow(act),
-                    ]
-                  : [actRow(act)],
-              )}
-            </Box>
-          )}
-        </Box>
-      )
+            {shownDiff === null ? <Text dimColor>Press a file for its diff.</Text> : diffView(shownDiff)}
+          </Box>
+        )
     } else if (isEmpty) {
       body = (
         <Text dimColor>
@@ -2359,16 +2343,16 @@ export const register: Register = on => {
       )
     }
 
-    const TABS: { id: Tab; label: string; count?: number; hotkey: string }[] = [
+    // No counts: a dot on Notes says a question waits on you, and that is all.
+    const TABS: { id: Tab; label: string; hasAlert?: boolean; hotkey: string }[] = [
       { id: 'now', label: 'Now', hotkey: '1' },
-      // A note replied to or OK'd is done: it greys out and stops counting.
-      { id: 'notes', label: 'Notes', count: current.filter(note => !note.isReplied && note.isOk !== true).length, hotkey: '2' },
-      { id: 'pictures', label: 'Pictures', count: pics.length, hotkey: '3' },
-      { id: 'changes', label: 'Changes', count: touched.filter(touch => touch.edits > 0).length, hotkey: '4' },
-      { id: 'tests', label: 'Tests', count: runs.length, hotkey: '5' },
-      { id: 'git', label: 'Git', count: gitState?.files.length ?? 0, hotkey: 'g' },
-      { id: 'find', label: 'Find', count: mode === 'text' ? found?.hits.length ?? 0 : Object.keys(codes).length, hotkey: 'f' },
-          ]
+      { id: 'notes', label: 'Notes', hasAlert: open.length > 0, hotkey: '2' },
+      { id: 'pictures', label: 'Pictures', hotkey: '3' },
+      { id: 'changes', label: 'Changes', hotkey: '4' },
+      { id: 'tests', label: 'Tests', hotkey: '5' },
+      { id: 'git', label: 'Git', hotkey: 'g' },
+      { id: 'find', label: 'Find', hotkey: 'f' },
+    ]
 
     startTicking($, now)
 
@@ -2392,7 +2376,7 @@ export const register: Register = on => {
               }}
             >
               <Text weight={one.id === tab ? 'bold' : 'regular'}>{one.label}</Text>
-              {one.count === undefined || one.count === 0 ? '' : ` ${one.count}`}
+              {one.hasAlert === true && <Text color="warning"> ●</Text>}
             </Button>
           ))}
         </Box>
