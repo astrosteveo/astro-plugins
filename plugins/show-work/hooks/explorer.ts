@@ -138,37 +138,6 @@ export function plain(line: string) {
   return (line.split('\r').at(-1) ?? '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b[()][0-9A-Za-z]/g, '')
 }
 
-// Where a selection lies in the file it was taken from: its 1-based lines,
-// quoted whole as the file has them. The screen's text may carry the gutter's
-// line numbers or the markdown's rendering, so the exact text is tried first,
-// then the text without a gutter, then its first and last lines alone.
-export function locateSelection(source: string, text: string) {
-  const lines = source.split('\n')
-  const whole = (from: number, to: number) => ({ from, to, text: lines.slice(from - 1, to).join('\n') })
-  const picked = text.replace(/\s+$/, '')
-  if (picked.trim() === '') {
-    return undefined
-  }
-  const lineOf = (at: number) => source.slice(0, at).split('\n').length
-  const at = source.indexOf(picked)
-  if (at >= 0) {
-    return whole(lineOf(at), lineOf(at) + picked.split('\n').length - 1)
-  }
-  const bare = picked.split('\n').map(line => line.replace(/^\s*\d+(?: |\t)/, ''))
-  const bareAt = source.indexOf(bare.join('\n'))
-  if (bareAt >= 0) {
-    return whole(lineOf(bareAt), lineOf(bareAt) + bare.length - 1)
-  }
-  const kept = bare.map(line => line.trim()).filter(line => line !== '')
-  const first = lines.findIndex(line => line.includes(kept[0] ?? '\u0000'))
-  const last = lines.findLastIndex(line => line.includes(kept.at(-1) ?? '\u0000'))
-  if (first >= 0 && last >= first) {
-    return whole(first + 1, last + 1)
-  }
-
-  return { from: undefined, to: undefined, text: picked }
-}
-
 // Markdown cut into prose and fenced code, in order, so the fences can be
 // drawn as highlighted code and the prose as markdown.
 export function splitFences(text: string) {
@@ -182,25 +151,6 @@ export function splitFences(text: string) {
   parts.push({ text: text.slice(at) })
 
   return parts.filter(part => !('text' in part) || part.text.trim() !== '')
-}
-
-// The diff rows a selection covers, whole and with their + or -. The drawn
-// diff keeps its gutter and markers out of a selection, so the picked text is
-// matched against each row's text: the first picked line may be the tail of its
-// row, the last the head of its own.
-export function locateDiffRows(rows: string[], text: string) {
-  const picked = text.replace(/\s+$/, '').split('\n').map(line => line.trim())
-  if (picked.every(line => line === '')) {
-    return undefined
-  }
-  const body = rows.map(row => row.slice(1))
-  for (let at = 0; at + picked.length <= rows.length; at += 1) {
-    if (picked.every((line, k) => (body[at + k] ?? '').includes(line))) {
-      return rows.slice(at, at + picked.length).join('\n')
-    }
-  }
-
-  return undefined
 }
 
 // The rows of a search's result list: each file, then its first hits.

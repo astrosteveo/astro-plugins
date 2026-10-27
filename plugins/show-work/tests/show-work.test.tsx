@@ -1020,7 +1020,7 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
 })
 
 import { askDiffText, askText, duration, expandRefs, joinPath, markerRuns } from '../hooks/register'
-import { blockAt, hitItems, hitRowText, hitsQuote, mdBlocks, locateDiffRows, locateSelection, splitFences } from '../hooks/explorer'
+import { blockAt, hitItems, hitRowText, hitsQuote, mdBlocks, splitFences } from '../hooks/explorer'
 import { gutterWidth, lineAtRow, lineRows, rowOf, rowsIn, shownRows } from '../hooks/lines'
 import {
   base64,
@@ -1535,61 +1535,13 @@ test('a markdown file previews as markdown, with a button for its source', async
   await ui.unmount()
 })
 
-test('a selection is found in its file by lines, with or without the gutter, and quoted whole', () => {
-  const source = 'import x\n\nexport function add() {\n  return a + b\n}\n'
-  // A partial line quotes the whole line.
-  expect(locateSelection(source, 'function add() {\n  return')).toEqual({
-    from: 3,
-    to: 4,
-    text: 'export function add() {\n  return a + b',
-  })
-  // The gutter's numbers come off.
-  expect(locateSelection(source, ' 3 export function add() {\n 4   return a + b')).toMatchObject({ from: 3, to: 4 })
-  // Rendered text that is not in the source is quoted as it is, with no lines.
-  expect(locateSelection('# Title\n\nSome **bold** words here.\n', 'Title\n\nSome bold words here.')).toEqual({
-    from: undefined,
-    to: undefined,
-    text: 'Title\n\nSome bold words here.',
-  })
-  expect(locateSelection('# Title\n\nSome **bold** words here.\n', 'Title')).toMatchObject({ from: 1, to: 1 })
-  expect(locateSelection(source, '   \n')).toBeUndefined()
-  expect(locateSelection(source, 'nowhere to be found')).toEqual({ from: undefined, to: undefined, text: 'nowhere to be found' })
-})
-
 test('the prompt starts with the file, its lines and the quoted text', () => {
   expect(askText('src/a.ts', { from: 3, to: 4, text: 'a\nb' })).toBe('About `src/a.ts`, lines 3 to 4:\n```ts\na\nb\n```\n')
   expect(askText('README.md', { from: 7, to: 7, text: 'x' })).toBe('About `README.md`, line 7:\n```md\nx\n```\n')
   expect(askText('a.md', { from: undefined, to: undefined, text: 'has ``` inside' })).toContain('````md')
 })
 
-test('pressing ask puts the selected lines in the prompt, or says what to do', async ($, on) => {
-  const filled = engine(on)
-  const toasts: string[] = []
-  let picked: { text: string } | undefined
-  on('process.run', (_, e) => ({
-    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
-  on('fs.read', () => ({ value: 'one\ntwo\nthree\n' }))
-  on('ui.selection', () => ({ value: picked }))
-  on('ui.toast', (_, e) => {
-    toasts.push(e.text)
-
-    return { value: undefined }
-  })
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-find' })
-  await ui.press({ key: 'ex-a.ts' })
-  await ui.press({ key: 'ex-ask' })
-  expect(filled).toEqual([])
-  expect(toasts).toHaveLength(1)
-  picked = { text: 'two' }
-  await ui.press({ key: 'ex-ask' })
-  expect(filled).toEqual(['[a.ts line 2] '])
-  await ui.unmount()
-})
-
-test('markdown splits into prose and fenced code, and a diff pick finds its rows', () => {
+test('markdown splits into prose and fenced code', () => {
   expect(splitFences('Intro\n\n```ts\nconst a = 1\n```\n\nOutro\n')).toEqual([
     { text: 'Intro\n\n' },
     { code: 'const a = 1', lang: 'ts' },
@@ -1597,11 +1549,6 @@ test('markdown splits into prose and fenced code, and a diff pick finds its rows
   ])
   expect(splitFences('no fences here')).toEqual([{ text: 'no fences here' }])
   expect(splitFences('````md\n```\nnested\n```\n````\n')[0]).toEqual({ code: '```\nnested\n```', lang: 'md' })
-  const rows = ['-old line one', '+new line one', ' same', '+added']
-  // Whole rows come back with their markers, though the pick had none.
-  expect(locateDiffRows(rows, 'line one\nnew line')).toBe('-old line one\n+new line one')
-  expect(locateDiffRows(rows, 'same')).toBe(' same')
-  expect(locateDiffRows(rows, 'nowhere')).toBeUndefined()
   expect(askDiffText('src/a.ts', '-a\n+b')).toBe('About my change to `src/a.ts`:\n```diff\n-a\n+b\n```\n')
 })
 

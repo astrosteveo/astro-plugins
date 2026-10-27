@@ -27,7 +27,7 @@ import type {
 } from '../types'
 import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
 import { shownRows } from './lines'
-import { hitItems, hitsQuote, matches, mdBlocks, locateDiffRows, locateSelection, parseGit, parseHits, parseStatus, plain } from './explorer'
+import { hitItems, hitsQuote, matches, mdBlocks, parseGit, parseHits, parseStatus, plain } from './explorer'
 import {
   FIND_BROWSER,
   LONGEST,
@@ -2342,16 +2342,6 @@ export const register: Register = on => {
       await update($, viewSel, () => null)
     }
 
-    const askDiff = (file: string, rows: string[]) => async () => {
-      const picked = await $.ui.selection()
-      if (picked === undefined || picked.text.trim() === '') {
-        await $.ui.toast('Drag over some of the diff first, then press a.')
-
-        return
-      }
-      await fillRef($, `[change to ${file}]`, askDiffText(file, locateDiffRows(rows, picked.text) ?? picked.text.trim()))
-    }
-
     // The rows of a diff dragged over, if the drag was in this diff.
     const diffSel = (shownDiff: Diff) =>
       dragged !== null && dragged.id === `diff:${shownDiff.file}` ? { from: dragged.from, to: dragged.to } : null
@@ -2471,26 +2461,6 @@ export const register: Register = on => {
           mdRows: blockRows.file === shownPreview?.file ? blockRows.rows : [],
           mdSel: dragged !== null && dragged.id === `${shownPreview?.file}#md` ? { from: dragged.from, to: dragged.to } : null,
           onClearChip: clearDrag,
-          onAsk: file => async () => {
-            const picked = await $.ui.selection()
-            const at = picked === undefined ? undefined : locateSelection(shownPreview?.source ?? '', picked.text)
-            if (at === undefined) {
-              await $.ui.toast('Drag over some text in the preview first, then press a.')
-
-              return
-            }
-            const shift = (shownPreview?.start ?? 1) - 1
-            const quoted = askText(file, {
-              text: at.text,
-              from: at.from === undefined ? undefined : at.from + shift,
-              to: at.to === undefined ? undefined : at.to + shift,
-            })
-            if (at.from === undefined || at.to === undefined) {
-              await $.prompt.fill({ text: quoted, mode: 'insert' })
-            } else {
-              await fillRef($, `[${file} ${rangeLabel(at.from + shift, at.to + shift)}]`, quoted)
-            }
-          },
           onMention: file => async () => {
             await $.prompt.fill({ text: `@${file} `, mode: 'insert' })
           },
@@ -2662,9 +2632,6 @@ export const register: Register = on => {
             </Box>
             {shownDiff !== null && (
               <Box flexDirection="row" columnGap={2}>
-                <Button key="diff-ask" variant="primary" hotkey="a" onPress={askDiff(shownDiff.file, shownDiff.lines)}>
-                  ask about selection
-                </Button>
                 <Button key="diff-wrap" plain dimColor hotkey="w" onPress={toggleWrap}>
                   wrap: {wraps ? 'on' : 'off'} <Text dimColor>w</Text>
                 </Button>
