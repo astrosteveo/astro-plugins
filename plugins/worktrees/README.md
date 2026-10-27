@@ -32,6 +32,9 @@ A `/clear` or a resume ends nothing. A session that dies without a goodbye is cl
 
 - A branch merged by squash looks unmerged to git, so its worktree stays until you run `/worktrees discard NAME`.
 - Your uncommitted changes in the main checkout stay there. The worktree starts from the last commit.
+- Files git ignores (`.env`, `node_modules`, build output) do not come into the worktree, so the first build or test run there may need setup.
+- A session started in a subdirectory lands at the root of the worktree.
+- A session that crashes leaves its worktree for up to a week before the next start takes it for abandoned.
 - The mod adds `/.claude/worktrees/` to the repository's `.git/info/exclude`, so the folder does not clutter `git status`. Nothing is committed.
 - Removal never uses `--force`. Only `/worktrees discard` does, and only for a worktree whose session has ended.
 

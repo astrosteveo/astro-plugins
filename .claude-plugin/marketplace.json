@@ -26,6 +26,11 @@
       "name": "global-memory",
       "source": "./plugins/global-memory",
       "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session."
+    },
+    {
+      "name": "worktrees",
+      "source": "./plugins/worktrees",
+      "description": "Toggle on and each session works in a git worktree of its own, removed afterwards when nothing in it would be lost."
     }
   ]
 }
