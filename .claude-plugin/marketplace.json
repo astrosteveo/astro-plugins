@@ -10,7 +10,7 @@
     {
       "name": "show-work",
       "source": "./plugins/show-work",
-      "description": "A pane where Claude shows its plan, decisions, assumptions, questions and the files and commands it touches."
+      "description": "A pane where Claude shows its plan, its subagents and the files and commands it touches, and draws designs in the chat."
     },
     {
       "name": "inline-thinking",

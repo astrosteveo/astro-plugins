@@ -3,21 +3,6 @@ export type Step = { text: string; status: StepStatus }
 /** `startedAt`, when this goal was first posted, opens the current task. */
 export type Plan = { goal: string; steps: Step[]; startedAt?: number }
 
-export type NoteKind = 'decision' | 'assumption' | 'question' | 'finding' | 'risk'
-export type Note = {
-  id: string
-  kind: NoteKind
-  text: string
-  why?: string
-  /** More for whoever opens the note: what Claude saw, where, what it means. */
-  detail?: string
-  /** When it was posted; a note from before the current task has none or less. */
-  at?: number
-  isReplied: boolean
-  /** The person read it and pressed OK: no reply needed. */
-  isOk?: boolean
-}
-
 /** `find` is not a tab of the bar: the search box brings it up. */
 export type Tab = 'now' | 'pictures' | 'changes' | 'tests' | 'git' | 'find'
 
@@ -150,7 +135,6 @@ export type Diagram = {
 declare module 'claude-code' {
   interface McpToolInputs {
     'mcp__show-work__plan': { goal: string; steps: Step[] }
-    'mcp__show-work__note': { kind: NoteKind; text: string; why?: string; detail?: string }
     'mcp__show-work__show': {
       caption: string
       d2?: string
@@ -169,7 +153,6 @@ declare module 'claude-code' {
   interface PluginState {
     'show-work': {
       plan: Shaped<Plan | null>
-      notes: Shaped<Note[]>
       activity: Shaped<Act[]>
       pictures: Shaped<Picture[]>
       diagrams: Shaped<Diagram[]>
@@ -198,7 +181,6 @@ declare module 'claude-code' {
       refs: { marker: string; text: string }[]
       /** What the person's selection put in the prompt, and where it came from: a file path, `diff:` and one, or `hits`. */
       viewSel: { id: string; label: string } | null
-      openNote: string | null
     }
   }
 }

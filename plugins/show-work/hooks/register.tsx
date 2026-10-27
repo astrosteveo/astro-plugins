@@ -18,8 +18,6 @@ import type {
   ActStatus,
   Diff,
   Lane,
-  Note,
-  NoteKind,
   Picture,
   Step,
   StepStatus,
@@ -77,9 +75,6 @@ const OWN = 'mcp__show-work__'
 const plan = atom({ plugin: 'show-work', key: 'plan' } as const, null, {
   shape: 'plan-1',
 })
-const notes = atom({ plugin: 'show-work', key: 'notes' } as const, [], {
-  shape: 'notes-1',
-})
 const activity = atom({ plugin: 'show-work', key: 'activity' } as const, [], {
   shape: 'activity-2',
 })
@@ -132,8 +127,6 @@ let typing = 0
 const SEARCH_WAIT = 250
 // The shortest text worth a search.
 const SEARCH_LEAST = 2
-// The note opened to show its why, detail and actions; null when none is.
-const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
 const KEPT_PICTURES = 30
 const KEPT_DIAGRAMS = 40
@@ -164,13 +157,6 @@ const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 const MARKS_MOST = 12
 
 const STEP_STATUSES: readonly StepStatus[] = ['todo', 'doing', 'done', 'dropped']
-const NOTE_KINDS: readonly NoteKind[] = [
-  'decision',
-  'assumption',
-  'question',
-  'finding',
-  'risk',
-]
 
 // Tools whose calls are bookkeeping, not work worth showing.
 const QUIET = new Set([
@@ -188,17 +174,10 @@ const GUIDE = `# Showing your work
 The person watches a "Show work" pane beside the chat. Keep it current so they can follow and steer your work without reading every tool call. It already logs your reads, edits and commands by itself.
 
 - For any task of more than a couple of steps, call mcp__show-work__plan first with the goal as you understand it and your steps. Call it again whenever a step starts, finishes or the plan changes; mark exactly one step "doing" while you work.
-- Call mcp__show-work__note the moment you:
-  - make a choice the person might have made differently ("decision", with the reason in "why");
-  - assume something you have not confirmed ("assumption");
-  - hit a question only the person can answer ("question"); if you can go on under a stated assumption, note both and keep working rather than stopping;
-  - learn something that changes the picture ("finding"), or see a hazard ("risk").
 - Give each Bash call a description that says why you run it, not only what it does: the pane shows it as the reason above the command.
-- Notes are how you keep the person in the loop without stopping. Once the goal is clear, keep working until it is met; stop only for a question that blocks the work or a snag that needs their direction.
+- Once the goal is clear, keep working until it is met; stop only for a question that blocks the work or a snag that needs their direction.
 - To show the person a design, call mcp__show-work__show and describe its structure; the tool lays it out. Use d2 for architecture, mermaid for flows, sequences and states, and html with the wireframe classes for a screen, menu or HUD; svg only for a freeform drawing. Show a design before you build it, so they can veto it. The result hands you the picture: fix overlaps and cut or crowded text, and show it again before you go on. Images you Read land in the pane by themselves.
-- To show the person an image, call mcp__show-work__show with a path, a url for one on the web (reference art, an asset, a screenshot in docs), or images to set several side by side for them to compare and pick from. Add marks to point at what matters in it: a bug in a screenshot, what changed in a mockup.
-- One short sentence per note, written to stand alone. The person presses a question to answer it, and opens any other note to read its "why" and "detail", then vetoes, corrects or asks more, or presses OK. So put in "detail" what they need to judge the note: what you saw and where, what it means, what you would do.
-- Notes do not replace your reply: still say what matters in chat, briefly.`
+- To show the person an image, call mcp__show-work__show with a path, a url for one on the web (reference art, an asset, a screenshot in docs), or images to set several side by side for them to compare and pick from. Add marks to point at what matters in it: a bug in a screenshot, what changed in a mockup.`
 
 const PLAN_TOOL = {
   name: 'plan',
@@ -225,30 +204,6 @@ const PLAN_TOOL = {
       },
     },
     required: ['goal', 'steps'],
-  },
-} as const
-
-const NOTE_TOOL = {
-  name: 'note',
-  description:
-    'Post a decision, assumption, open question, finding or risk to the Show work pane, where the person can answer a question, or open another note to read more and veto, correct or OK it.',
-  isDeferred: false,
-  inputSchema: {
-    type: 'object',
-    properties: {
-      kind: { type: 'string', enum: NOTE_KINDS },
-      text: { type: 'string', description: 'One short sentence.' },
-      why: {
-        type: 'string',
-        description: 'The reason, for a decision or a risk. Optional.',
-      },
-      detail: {
-        type: 'string',
-        description:
-          'Shown when the person opens the note: what you saw and where, what it means, what you would do. Two or three sentences. Optional.',
-      },
-    },
-    required: ['kind', 'text'],
   },
 } as const
 
@@ -318,29 +273,6 @@ Add marks to any of these to point things out: numbered boxes or rings in the pi
   },
 } as const
 
-// The tag says who wrote the note; the ask says what the person does with it.
-const TAGS: Record<NoteKind, { tag: string; ask: string; color: Color }> = {
-  decision: { tag: 'I chose', ask: 'veto?', color: 'claude' },
-  assumption: { tag: 'I assume', ask: 'correct me?', color: 'warning' },
-  question: { tag: 'I ask', ask: 'answer me', color: 'suggestion' },
-  finding: { tag: 'I found', ask: 'FYI', color: 'success' },
-  risk: { tag: 'Risk', ask: 'heads up', color: 'error' },
-}
-
-// What an opened note offers: a reply started in the prompt, then an OK. A
-// question has none: pressing it starts the answer at once.
-const ACTIONS: Record<Exclude<NoteKind, 'question'>, { reply: string; fill: string; ok: string }> = {
-  decision: { reply: 'Veto', fill: "I'd rather ", ok: 'OK' },
-  assumption: { reply: 'Correct it', fill: 'Not quite: ', ok: 'Right' },
-  finding: { reply: 'Tell me more', fill: 'tell me more.', ok: 'Got it' },
-  risk: {
-    reply: 'What would you do?',
-    fill: 'how likely is it, and what would you do about it?',
-    ok: 'Got it',
-  },
-}
-
-// The field each tool's tab puts the typing in.
 const STEP_MARK: Record<StepStatus, { mark: string; color?: Color }> = {
   todo: { mark: '·' },
   doing: { mark: '▸', color: 'claude' },
@@ -352,34 +284,6 @@ const ACT_MARK: Record<ActStatus, { mark: string; color: Color }> = {
   runs: { mark: '…', color: 'warning' },
   ok: { mark: '✓', color: 'success' },
   failed: { mark: '✗', color: 'error' },
-}
-
-// Starts the reply to a note in the prompt.
-async function replyToNote($: EngineInterface, note: Note, fill = '') {
-  await $.prompt.fill({ text: replyPrefix(note) + fill, mode: 'insert' })
-  await update($, openNote, () => null)
-}
-
-// The person has read it: no reply needed.
-async function markNoteOk($: EngineInterface, note: Note) {
-  await update($, notes, list => list.map(one => (one.id === note.id ? { ...one, isOk: true } : one)))
-  await update($, openNote, () => null)
-}
-
-// What a card's reply button says, and what it starts the reply with.
-const replyWord = (note: Note) => (note.kind === 'question' ? 'Answer' : ACTIONS[note.kind].reply)
-const fillOf = (note: Note) => (note.kind === 'question' ? '' : ACTIONS[note.kind].fill)
-
-// What a card's dismiss button says: a question has no OK, only a way to put it away.
-const okWord = (note: Note) => (note.kind === 'question' ? '✗' : ACTIONS[note.kind].ok)
-
-// The order cards come in: what needs an answer first.
-const CARD_ORDER: Record<NoteKind, number> = { question: 0, risk: 1, assumption: 2, decision: 3, finding: 4 }
-
-export function replyPrefix(note: Note) {
-  const quote = note.text.length > 80 ? note.text.slice(0, 77) + '...' : note.text
-
-  return `About your ${note.kind} "${quote}": `
 }
 
 // A sheet's tiles go by letters, A first: the digits switch the pane's tabs.
@@ -414,14 +318,6 @@ export function cardWidth(picture: Pick<Picture, 'tiles' | 'marks'>, room: numbe
 // The hover group of a picture's mark: its spot on the picture and its row
 // in the card light together.
 export const markScope = (picture: Pick<Picture, 'id'>, n: number) => `mark-${picture.id.slice(-40)}-${n + 1}`
-
-// A prompt replies to a note when it quotes it and says something after.
-export function isReplyTo(note: Note, text: string) {
-  const prefix = replyPrefix(note)
-  const at = text.indexOf(prefix)
-
-  return at >= 0 && text.slice(at + prefix.length).trim() !== ''
-}
 
 const firstLine = (text: string) => (text.split('\n')[0] ?? '').trim()
 
@@ -458,11 +354,6 @@ export function readMarks(value: unknown): Mark[] {
 
     return [{ x: x ?? 0, y: y ?? 0, ...(isBox ? { w, h } : {}), note, ...(detail === '' ? {} : { detail }) }]
   })
-}
-
-// Whether a note belongs to the task the plan opened; with no plan, all do.
-export function isCurrent(note: Note, since: number | undefined) {
-  return since === undefined || (note.at ?? -1) >= since
 }
 
 export function absolute(path: string, cwd: string) {
@@ -502,18 +393,6 @@ export function briefPlan(input: unknown) {
   const now = asText(doing?.text)
 
   return { goal: given.goal, steps: now === '' ? progress : `${progress}, doing: ${now}` }
-}
-
-// A note call's input as its row prints it: the kind and the sentence, with
-// the longer reasons by their size; the pane and ctrl+o hold them whole.
-export function briefNote(input: unknown) {
-  const given = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
-  const brief: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(given)) {
-    brief[key] = (key === 'why' || key === 'detail') && typeof value === 'string' ? `${value.length} characters` : value
-  }
-
-  return brief
 }
 
 // Rows a picture takes at a width, a terminal cell being `tall` times as
@@ -1421,11 +1300,10 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
     await $.tool.register(PLAN_TOOL)
-    await $.tool.register(NOTE_TOOL)
     await $.tool.register(SHOW_TOOL)
     await $.command.register({
       name: 'work',
-      description: "Show Claude's plan, notes and activity in a pane",
+      description: "Show Claude's plan and activity in a pane",
       argumentHint: '[clear]',
     })
     void $.ui.open({ id: PANE, title: TITLE })
@@ -1474,25 +1352,13 @@ export const register: Register = on => {
       }
       await update($, refs, list => list.filter(one => !expanded.used.includes(one.marker)))
     }
-    const entered = await next(expanded.used.length === 0 ? e : { ...e, text: expanded.text })
-    if (entered.drop !== undefined || e.command !== undefined) {
-      return entered
-    }
 
-    const list = await read($, notes)
-    if (list.some(note => !note.isReplied && isReplyTo(note, e.text))) {
-      await update($, notes, all =>
-        all.map(note => (isReplyTo(note, e.text) ? { ...note, isReplied: true } : note)),
-      )
-    }
-
-    return entered
+    return next(expanded.used.length === 0 ? e : { ...e, text: expanded.text })
   })
 
   on('command.run', { command: 'work' }, async ($, e) => {
     if (asText(e.args) === 'clear') {
       await update($, plan, () => null)
-      await update($, notes, () => [])
       await update($, activity, () => [])
       await update($, pictures, () => [])
       await update($, picked, () => null)
@@ -1521,31 +1387,6 @@ export const register: Register = on => {
     const done = steps.filter(step => step.status === 'done').length
 
     return { result: `Plan shown: ${done}/${steps.length} steps done.` }
-  })
-
-  on('tool.call', { tool: 'mcp__show-work__note' }, async ($, e) => {
-    const text = asText(e.text)
-    if (text === '') {
-      return { deny: 'A note needs text.' }
-    }
-
-    const kind = NOTE_KINDS.includes(e.kind as NoteKind)
-      ? (e.kind as NoteKind)
-      : 'finding'
-    const why = asText(e.why)
-    const detail = asText(e.detail)
-    const note: Note = {
-      id: crypto.randomUUID(),
-      kind,
-      text,
-      ...(why === '' ? {} : { why }),
-      ...(detail === '' ? {} : { detail }),
-      at: await $.clock.now(),
-      isReplied: false,
-    }
-    await update($, notes, list => [...list, note].slice(-100))
-
-    return { result: `Noted (${kind}).` }
   })
 
   on('tool.call', { tool: 'mcp__show-work__show' }, async ($, e) => {
@@ -1968,7 +1809,7 @@ export const register: Register = on => {
   })
 
   // While Claude works, a strip above the prompt: the pulse, the step it is
-  // on, its agents and what waits on you. The context stays in the status
+  // on, its agents and the last test run. The context stays in the status
   // line, which shows it already.
   // Clicking into the search box, or tabbing to it, brings up what Find shows.
   on('ui.focus', async ($, e, next) => {
@@ -1984,70 +1825,11 @@ export const register: Register = on => {
     const acts = await read($, activity)
     const shownPlan = await read($, plan)
     const allLanes = await read($, lanes)
-    const allNotes = await read($, notes)
     const runs = await read($, tests)
     const running = allLanes.filter(lane => lane.status === 'runs').length
-    // What waits on the person, the questions first: each is a card here, where they look.
-    const waiting = allNotes
-      .filter(note => isCurrent(note, shownPlan?.startedAt) && !note.isReplied && note.isOk !== true)
-      .sort((a, b) => CARD_ORDER[a.kind] - CARD_ORDER[b.kind] || (b.at ?? 0) - (a.at ?? 0))
     forget(e.requestId)
-    if (e.props.hasSurvey) {
+    if (e.props.hasSurvey || (!e.props.isWorking && running === 0)) {
       return next(e)
-    }
-    const cards =
-      waiting.length === 0
-        ? undefined
-        : (() => {
-            const { Box, Button, Text } = $.ui.resolve(e)
-
-            return (
-              <Box flexDirection="column">
-                {waiting.slice(0, 3).map(note => (
-                  <Box
-                    key={`card-${note.id}`}
-                    flexDirection="column"
-                    borderStyle="round"
-                    borderColor={TAGS[note.kind].color}
-                    paddingX={1}
-                  >
-                    <Box flexDirection="row" columnGap={1}>
-                      <Text color={TAGS[note.kind].color} weight="bold">
-                        {TAGS[note.kind].tag}
-                      </Text>
-                      <Box flexGrow={1}>
-                        <Text wrap="truncate-end">{note.text}</Text>
-                      </Box>
-                      {note.kind === 'question' ? (
-                        <Button key={`card-reply-${note.id}`} variant="primary" onPress={() => replyToNote($, note)}>
-                          Answer
-                        </Button>
-                      ) : (
-                        <Button
-                          key={`card-reply-${note.id}`}
-                          variant="secondary"
-                          onPress={() => replyToNote($, note, fillOf(note))}
-                        >
-                          {replyWord(note)}
-                        </Button>
-                      )}
-                      <Button key={`card-ok-${note.id}`} plain onPress={() => markNoteOk($, note)}>
-                        {okWord(note)}
-                      </Button>
-                    </Box>
-                    {note.why !== undefined && (
-                      <Text dimColor wrap="truncate-end">
-                        {note.why}
-                      </Text>
-                    )}
-                  </Box>
-                ))}
-                {waiting.length > 3 && <Text dimColor>+{waiting.length - 3} more, in Now</Text>}
-              </Box>
-            )
-          })()
-    if (!e.props.isWorking && running === 0) {
-      return cards === undefined ? next(e) : cards
     }
 
     const { Box, Text } = $.ui.resolve(e)
@@ -2060,12 +1842,7 @@ export const register: Register = on => {
       ...(last === undefined ? [] : [last.failed === 0 && !last.isError ? `✓ ${last.passed}` : `✗ ${last.failed} failing`]),
     ]
     if (e.surface !== 'terminal') {
-      return (
-        <Box flexDirection="column">
-          {cards}
-          <Text dimColor>{bits.join(' · ')}</Text>
-        </Box>
-      )
+      return <Text dimColor>{bits.join(' · ')}</Text>
     }
 
     const { Raster } = $.ui.resolve(e)
@@ -2080,14 +1857,11 @@ export const register: Register = on => {
     startTicking($, now)
 
     return (
-      <Box flexDirection="column">
-        {cards}
-        <Box flexDirection="row" gap={1}>
-          <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
-          <Text wrap="truncate-end" dimColor>
-            {bits.join(' · ')}
-          </Text>
-        </Box>
+      <Box flexDirection="row" gap={1}>
+        <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
+        <Text wrap="truncate-end" dimColor>
+          {bits.join(' · ')}
+        </Text>
       </Box>
     )
   })
@@ -2097,7 +1871,6 @@ export const register: Register = on => {
   for (const [tool, brief] of [
     ['mcp__show-work__show', briefShow],
     ['mcp__show-work__plan', briefPlan],
-    ['mcp__show-work__note', briefNote],
   ] as const) {
     on('ui.render', { component: 'ToolUse', props: { tool } }, async (_, e, next) =>
       e.props.isExpanded === true ? next(e) : next({ ...e, props: { ...e.props, input: brief(e.props.input) } }),
@@ -2239,7 +2012,6 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Code, Text } = $.ui.resolve(e)
     const shown = await read($, plan)
-    const allNotes = await read($, notes)
     const acts = await read($, activity)
     const pics = await read($, pictures)
     const pickedId = await read($, picked)
@@ -2247,7 +2019,6 @@ export const register: Register = on => {
     const mode = await read($, findMode)
     const wraps = await read($, wrapLines)
     const dragged = await read($, viewSel)
-    const openId = await read($, openNote)
     const shownDiff = await read($, diff)
     const allLanes = await read($, lanes)
     const allTurns = await read($, turns)
@@ -2270,68 +2041,14 @@ export const register: Register = on => {
 
     // The tabs always show, the tools among them work from the start; the
     // Now tab says what will come while nothing has.
-    const isEmpty = shown === null && [allNotes, acts, pics, allTurns, runs].every(list => list.length === 0)
+    const isEmpty = shown === null && [acts, pics, allTurns, runs].every(list => list.length === 0)
 
     const since = shown?.startedAt
-    const current = allNotes.filter(note => isCurrent(note, since))
     const picture = pics.find(one => one.id === pickedId) ?? pics.at(-1)
     // Lanes of this task, and any still running from before it.
     const currentLanes = allLanes.filter(
       lane => since === undefined || lane.at >= since || lane.status === 'runs',
     )
-
-    // The note turns replied when the prompt is sent, in prompt.submit.
-    const reply = (note: Note, fill = '') => () => replyToNote($, note, fill)
-
-    const ok = (note: Note) => () => markNoteOk($, note)
-
-    const noteRow = (note: Note) => {
-      const isOpen = note.id === openId
-      const isDone = note.isReplied || note.isOk === true
-      let status = `· ${TAGS[note.kind].ask}`
-      if (note.isReplied) {
-        status = '↩ replied'
-      } else if (note.isOk === true) {
-        status = '✓ ok'
-      } else if (note.kind !== 'question') {
-        status += isOpen ? ' ▾' : ' ▸'
-      }
-      const press =
-        note.kind === 'question'
-          ? reply(note)
-          : () => update($, openNote, id => (id === note.id ? null : note.id))
-
-      return (
-        <Box flexDirection="column">
-          <Button key={note.id} plain dimColor={isDone} onPress={press}>
-            <Text color={TAGS[note.kind].color} weight="bold">
-              {TAGS[note.kind].tag}
-            </Text>{' '}
-            {note.text} <Text dimColor>{status}</Text>
-          </Button>
-          {isOpen && note.kind !== 'question' && (
-            <Box flexDirection="column" paddingLeft={2}>
-              {note.why !== undefined && <Text dimColor>why: {note.why}</Text>}
-              {note.detail !== undefined && <Text>{note.detail}</Text>}
-              <Box flexDirection="row" gap={1}>
-                <Button
-                  key={`reply-${note.id}`}
-                  variant="primary"
-                  onPress={reply(note, ACTIONS[note.kind].fill)}
-                >
-                  {ACTIONS[note.kind].reply}
-                </Button>
-                {!isDone && (
-                  <Button key={`ok-${note.id}`} variant="secondary" onPress={ok(note)}>
-                    {ACTIONS[note.kind].ok}
-                  </Button>
-                )}
-              </Box>
-            </Box>
-          )}
-        </Box>
-      )
-    }
 
     const laneRow = (lane: Lane) => (
       <Box key={`lane-${lane.id}`} flexDirection="column">
@@ -2656,8 +2373,8 @@ export const register: Register = on => {
     } else if (isEmpty) {
       body = (
         <Text dimColor>
-          Nothing yet. Claude posts its plan, decisions and questions here as it works, and logs the files and
-          commands it touches. Meanwhile: f finds files and text, g is git.
+          Nothing yet. Claude posts its plan here as it works, and logs the files and commands it touches.
+          Meanwhile: f finds files and text, g is git.
         </Text>
       )
     } else {
@@ -2676,20 +2393,11 @@ export const register: Register = on => {
               {currentLanes.slice(-6).map(laneRow)}
             </Box>
           )}
-          {current.length > 0 && (
-            <Box flexDirection="column">
-              <Text weight="bold">
-                Notes <Text dimColor>what Claude chose, assumed and found this task</Text>
-              </Text>
-              {current.slice(-8).map(note => noteRow(note))}
-            </Box>
-          )}
         </Box>
       )
     }
 
-    // No counts, and no Notes or Find: what needs an answer rides above the
-    // prompt, and the search box brings up Find.
+    // No counts, and no Find: the search box brings it up.
     const TABS: { id: Tab; label: string; hotkey: string }[] = [
       { id: 'now', label: 'Now', hotkey: '1' },
       { id: 'pictures', label: 'Pictures', hotkey: '2' },

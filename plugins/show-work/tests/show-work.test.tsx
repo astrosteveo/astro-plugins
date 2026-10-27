@@ -4,7 +4,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import { across, blowUp, errorLines, fromHex, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { briefNote, briefPlan, briefShow, cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
+import { briefPlan, briefShow, cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -75,7 +75,7 @@ test('an empty pane says what will show there', async ($, on) => {
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect((await ui.find({ type: 'Text', text: /Nothing yet/ }))?.text).toMatch(
-      /plan, decisions and questions/,
+      /posts its plan here/,
     )
     await ui.unmount()
   }
@@ -106,13 +106,6 @@ test('the plan tool draws the goal and steps', async ($, on) => {
     )
     await ui.unmount()
   }
-})
-
-test('a note without text is refused', async ($, on) => {
-  engine(on)
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  const ran = await $.tool.call({ tool: 'mcp__show-work__note', kind: 'risk', text: ' ' })
-  expect(ran.deny).toBe('A note needs text.')
 })
 
 test('changes list the edited files and nothing else', async ($, on) => {
@@ -608,7 +601,7 @@ test('a brief show input keeps paths and URLs, and lists a sheet by its labels',
   expect(briefShow(undefined)).toEqual({})
 })
 
-test('a brief plan input counts its steps, and a brief note input sizes its reasons', () => {
+test('a brief plan input counts its steps', () => {
   expect(
     briefPlan({
       goal: 'Ship it',
@@ -621,12 +614,6 @@ test('a brief plan input counts its steps, and a brief note input sizes its reas
   ).toEqual({ goal: 'Ship it', steps: '1/3 done, doing: Film the scene' })
   expect(briefPlan({ goal: 'x', steps: [{ text: 'a', status: 'done' }] })).toEqual({ goal: 'x', steps: '1/1 done' })
   expect(briefPlan(undefined)).toEqual({ goal: undefined, steps: '0/0 done' })
-  expect(briefNote({ kind: 'decision', text: 'Use X.', why: 'Because.', detail: 'Longer.' })).toEqual({
-    kind: 'decision',
-    text: 'Use X.',
-    why: '8 characters',
-    detail: '7 characters',
-  })
 })
 
 test('pressing a tile of a sheet starts the prompt with the pick',async ($, on) => {
@@ -1627,71 +1614,6 @@ test('search hits list by file, and a drag over them quotes the hits with their 
   expect(hitsQuote('jump', items, 0, 0)).toBeUndefined()
 })
 
-test('notes ride above the prompt as cards: a question to answer, a decision to veto or OK', async ($, on) => {
-  const filled = engine(on)
-  on('ui.render', ENGINE_ROW)
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.tool.call({
-    tool: 'mcp__show-work__note',
-    kind: 'decision',
-    text: 'Use a CanvasLayer for the menu',
-    why: 'It draws above the game camera',
-  })
-  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'question', text: 'Should Esc also close the menu?' })
-  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'finding', text: 'The save system writes to user://' })
-
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const band = await $.ui.mount({ ...BAND(false), surface })
-    // Idle, and still there: what needs an answer is not hidden. Questions come first.
-    const buttons = (await band.findAll({ type: 'Button' })).map(one => one.text)
-    expect(buttons).toEqual(['Answer', '✗', 'Veto', 'OK', 'Tell me more', 'Got it'])
-    expect(await band.find({ type: 'Text', text: /It draws above the game camera/ })).toBeDefined()
-    await band.unmount()
-  }
-
-  const band = await $.ui.mount({ ...BAND(false), surface: 'terminal' })
-  const answer = await band.find({ type: 'Button', text: 'Answer' })
-  await band.press({ key: answer?.key ?? '' })
-  expect(filled).toEqual(['About your question "Should Esc also close the menu?": '])
-  // Pressing alone is no reply; sending words after the quote is.
-  expect(await band.find({ type: 'Button', text: 'Answer' })).toBeDefined()
-  await $.prompt.submit({ text: `${filled[0]}Yes.`, wait: false, origin: { kind: 'composer' } })
-  expect(await band.find({ type: 'Button', text: 'Answer' })).toBeUndefined()
-  // Veto starts a reply; OK puts the card away without one.
-  const veto = await band.find({ type: 'Button', text: 'Veto' })
-  await band.press({ key: veto?.key ?? '' })
-  expect(filled.at(-1)).toBe(`About your decision "Use a CanvasLayer for the menu": I'd rather `)
-  const ok = await band.find({ type: 'Button', text: 'Got it' })
-  await band.press({ key: ok?.key ?? '' })
-  expect((await band.findAll({ type: 'Button' })).map(one => one.text)).toEqual(['Veto', 'OK'])
-  await band.unmount()
-})
-
-test('Now keeps a log of the task\'s notes, opened to their reasons, and a new goal hides the old', async ($, on) => {
-  engine(on)
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'mcp__show-work__plan', goal: 'First', steps: [] })
-  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'finding', text: 'Old news' })
-  await $.tool.call({ tool: 'mcp__show-work__plan', goal: 'Second', steps: [] })
-  await $.tool.call({
-    tool: 'mcp__show-work__note',
-    kind: 'decision',
-    text: 'Fresh call',
-    why: 'Because',
-    detail: 'More about it.',
-  })
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await ui.find({ type: 'Button', text: /Old news/ })).toBeUndefined()
-  const row = await ui.find({ type: 'Button', text: /Fresh call/ })
-  expect(row?.text).toBe('I chose Fresh call · veto? ▸')
-  expect(await ui.find({ type: 'Text', text: /More about it/ })).toBeUndefined()
-  await ui.press({ key: row?.key ?? '' })
-  expect(await ui.find({ type: 'Text', text: /More about it/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /why: Because/ })).toBeDefined()
-  await ui.unmount()
-})
-
 test('the tabs are Now, Pictures, Changes, Tests and Git; the search box brings up Find when focused', async ($, on) => {
   engine(on)
   on('process.run', (_, e) => ({
@@ -1700,7 +1622,7 @@ test('the tabs are Now, Pictures, Changes, Tests and Git; the search box brings 
   on('ui.focus', () => ({}))
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  const tabs = (await ui.findAll({ type: 'Button', text: /^(Now|Pictures|Changes|Tests|Git|Notes|Find)$/ })).map(one => one.text)
+  const tabs = (await ui.findAll({ type: 'Button', text: /^(Now|Pictures|Changes|Tests|Git|Find)$/ })).map(one => one.text)
   expect(tabs).toEqual(['Now', 'Pictures', 'Changes', 'Tests', 'Git'])
   // Nothing of Find shows until the search box is used.
   expect(await ui.find({ type: 'Text', text: /^\d+ files/ })).toBeUndefined()
