@@ -114,6 +114,8 @@ const showEarlier = atom({ plugin: 'show-work', key: 'showEarlier' } as const, f
 const wrapLines = atom({ plugin: 'show-work', key: 'wrapLines' } as const, true)
 // The lines the person dragged over in a viewer, waiting on the chip.
 const viewSel = atom({ plugin: 'show-work', key: 'viewSel' } as const, null)
+// Quoted lines behind the short markers in the prompt box, swapped in on send.
+const refs = atom({ plugin: 'show-work', key: 'refs' } as const, [])
 // The note opened to show its why, detail and actions; null when none is.
 const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
@@ -1068,20 +1070,70 @@ export function askDiffText(file: string, rows: string) {
   return `About my change to \`${file}\`:\n${fence}diff\n${rows}\n${fence}\n`
 }
 
+type Ref = { marker: string; text: string }
+
+// The marker's runs in a draft, painted so it reads as one thing.
+export function markerRuns(text: string, list: Ref[]) {
+  const runs: { start: number; end: number; color: 'claude'; underline: true }[] = []
+  for (const { marker } of list) {
+    for (let at = text.indexOf(marker); at >= 0; at = text.indexOf(marker, at + marker.length)) {
+      runs.push({ start: at, end: at + marker.length, color: 'claude', underline: true })
+    }
+  }
+
+  return runs.sort((a, b) => a.start - b.start)
+}
+
+// A draft with each marker swapped for its quoted lines, each on lines of its
+// own; the markers it used.
+export function expandRefs(text: string, list: Ref[]) {
+  let out = text
+  const used: string[] = []
+  for (const { marker, text: quote } of list) {
+    if (!out.includes(marker)) {
+      continue
+    }
+    used.push(marker)
+    out = out.split(marker).reduce((joined, part, n) => {
+      if (n === 0) {
+        return part
+      }
+      const before = joined.trimEnd()
+      const after = part.trimStart()
+
+      return `${before}${before === '' ? '' : '\n'}${quote.trimEnd()}${after === '' ? '' : `\n${after}`}`
+    }, '')
+  }
+
+  return { text: out, used }
+}
+
+// Puts a marker in the prompt, painted, and keeps what it stands for.
+async function fillRef($: EngineInterface, marker: string, quote: string) {
+  await update($, refs, list => [...list.filter(one => one.marker !== marker), { marker, text: quote }])
+  await $.prompt.fill({
+    text: `${marker} `,
+    mode: 'insert',
+    decorations: [{ start: 0, end: marker.length, color: 'claude', underline: true }],
+  })
+}
+
 // The prompt text and the label for the lines dragged over in a viewer, read
 // from whichever viewer holds them; undefined where that viewer has moved on.
 export function askFromSel(
   sel: { id: string; from: number; to: number },
   pv: Preview | null,
   df: Diff | null,
-): { label: string; text: string } | undefined {
+): { label: string; text: string; marker: string } | undefined {
   if (sel.id.startsWith('diff:')) {
     if (df === null || `diff:${df.file}` !== sel.id) {
       return undefined
     }
     const rows = shownRows(df.lines).slice(sel.from, sel.to + 1).join('\n')
 
-    return { label: rangeLabel(sel.from + 1, sel.to + 1), text: askDiffText(df.file, rows) }
+    const label = rangeLabel(sel.from + 1, sel.to + 1)
+
+    return { label, text: askDiffText(df.file, rows), marker: `[change to ${df.file} ${label}]` }
   }
   if (pv === null || pv.file !== sel.id) {
     return undefined
@@ -1089,9 +1141,12 @@ export function askFromSel(
   const start = pv.start ?? 1
   const text = pv.source.split('\n').slice(sel.from, sel.to + 1).join('\n')
 
+  const label = rangeLabel(start + sel.from, start + sel.to)
+
   return {
-    label: rangeLabel(start + sel.from, start + sel.to),
+    label,
     text: askText(pv.file, { from: start + sel.from, to: start + sel.to, text }),
+    marker: `[${pv.file} ${label}]`,
   }
 }
 
@@ -1271,8 +1326,20 @@ export const register: Register = on => {
     }
   })
 
+  // A marker in the draft stands for lines quoted from a viewer; they go in as the prompt is sent.
+  on('prompt.edit', async ($, e, next) => {
+    const edited = await next(e)
+    const runs = markerRuns(edited.text, await read($, refs))
+
+    return runs.length === 0 ? edited : { ...edited, decorations: [...(edited.decorations ?? []), ...runs] }
+  })
+
   on('prompt.submit', async ($, e, next) => {
-    const entered = await next(e)
+    const expanded = expandRefs(e.text, await read($, refs))
+    if (expanded.used.length > 0) {
+      await update($, refs, list => list.filter(one => !expanded.used.includes(one.marker)))
+    }
+    const entered = await next(expanded.used.length === 0 ? e : { ...e, text: expanded.text })
     if (entered.drop !== undefined || e.command !== undefined) {
       return entered
     }
@@ -1798,7 +1865,7 @@ export const register: Register = on => {
                   key="band-chip"
                   variant="primary"
                   onPress={async () => {
-                    await $.prompt.fill({ text: asked.text, mode: 'insert' })
+                    await fillRef($, asked.marker, asked.text)
                     await update($, viewSel, () => null)
                   }}
                 >
@@ -2152,7 +2219,7 @@ export const register: Register = on => {
 
         return
       }
-      await $.prompt.fill({ text: askDiffText(file, locateDiffRows(rows, picked.text) ?? picked.text.trim()), mode: 'insert' })
+      await fillRef($, `[change to ${file}]`, askDiffText(file, locateDiffRows(rows, picked.text) ?? picked.text.trim()))
     }
 
     // The rows of a diff dragged over, if the drag was in this diff.
@@ -2162,7 +2229,7 @@ export const register: Register = on => {
     const askDiffChip = (shownDiff: Diff) => async () => {
       const at = dragged === null ? undefined : askFromSel(dragged, null, shownDiff)
       if (at !== undefined) {
-        await $.prompt.fill({ text: at.text, mode: 'insert' })
+        await fillRef($, at.marker, at.text)
       }
       await update($, viewSel, () => null)
     }
@@ -2285,7 +2352,7 @@ export const register: Register = on => {
           onChip: async () => {
             const at = dragged === null ? undefined : askFromSel(dragged, shownPreview, null)
             if (at !== undefined) {
-              await $.prompt.fill({ text: at.text, mode: 'insert' })
+              await fillRef($, at.marker, at.text)
             }
             await update($, viewSel, () => null)
           },
@@ -2299,14 +2366,16 @@ export const register: Register = on => {
               return
             }
             const shift = (shownPreview?.start ?? 1) - 1
-            await $.prompt.fill({
-              text: askText(file, {
-                text: at.text,
-                from: at.from === undefined ? undefined : at.from + shift,
-                to: at.to === undefined ? undefined : at.to + shift,
-              }),
-              mode: 'insert',
+            const quoted = askText(file, {
+              text: at.text,
+              from: at.from === undefined ? undefined : at.from + shift,
+              to: at.to === undefined ? undefined : at.to + shift,
             })
+            if (at.from === undefined || at.to === undefined) {
+              await $.prompt.fill({ text: quoted, mode: 'insert' })
+            } else {
+              await fillRef($, `[${file} ${rangeLabel(at.from + shift, at.to + shift)}]`, quoted)
+            }
           },
           onMention: file => async () => {
             await $.prompt.fill({ text: `@${file} `, mode: 'insert' })

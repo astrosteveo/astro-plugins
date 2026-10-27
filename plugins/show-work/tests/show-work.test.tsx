@@ -21,6 +21,9 @@ const PANE = {
 
 const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 
+// What reached the engine as sent prompts, in order.
+const SENT: string[] = []
+
 // Nothing sits beneath the plugin: each hook here stands for the engine.
 function engine(
   on: On,
@@ -43,7 +46,11 @@ function engine(
 
     return { isFilled: true }
   })
-  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('prompt.submit', (_, e) => {
+    SENT.push(e.text)
+
+    return { text: e.text }
+  })
   on('tool.call', (_, e) => {
     const said = e.tool === 'Bash' ? bash?.(String(e.command), e.tool_use_id) : undefined
     if (said !== undefined) {
@@ -1127,7 +1134,7 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
   await ui.unmount()
 })
 
-import { askDiffText, askText, duration, joinPath } from '../hooks/register'
+import { askDiffText, askText, duration, expandRefs, joinPath, markerRuns } from '../hooks/register'
 import { locateDiffRows, locateSelection, splitFences } from '../hooks/explorer'
 import { gutterWidth, lineAtRow, lineRows, rowOf, rowsIn, shownRows } from '../hooks/lines'
 import {
@@ -1701,7 +1708,7 @@ test('pressing ask puts the selected lines in the prompt, or says what to do', a
   expect(toasts).toHaveLength(1)
   picked = { text: 'two' }
   await ui.press({ key: 'ex-ask' })
-  expect(filled).toEqual(['About `a.ts`, line 2:\n```ts\ntwo\n```\n'])
+  expect(filled).toEqual(['[a.ts line 2] '])
   await ui.unmount()
 })
 
@@ -1795,7 +1802,7 @@ test('letting go of a drag in the viewer offers a chip, and pressing it fills th
   await ui.post({ id: 'a.ts', from: 1, to: 2 }, { in: 'viewer-source' })
   expect((await ui.find({ type: 'Button', key: 'chip-ask' }))?.text).toBe('Ask Claude about lines 2 to 3 ↩')
   await ui.press({ key: 'chip-ask' })
-  expect(filled).toEqual(['About `a.ts`, lines 2 to 3:\n```ts\ntwo\nthree\n```\n'])
+  expect(filled).toEqual(['[a.ts lines 2 to 3] '])
   expect(await ui.find({ type: 'Button', key: 'chip-ask' })).toBeUndefined()
   // A drag taken in another file does not light this one.
   await ui.post({ id: 'other.ts', from: 0, to: 0 }, { in: 'viewer-source' })
@@ -1821,8 +1828,45 @@ test('the lines dragged over are offered in the band above the prompt, idle or w
   await pane.post({ id: 'a.ts', from: 0, to: 1 }, { in: 'viewer-source' })
   expect((await band.find({ type: 'Button', key: 'band-chip' }))?.text).toBe('Ask Claude about a.ts lines 1 to 2 ↩')
   await band.press({ key: 'band-chip' })
-  expect(filled).toEqual(['About `a.ts`, lines 1 to 2:\n```ts\none\ntwo\n```\n'])
+  expect(filled).toEqual(['[a.ts lines 1 to 2] '])
   expect(await band.find({ type: 'Button', key: 'band-chip' })).toBeUndefined()
   await band.unmount()
   await pane.unmount()
+})
+
+test('a marker is painted in the draft and swapped for its quote on send', () => {
+  const list = [{ marker: '[a.ts lines 1 to 2]', text: 'About `a.ts`, lines 1 to 2:\n```ts\none\ntwo\n```\n' }]
+  expect(markerRuns('see [a.ts lines 1 to 2] why', list)).toEqual([
+    { start: 4, end: 23, color: 'claude', underline: true },
+  ])
+  expect(markerRuns('no marker', list)).toEqual([])
+  // The quote takes lines of its own, and the words around it stay.
+  expect(expandRefs('Why [a.ts lines 1 to 2] ?', list)).toEqual({
+    text: 'Why\nAbout `a.ts`, lines 1 to 2:\n```ts\none\ntwo\n```\n?',
+    used: ['[a.ts lines 1 to 2]'],
+  })
+  expect(expandRefs('[a.ts lines 1 to 2] why?', list).text).toBe('About `a.ts`, lines 1 to 2:\n```ts\none\ntwo\n```\nwhy?')
+  expect(expandRefs('a marker was deleted', list)).toEqual({ text: 'a marker was deleted', used: [] })
+})
+
+test('sending a draft with the marker puts the quoted lines in the prompt', async ($, on) => {
+  engine(on)
+  const sent = SENT
+  sent.length = 0
+  on('process.run', (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('fs.read', () => ({ value: 'one\ntwo\nthree\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-a.ts' })
+  await ui.post({ id: 'a.ts', from: 1, to: 1 }, { in: 'viewer-source' })
+  await ui.press({ key: 'chip-ask' })
+  await $.prompt.submit({ text: '[a.ts line 2] is this right?', wait: false, origin: { kind: 'composer' } })
+  expect(sent).toEqual(['About `a.ts`, line 2:\n```ts\ntwo\n```\nis this right?'])
+  // The reference is spent: the same marker typed again is only text.
+  await $.prompt.submit({ text: '[a.ts line 2] again', wait: false, origin: { kind: 'composer' } })
+  expect(sent.at(-1)).toBe('[a.ts line 2] again')
+  await ui.unmount()
 })

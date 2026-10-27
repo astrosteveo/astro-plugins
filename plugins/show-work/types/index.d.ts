@@ -194,6 +194,8 @@ declare module 'claude-code' {
       /** Whether the viewers wrap long lines or cut them at the edge. */
       wrapLines: boolean
       /** The lines dragged over in a viewer, 0-based, and which viewer: a file path, or `diff:` and one. */
+      /** Quoted lines waiting in the prompt behind a short marker, swapped in on send. */
+      refs: { marker: string; text: string }[]
       viewSel: { id: string; from: number; to: number } | null
       openNote: string | null
     }
