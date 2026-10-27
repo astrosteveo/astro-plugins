@@ -109,7 +109,6 @@ const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
 const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
 // What the Find tab searches: file names, or the files' text.
 const findMode = atom({ plugin: 'show-work', key: 'findMode' } as const, 'files')
-const showEarlier = atom({ plugin: 'show-work', key: 'showEarlier' } as const, false)
 // Long lines in the viewers: wrapped (true) or cut at the edge.
 const wrapLines = atom({ plugin: 'show-work', key: 'wrapLines' } as const, true)
 // The lines the person dragged over in a viewer, waiting on the chip.
@@ -327,8 +326,6 @@ const ACTIONS: Record<Exclude<NoteKind, 'question'>, { reply: string; fill: stri
 }
 
 // The field each tool's tab puts the typing in.
-const FIELDS: Partial<Record<Tab, string>> = { find: 'ex-filter' }
-
 const STEP_MARK: Record<StepStatus, { mark: string; color?: Color }> = {
   todo: { mark: '·' },
   doing: { mark: '▸', color: 'claude' },
@@ -341,6 +338,28 @@ const ACT_MARK: Record<ActStatus, { mark: string; color: Color }> = {
   ok: { mark: '✓', color: 'success' },
   failed: { mark: '✗', color: 'error' },
 }
+
+// Starts the reply to a note in the prompt.
+async function replyToNote($: EngineInterface, note: Note, fill = '') {
+  await $.prompt.fill({ text: replyPrefix(note) + fill, mode: 'insert' })
+  await update($, openNote, () => null)
+}
+
+// The person has read it: no reply needed.
+async function markNoteOk($: EngineInterface, note: Note) {
+  await update($, notes, list => list.map(one => (one.id === note.id ? { ...one, isOk: true } : one)))
+  await update($, openNote, () => null)
+}
+
+// What a card's reply button says, and what it starts the reply with.
+const replyWord = (note: Note) => (note.kind === 'question' ? 'Answer' : ACTIONS[note.kind].reply)
+const fillOf = (note: Note) => (note.kind === 'question' ? '' : ACTIONS[note.kind].fill)
+
+// What a card's dismiss button says: a question has no OK, only a way to put it away.
+const okWord = (note: Note) => (note.kind === 'question' ? '✗' : ACTIONS[note.kind].ok)
+
+// The order cards come in: what needs an answer first.
+const CARD_ORDER: Record<NoteKind, number> = { question: 0, risk: 1, assumption: 2, decision: 3, finding: 4 }
 
 export function replyPrefix(note: Note) {
   const quote = note.text.length > 80 ? note.text.slice(0, 77) + '...' : note.text
@@ -1440,7 +1459,6 @@ export const register: Register = on => {
       steps,
       startedAt: old !== null && old.goal === goal ? (old.startedAt ?? now) : now,
     }))
-    await update($, showEarlier, () => false)
     const done = steps.filter(step => step.status === 'done').length
 
     return { result: `Plan shown: ${done}/${steps.length} steps done.` }
@@ -1893,6 +1911,16 @@ export const register: Register = on => {
   // While Claude works, a strip above the prompt: the pulse, the step it is
   // on, its agents and what waits on you. The context stays in the status
   // line, which shows it already.
+  // Clicking into the search box, or tabbing to it, brings up what Find shows.
+  on('ui.focus', async ($, e, next) => {
+    const moved = await next(e)
+    if (e.requestId === PANE && (e.element === 'ex-filter' || e.element === 'search-q')) {
+      await update($, tabAtom, () => 'find')
+    }
+
+    return moved
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const acts = await read($, activity)
     const shownPlan = await read($, plan)
@@ -1900,15 +1928,67 @@ export const register: Register = on => {
     const allNotes = await read($, notes)
     const runs = await read($, tests)
     const running = allLanes.filter(lane => lane.status === 'runs').length
-    const open = allNotes.filter(
-      note => note.kind === 'question' && !note.isReplied && isCurrent(note, shownPlan?.startedAt),
-    ).length
+    // What waits on the person, the questions first: each is a card here, where they look.
+    const waiting = allNotes
+      .filter(note => isCurrent(note, shownPlan?.startedAt) && !note.isReplied && note.isOk !== true)
+      .sort((a, b) => CARD_ORDER[a.kind] - CARD_ORDER[b.kind] || (b.at ?? 0) - (a.at ?? 0))
     forget(e.requestId)
     if (e.props.hasSurvey) {
       return next(e)
     }
-    if (!e.props.isWorking && running === 0 && open === 0) {
-      return next(e)
+    const cards =
+      waiting.length === 0
+        ? undefined
+        : (() => {
+            const { Box, Button, Text } = $.ui.resolve(e)
+
+            return (
+              <Box flexDirection="column">
+                {waiting.slice(0, 3).map(note => (
+                  <Box
+                    key={`card-${note.id}`}
+                    flexDirection="column"
+                    borderStyle="round"
+                    borderColor={TAGS[note.kind].color}
+                    paddingX={1}
+                  >
+                    <Box flexDirection="row" columnGap={1}>
+                      <Text color={TAGS[note.kind].color} weight="bold">
+                        {TAGS[note.kind].tag}
+                      </Text>
+                      <Box flexGrow={1}>
+                        <Text wrap="truncate-end">{note.text}</Text>
+                      </Box>
+                      {note.kind === 'question' ? (
+                        <Button key={`card-reply-${note.id}`} variant="primary" onPress={() => replyToNote($, note)}>
+                          Answer
+                        </Button>
+                      ) : (
+                        <Button
+                          key={`card-reply-${note.id}`}
+                          variant="secondary"
+                          onPress={() => replyToNote($, note, fillOf(note))}
+                        >
+                          {replyWord(note)}
+                        </Button>
+                      )}
+                      <Button key={`card-ok-${note.id}`} plain onPress={() => markNoteOk($, note)}>
+                        {okWord(note)}
+                      </Button>
+                    </Box>
+                    {note.why !== undefined && (
+                      <Text dimColor wrap="truncate-end">
+                        {note.why}
+                      </Text>
+                    )}
+                  </Box>
+                ))}
+                {waiting.length > 3 && <Text dimColor>+{waiting.length - 3} more, in Now</Text>}
+              </Box>
+            )
+          })()
+    if (!e.props.isWorking && running === 0) {
+      return cards === undefined ? next(e) : cards
     }
 
     const { Box, Text } = $.ui.resolve(e)
@@ -1919,11 +1999,13 @@ export const register: Register = on => {
       ...(step === undefined ? [] : [`▸ ${step}`]),
       ...(running === 0 ? [] : [`${running} agent${running === 1 ? '' : 's'}`]),
       ...(last === undefined ? [] : [last.failed === 0 && !last.isError ? `✓ ${last.passed}` : `✗ ${last.failed} failing`]),
-      ...(open === 0 ? [] : [`${open} waiting on you`]),
     ]
     if (e.surface !== 'terminal') {
       return (
-        <Text dimColor>{bits.join(' · ')}</Text>
+        <Box flexDirection="column">
+          {cards}
+          <Text dimColor>{bits.join(' · ')}</Text>
+        </Box>
       )
     }
 
@@ -1939,11 +2021,14 @@ export const register: Register = on => {
     startTicking($, now)
 
     return (
-      <Box flexDirection="row" gap={1}>
-        <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
-        <Text wrap="truncate-end" dimColor>
-          {bits.join(' · ')}
-        </Text>
+      <Box flexDirection="column">
+        {cards}
+        <Box flexDirection="row" gap={1}>
+          <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
+          <Text wrap="truncate-end" dimColor>
+            {bits.join(' · ')}
+          </Text>
+        </Box>
       </Box>
     )
   })
@@ -2135,7 +2220,6 @@ export const register: Register = on => {
     const wraps = await read($, wrapLines)
     const dragged = await read($, viewSel)
     const blockRows = await read($, mdRows)
-    const isShowingEarlier = await read($, showEarlier)
     const openId = await read($, openNote)
     const shownDiff = await read($, diff)
     const allLanes = await read($, lanes)
@@ -2163,8 +2247,6 @@ export const register: Register = on => {
 
     const since = shown?.startedAt
     const current = allNotes.filter(note => isCurrent(note, since))
-    const earlier = allNotes.length - current.length
-    const open = current.filter(note => note.kind === 'question' && !note.isReplied)
     const picture = pics.find(one => one.id === pickedId) ?? pics.at(-1)
     // Lanes of this task, and any still running from before it.
     const currentLanes = allLanes.filter(
@@ -2172,17 +2254,9 @@ export const register: Register = on => {
     )
 
     // The note turns replied when the prompt is sent, in prompt.submit.
-    const reply = (note: Note, fill = '') => async () => {
-      await $.prompt.fill({ text: replyPrefix(note) + fill, mode: 'insert' })
-      await update($, openNote, () => null)
-    }
+    const reply = (note: Note, fill = '') => () => replyToNote($, note, fill)
 
-    const ok = (note: Note) => async () => {
-      await update($, notes, list =>
-        list.map(one => (one.id === note.id ? { ...one, isOk: true } : one)),
-      )
-      await update($, openNote, () => null)
-    }
+    const ok = (note: Note) => () => markNoteOk($, note)
 
     const noteRow = (note: Note) => {
       const isOpen = note.id === openId
@@ -2450,32 +2524,7 @@ export const register: Register = on => {
       )
 
     let body
-    if (tab === 'notes') {
-      const listed = isShowingEarlier ? allNotes : current
-      body = (
-        <Box flexDirection="column">
-          {listed.length === 0 ? (
-            <Text dimColor>No notes for this task yet.</Text>
-          ) : (
-            <Text dimColor>
-              Claude's notes on this task. Press a question to answer it, any
-              other note to open it.
-            </Text>
-          )}
-          {listed.slice(-30).map(note => noteRow(note))}
-          {earlier > 0 && (
-            <Button
-              key="earlier"
-              plain
-              dimColor
-              onPress={() => update($, showEarlier, is => !is)}
-            >
-              {isShowingEarlier ? 'Hide' : 'Show'} {earlier} from earlier tasks
-            </Button>
-          )}
-        </Box>
-      )
-    } else if (tab === 'pictures') {
+    if (tab === 'pictures') {
       let view
       if (picture !== undefined && e.surface === 'terminal') {
         const { Image } = $.ui.resolve(e)
@@ -2622,14 +2671,6 @@ export const register: Register = on => {
     } else {
       body = (
         <Box flexDirection="column" gap={1}>
-          {open.length > 0 && (
-            <Box flexDirection="column">
-              <Text color="warning" weight="bold">
-                Waiting on you <Text dimColor>press to reply</Text>
-              </Text>
-              {open.map(note => noteRow(note))}
-            </Box>
-          )}
           {statusView()}
           {planView()}
           {currentLanes.length > 0 && (
@@ -2643,19 +2684,26 @@ export const register: Register = on => {
               {currentLanes.slice(-6).map(laneRow)}
             </Box>
           )}
+          {current.length > 0 && (
+            <Box flexDirection="column">
+              <Text weight="bold">
+                Notes <Text dimColor>what Claude chose, assumed and found this task</Text>
+              </Text>
+              {current.slice(-8).map(note => noteRow(note))}
+            </Box>
+          )}
         </Box>
       )
     }
 
-    // No counts: a dot on Notes says a question waits on you, and that is all.
-    const TABS: { id: Tab; label: string; hasAlert?: boolean; hotkey: string }[] = [
+    // No counts, and no Notes or Find: what needs an answer rides above the
+    // prompt, and the search box brings up Find.
+    const TABS: { id: Tab; label: string; hotkey: string }[] = [
       { id: 'now', label: 'Now', hotkey: '1' },
-      { id: 'notes', label: 'Notes', hasAlert: open.length > 0, hotkey: '2' },
-      { id: 'pictures', label: 'Pictures', hotkey: '3' },
-      { id: 'changes', label: 'Changes', hotkey: '4' },
-      { id: 'tests', label: 'Tests', hotkey: '5' },
+      { id: 'pictures', label: 'Pictures', hotkey: '2' },
+      { id: 'changes', label: 'Changes', hotkey: '3' },
+      { id: 'tests', label: 'Tests', hotkey: '4' },
       { id: 'git', label: 'Git', hotkey: 'g' },
-      { id: 'find', label: 'Find', hotkey: 'f' },
     ]
 
     // The search box ends the tab bar and takes the rest of its row, or a row of
@@ -2667,7 +2715,19 @@ export const register: Register = on => {
     }
     const searchBox =
       Input === undefined ? null : (
-        <Box flexGrow={1} minWidth={30} borderStyle="round" borderDimColor={tab !== 'find'} paddingX={1}>
+        <Box flexGrow={1} minWidth={30} borderStyle="round" borderDimColor={tab !== 'find'} paddingX={1} columnGap={1}>
+          <Button
+            key="tab-find"
+            plain
+            hotkey="f"
+            dimColor={tab !== 'find'}
+            onPress={async () => {
+              await toFind()
+              await $.ui.focus({ requestId: PANE, key: isText ? 'search-q' : 'ex-filter' }).catch(() => undefined)
+            }}
+          >
+            find
+          </Button>
           <Input
             key={isText ? 'search-q' : 'ex-filter'}
             label="⌕"
@@ -2712,16 +2772,9 @@ export const register: Register = on => {
               hotkey={one.hotkey}
               onPress={async () => {
                 await update($, tabAtom, () => one.id)
-                // A tool's tab takes the typing at once; Enter there gives
-                // the keys back to the tabs.
-                const field = one.id === 'find' && mode === 'text' ? 'search-q' : FIELDS[one.id]
-                if (field !== undefined) {
-                  await $.ui.focus({ requestId: PANE, key: field }).catch(() => undefined)
-                }
               }}
             >
               <Text weight={one.id === tab ? 'bold' : 'regular'}>{one.label}</Text>
-              {one.hasAlert === true && <Text color="warning"> ●</Text>}
             </Button>
           ))}
           {searchBox}

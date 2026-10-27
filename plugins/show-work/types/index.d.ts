@@ -18,7 +18,8 @@ export type Note = {
   isOk?: boolean
 }
 
-export type Tab = 'now' | 'notes' | 'pictures' | 'changes' | 'tests' | 'git' | 'find'
+/** `find` is not a tab of the bar: the search box brings it up. */
+export type Tab = 'now' | 'pictures' | 'changes' | 'tests' | 'git' | 'find'
 
 export type ActKind = 'read' | 'edit' | 'run' | 'search' | 'web' | 'agent' | 'tool'
 export type ActStatus = 'runs' | 'ok' | 'failed'
@@ -190,7 +191,6 @@ declare module 'claude-code' {
       tab: Tab
       /** What the Find tab searches: file names or text. */
       findMode: 'files' | 'text'
-      showEarlier: boolean
       /** Whether the viewers wrap long lines or cut them at the edge. */
       wrapLines: boolean
       /** The lines dragged over in a viewer, 0-based, and which viewer: a file path, or `diff:` and one. */
