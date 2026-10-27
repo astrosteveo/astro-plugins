@@ -18,20 +18,8 @@ export type Note = {
   isOk?: boolean
 }
 
-export type Tab =
-  | 'now'
-  | 'notes'
-  | 'pictures'
-  | 'activity'
-  | 'timeline'
-  | 'context'
-  | 'tests'
-  | 'files'
-  | 'commits'
-  | 'explorer'
-  | 'run'
-  | 'git'
-  | 'search'
+/** `find` is not a tab of the bar: the search box brings it up. */
+export type Tab = 'now' | 'pictures' | 'changes' | 'tests' | 'git' | 'find'
 
 export type ActKind = 'read' | 'edit' | 'run' | 'search' | 'web' | 'agent' | 'tool'
 export type ActStatus = 'runs' | 'ok' | 'failed'
@@ -61,22 +49,6 @@ export type Turn = {
   reason?: 'answer' | 'aborted' | 'refusal' | 'error'
   calls: number
   failed: number
-  /** Tokens in the context window when it ended. */
-  context?: number
-  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
-}
-
-/** The context window and spend as the session last reported them. */
-export type Meter = {
-  tokens?: number
-  window: number
-  percent?: number
-  usd?: number
-  /** The autocompact buffer: compaction comes at window minus this. */
-  buffer?: number
-  categories: { name: string; tokens: number }[]
-  limits: { kind: string; percentUsed: number }[]
-  at: number
 }
 
 /** One test run read from a test command's output. */
@@ -93,7 +65,7 @@ export type TestRun = {
 }
 
 /** How often a file was read and edited. */
-export type Touch = { file: string; reads: number; edits: number; at: number }
+export type Touch = { file: string; reads: number; edits: number; at: number; added?: number; removed?: number }
 
 /** A file open in the Explorer's preview. */
 export type Preview = {
@@ -106,19 +78,13 @@ export type Preview = {
   start?: number
   /** The line a search hit landed on. */
   hit?: number
-}
-
-/** A command run from the Run tab, with the tail of its output. */
-export type Job = {
-  id: string
-  command: string
-  status: 'running' | 'ok' | 'failed' | 'stopped'
-  code?: number | null
-  start: number
-  end?: number
-  output: string[]
-  /** Lines written in all, kept or not. */
-  total: number
+  /** A markdown file, drawn as markdown; `isRaw` shows its source instead. */
+  isMarkdown?: boolean
+  isRaw?: boolean
+  /** An image file, drawn as a picture: its one entry in `images`. */
+  isImage?: boolean
+  /** The local pictures it draws, each copied into the cache as a PNG. */
+  images?: { ref: string; alt: string; file: string; width: number; height: number }[]
 }
 
 /** A file `git status` names: its index and worktree columns. */
@@ -137,17 +103,6 @@ export type GitState = {
 export type Hit = { file: string; line: number; text: string }
 
 export type Search = { query: string; hits: Hit[]; isCut: boolean; error?: string }
-
-/** A row of `git log --graph`: a commit, or a line of the graph alone. */
-export type CommitRow = {
-  graph: string
-  sha?: string
-  subject?: string
-  when?: string
-  refs?: string
-  added?: number
-  removed?: number
-}
 
 /** A changed file's diff, as git gave it when the person pressed the file. */
 export type Diff = { file: string; lines: string[]; isCut: boolean }
@@ -216,16 +171,13 @@ declare module 'claude-code' {
       plan: Shaped<Plan | null>
       notes: Shaped<Note[]>
       activity: Shaped<Act[]>
-      changed: Shaped<string[]>
       pictures: Shaped<Picture[]>
       diagrams: Shaped<Diagram[]>
       diff: Shaped<Diff | null>
       lanes: Shaped<Lane[]>
       turns: Shaped<Turn[]>
-      meter: Shaped<Meter | null>
       tests: Shaped<TestRun[]>
       touches: Shaped<Touch[]>
-      commits: Shaped<CommitRow[]>
       tree: Shaped<string[]>
       status: Shaped<Record<string, string>>
       openDirs: Shaped<string[]>
@@ -233,13 +185,19 @@ declare module 'claude-code' {
       /** How many times taller than wide the terminal's cells are. */
       cellTall: number
       preview: Shaped<Preview | null>
-      jobs: Shaped<Job[]>
-      pickedJob: string | null
       git: Shaped<GitState | null>
       search: Shaped<Search | null>
       picked: string | null
       tab: Tab
-      showEarlier: boolean
+      /** What the Find tab searches: file names or text. */
+      findMode: 'files' | 'text'
+      /** Whether the viewers wrap long lines or cut them at the edge. */
+      wrapLines: boolean
+      /** The lines dragged over in a viewer, 0-based, and which viewer: a file path, or `diff:` and one. */
+      /** Quoted lines waiting in the prompt behind a short marker, swapped in on send. */
+      refs: { marker: string; text: string }[]
+      /** What the person's selection put in the prompt, and where it came from: a file path, `diff:` and one, or `hits`. */
+      viewSel: { id: string; label: string } | null
       openNote: string | null
     }
   }

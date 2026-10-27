@@ -2,9 +2,6 @@ import { atom, read, update } from 'claude-code'
 import type {
   Color,
   EngineInterface,
-  HookStream,
-  ProcessSpawnChunk,
-  ProcessSpawnResult,
   Register,
   Timer,
 } from 'claude-code'
@@ -13,10 +10,7 @@ import type {
   Act,
   ActKind,
   Diagram,
-  CommitRow,
   GitState,
-  Job,
-  Meter,
   Preview,
   Search,
   TestRun,
@@ -27,15 +21,24 @@ import type {
   Note,
   NoteKind,
   Picture,
-  Plan,
   Step,
   StepStatus,
   Tab,
-  Turn,
 } from '../types'
-import { GREEN, RED, gantt, legend, parseLog, parseTests, patchCounts, pulse, shareBar } from './charts'
-import type { Bar } from './charts'
-import { parseGit, parseHits, parseStatus, plain } from './explorer'
+import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
+import {
+  hitItems,
+  hitsFromSelection,
+  hitsQuote,
+  locateDiffRows,
+  locateSelection,
+  matches,
+  parseGit,
+  parseHits,
+  parseStatus,
+  plain,
+  shownRows,
+} from './explorer'
 import {
   FIND_BROWSER,
   LONGEST,
@@ -63,7 +66,7 @@ import {
 } from './design'
 import type { Drawn, Mark } from './design'
 import { diagramColumns, hashOf, splitMermaid } from './mermaid'
-import { contextView, commitsView, explorerView, filesView, gitView, runView, searchView, testsView } from './views'
+import { QuoteLine, explorerView, gitView, rangeLabel, searchView, testsView } from './views'
 
 const PANE = 'show-work'
 const TITLE = 'Show work'
@@ -79,9 +82,6 @@ const notes = atom({ plugin: 'show-work', key: 'notes' } as const, [], {
 })
 const activity = atom({ plugin: 'show-work', key: 'activity' } as const, [], {
   shape: 'activity-2',
-})
-const changed = atom({ plugin: 'show-work', key: 'changed' } as const, [], {
-  shape: 'changed-1',
 })
 const pictures = atom({ plugin: 'show-work', key: 'pictures' } as const, [], {
   shape: 'pictures-1',
@@ -99,25 +99,17 @@ const lanes = atom({ plugin: 'show-work', key: 'lanes' } as const, [], {
 const turns = atom({ plugin: 'show-work', key: 'turns' } as const, [], {
   shape: 'turns-1',
 })
-const meter = atom({ plugin: 'show-work', key: 'meter' } as const, null, {
-  shape: 'meter-1',
-})
 const tests = atom({ plugin: 'show-work', key: 'tests' } as const, [], {
   shape: 'tests-1',
 })
 const touches = atom({ plugin: 'show-work', key: 'touches' } as const, [], {
   shape: 'touches-1',
 })
-const commits = atom({ plugin: 'show-work', key: 'commits' } as const, [], {
-  shape: 'commits-1',
-})
 const tree = atom({ plugin: 'show-work', key: 'tree' } as const, [], { shape: 'tree-1' })
 const gitStatus = atom({ plugin: 'show-work', key: 'status' } as const, {}, { shape: 'status-1' })
 const openDirs = atom({ plugin: 'show-work', key: 'openDirs' } as const, [], { shape: 'openDirs-1' })
 const filter = atom({ plugin: 'show-work', key: 'filter' } as const, '')
 const preview = atom({ plugin: 'show-work', key: 'preview' } as const, null, { shape: 'preview-1' })
-const jobs = atom({ plugin: 'show-work', key: 'jobs' } as const, [], { shape: 'jobs-1' })
-const pickedJob = atom({ plugin: 'show-work', key: 'pickedJob' } as const, null)
 const git = atom({ plugin: 'show-work', key: 'git' } as const, null, { shape: 'git-1' })
 const search = atom({ plugin: 'show-work', key: 'search' } as const, null, { shape: 'search-1' })
 // How many times taller than wide the terminal's cells are, as read from its
@@ -126,7 +118,20 @@ const cellTall = atom({ plugin: 'show-work', key: 'cellTall' } as const, 0)
 // The picture the pane shows; null shows the newest.
 const picked = atom({ plugin: 'show-work', key: 'picked' } as const, null)
 const tabAtom = atom({ plugin: 'show-work', key: 'tab' } as const, 'now')
-const showEarlier = atom({ plugin: 'show-work', key: 'showEarlier' } as const, false)
+// What the Find tab searches: file names, or the files' text.
+const findMode = atom({ plugin: 'show-work', key: 'findMode' } as const, 'files')
+// Long lines in the viewers: wrapped (true) or cut at the edge.
+const wrapLines = atom({ plugin: 'show-work', key: 'wrapLines' } as const, true)
+// What the person's selection put in the prompt, and where it was taken from.
+const viewSel = atom({ plugin: 'show-work', key: 'viewSel' } as const, null)
+// Quoted lines behind the short markers in the prompt box, swapped in on send.
+const refs = atom({ plugin: 'show-work', key: 'refs' } as const, [])
+// The newest keystroke in the search box; a search waits for it to hold still.
+let typing = 0
+// How long the typing holds still before the text is searched, in ms.
+const SEARCH_WAIT = 250
+// The shortest text worth a search.
+const SEARCH_LEAST = 2
 // The note opened to show its why, detail and actions; null when none is.
 const openNote = atom({ plugin: 'show-work', key: 'openNote' } as const, null)
 
@@ -144,10 +149,6 @@ const KEPT_LANES = 20
 const KEPT_TURNS = 50
 const KEPT_RUNS = 40
 const TREE_FILES = 20_000
-const KEPT_JOBS = 12
-const JOB_LINES = 500
-// How often a running job's output is written to the pane, in ms.
-const JOB_FLUSH = 200
 const HITS = 200
 const PREVIEW_LINES = 400
 const KEPT_TOUCHES = 200
@@ -157,14 +158,6 @@ const TEST_COMMAND = /\b(tests?|spec|pytest|jest|vitest|mocha|rspec|ctest|gut|gd
 const GIT_MOVE = /\bgit\b.*\b(commit|merge|rebase|cherry-pick|reset|checkout|switch|pull|am|revert)\b/
 // The pulse: a column per two seconds.
 const BEAT = 2000
-// How many turns the timeline draws, newest last.
-const GANTT_TURNS = 8
-const COLORS = {
-  turn: 0xd97757,
-  live: 0xf0a070,
-  lane: 0x5fa8d3,
-  failed: 0xe06c75,
-}
 const DIFF_LINES = 300
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 // The most marks one picture takes.
@@ -348,8 +341,6 @@ const ACTIONS: Record<Exclude<NoteKind, 'question'>, { reply: string; fill: stri
 }
 
 // The field each tool's tab puts the typing in.
-const FIELDS: Partial<Record<Tab, string>> = { explorer: 'ex-filter', run: 'run-cmd', search: 'search-q' }
-
 const STEP_MARK: Record<StepStatus, { mark: string; color?: Color }> = {
   todo: { mark: '·' },
   doing: { mark: '▸', color: 'claude' },
@@ -362,6 +353,28 @@ const ACT_MARK: Record<ActStatus, { mark: string; color: Color }> = {
   ok: { mark: '✓', color: 'success' },
   failed: { mark: '✗', color: 'error' },
 }
+
+// Starts the reply to a note in the prompt.
+async function replyToNote($: EngineInterface, note: Note, fill = '') {
+  await $.prompt.fill({ text: replyPrefix(note) + fill, mode: 'insert' })
+  await update($, openNote, () => null)
+}
+
+// The person has read it: no reply needed.
+async function markNoteOk($: EngineInterface, note: Note) {
+  await update($, notes, list => list.map(one => (one.id === note.id ? { ...one, isOk: true } : one)))
+  await update($, openNote, () => null)
+}
+
+// What a card's reply button says, and what it starts the reply with.
+const replyWord = (note: Note) => (note.kind === 'question' ? 'Answer' : ACTIONS[note.kind].reply)
+const fillOf = (note: Note) => (note.kind === 'question' ? '' : ACTIONS[note.kind].fill)
+
+// What a card's dismiss button says: a question has no OK, only a way to put it away.
+const okWord = (note: Note) => (note.kind === 'question' ? '✗' : ACTIONS[note.kind].ok)
+
+// The order cards come in: what needs an answer first.
+const CARD_ORDER: Record<NoteKind, number> = { question: 0, risk: 1, assumption: 2, decision: 3, finding: 4 }
 
 export function replyPrefix(note: Note) {
   const quote = note.text.length > 80 ? note.text.slice(0, 77) + '...' : note.text
@@ -478,6 +491,31 @@ export function briefShow(input: unknown) {
   return brief
 }
 
+// A plan call's input as its row prints it: the goal, then the steps by
+// their count and status, where the engine would print every step.
+export function briefPlan(input: unknown) {
+  const given = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
+  const steps = (Array.isArray(given.steps) ? given.steps : []) as Array<Record<string, unknown> | null>
+  const done = steps.filter(step => step?.status === 'done').length
+  const doing = steps.find(step => step?.status === 'doing')
+  const progress = `${done}/${steps.length} done`
+  const now = asText(doing?.text)
+
+  return { goal: given.goal, steps: now === '' ? progress : `${progress}, doing: ${now}` }
+}
+
+// A note call's input as its row prints it: the kind and the sentence, with
+// the longer reasons by their size; the pane and ctrl+o hold them whole.
+export function briefNote(input: unknown) {
+  const given = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
+  const brief: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(given)) {
+    brief[key] = (key === 'why' || key === 'detail') && typeof value === 'string' ? `${value.length} characters` : value
+  }
+
+  return brief
+}
+
 // Rows a picture takes at a width, a terminal cell being `tall` times as
 // tall as it is wide: about twice, or as the terminal says (cellShape).
 export function rowsFor(picture: Pick<Picture, 'width' | 'height'>, columns: number, most: number, tall = 2) {
@@ -571,18 +609,6 @@ export function duration(ms: number) {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`
 }
 
-// The line between two turns in the activity log.
-export function divider(turn: Turn | undefined, n: number, now: number) {
-  if (turn === undefined) {
-    return `── turn ${n} ──`
-  }
-  const took = turn.end === undefined ? `${duration(now - turn.start)}…` : duration(turn.end - turn.start)
-  const calls = `${turn.calls} ${turn.calls === 1 ? 'call' : 'calls'}`
-  const failed = turn.failed > 0 ? ` · ${turn.failed} failed` : ''
-
-  return `── turn ${n} · ${took} · ${calls}${failed} ──`
-}
-
 // How often a running chart repaints, in ms.
 const FRAME = 250
 // The color of a diff line by its first character.
@@ -604,11 +630,11 @@ export function diffColor(line: string): Color | undefined {
 // nothing when it is new.
 async function loadDiff($: EngineInterface, path: string, label: string): Promise<Diff> {
   const dir = path.slice(0, path.lastIndexOf('/')) || '/'
-  let out = (await $.process.run(['git', '-C', dir, 'diff', '--no-color', 'HEAD', '--', path])).stdout
+  const gitOut = (argv: string[]) =>
+    $.process.run(['git', '-C', dir, ...argv]).then(ran => ran.stdout, () => '')
+  let out = await gitOut(['diff', '--no-color', 'HEAD', '--', path])
   if (out.trim() === '') {
-    out = (
-      await $.process.run(['git', '-C', dir, 'diff', '--no-color', '--no-index', '/dev/null', path])
-    ).stdout
+    out = await gitOut(['diff', '--no-color', '--no-index', '/dev/null', path])
   }
   // The header lines before the first hunk say nothing the title doesn't.
   const all = out.split('\n')
@@ -1031,32 +1057,6 @@ function startTicking($: EngineInterface, now: number) {
   }
 }
 
-// The window, spend and rate limits as the session reports them now.
-async function loadMeter($: EngineInterface): Promise<Meter | null> {
-  const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
-  if (usage === undefined) {
-    return null
-  }
-  const categories = usage.context.breakdown?.categories ?? []
-
-  return {
-    ...(usage.context.tokens === undefined ? {} : { tokens: usage.context.tokens }),
-    window: usage.context.window,
-    ...(usage.context.percent === undefined ? {} : { percent: usage.context.percent }),
-    ...(usage.cost === undefined ? {} : { usd: usage.cost.usd }),
-    ...(() => {
-      const buffer = categories.find(one => one.kind === 'buffer')?.tokens
-
-      return buffer === undefined ? {} : { buffer }
-    })(),
-    categories: categories
-      .filter(one => one.kind === 'used' && one.tokens > 0)
-      .map(one => ({ name: one.name, tokens: one.tokens })),
-    limits: usage.rateLimits.map(one => ({ kind: one.kind, percentUsed: one.percentUsed })),
-    at: await $.clock.now(),
-  }
-}
-
 // The project's files as git sees them, ignored ones left out; where git
 // is not, whatever find turns up a few levels down.
 async function loadTree($: EngineInterface, cwd: string): Promise<string[]> {
@@ -1088,13 +1088,276 @@ async function loadStatus($: EngineInterface, cwd: string): Promise<Record<strin
 
 // A file's text for the preview: the head of a long one, or the stretch
 // around a search hit; none of a binary one.
+// What the prompt starts with to ask about some lines of a file: where they
+// are and what they say, ready for the person's question.
+export function askText(file: string, at: { from?: number | undefined; to?: number | undefined; text: string }) {
+  const where = at.from === undefined ? '' : at.from === at.to ? `, line ${at.from}` : `, lines ${at.from} to ${at.to}`
+  const fence = at.text.includes('```') ? '````' : '```'
+  const lang = file.includes('.') ? file.slice(file.lastIndexOf('.') + 1).toLowerCase() : ''
+
+  return `About \`${file}\`${where}:\n${fence}${lang}\n${at.text}\n${fence}\n`
+}
+
+// What the prompt starts with to ask about part of a change: the file and the
+// diff rows picked, with their + and - kept.
+export function askDiffText(file: string, rows: string) {
+  const fence = rows.includes('```') ? '````' : '```'
+
+  return `About my change to \`${file}\`:\n${fence}diff\n${rows}\n${fence}\n`
+}
+
+type Ref = { marker: string; text: string }
+
+// The marker's runs in a draft, painted so it reads as one thing.
+export function markerRuns(text: string, list: Ref[]) {
+  const runs: { start: number; end: number; color: 'claude'; underline: true }[] = []
+  for (const { marker } of list) {
+    for (let at = text.indexOf(marker); at >= 0; at = text.indexOf(marker, at + marker.length)) {
+      runs.push({ start: at, end: at + marker.length, color: 'claude', underline: true })
+    }
+  }
+
+  return runs.sort((a, b) => a.start - b.start)
+}
+
+// A draft with each marker swapped for its quoted lines, each on lines of its
+// own; the markers it used.
+export function expandRefs(text: string, list: Ref[]) {
+  let out = text
+  const used: string[] = []
+  for (const { marker, text: quote } of list) {
+    if (!out.includes(marker)) {
+      continue
+    }
+    used.push(marker)
+    out = out.split(marker).reduce((joined, part, n) => {
+      if (n === 0) {
+        return part
+      }
+      const before = joined.trimEnd()
+      const after = part.trimStart()
+
+      return `${before}${before === '' ? '' : '\n'}${quote.trimEnd()}${after === '' ? '' : `\n${after}`}`
+    }, '')
+  }
+
+  return { text: out, used }
+}
+
+// The marker the last drag put in the prompt, so the next drag takes its place.
+let lastMarker: string | null = null
+
+// Puts a marker in the prompt, painted, and keeps what it stands for. A marker
+// from an earlier drag still in the box is swapped for it.
+async function fillRef($: EngineInterface, marker: string, quote: string) {
+  const previous = lastMarker
+  await update($, refs, list => [...list.filter(one => one.marker !== marker && one.marker !== previous), { marker, text: quote }])
+  lastMarker = marker
+  const box = await $.prompt.read().catch(() => undefined)
+  const at = previous === null || box === undefined ? -1 : box.text.indexOf(previous)
+  if (box !== undefined && previous !== null && at >= 0) {
+    const text = box.text.slice(0, at) + marker + box.text.slice(at + previous.length)
+    const cursor = box.cursor <= at ? box.cursor : Math.max(at, box.cursor + marker.length - previous.length)
+    await $.prompt.fill({ text, mode: 'replace', cursor, decorations: markerRuns(text, await read($, refs)) })
+
+    return
+  }
+  await $.prompt.fill({
+    text: `${marker} `,
+    mode: 'insert',
+    decorations: [{ start: 0, end: marker.length, color: 'claude', underline: true }],
+  })
+}
+
+// Takes the last drag's marker out of the prompt and forgets what it stood for.
+async function dropRef($: EngineInterface) {
+  const marker = lastMarker
+  lastMarker = null
+  if (marker === null) {
+    return
+  }
+  await update($, refs, list => list.filter(one => one.marker !== marker))
+  const box = await $.prompt.read().catch(() => undefined)
+  const at = box === undefined ? -1 : box.text.indexOf(marker)
+  if (box !== undefined && at >= 0) {
+    const text = (box.text.slice(0, at) + box.text.slice(at + marker.length)).replace(/ {2,}/g, ' ')
+    await $.prompt.fill({ text, mode: 'replace', cursor: Math.min(at, text.length), decorations: markerRuns(text, await read($, refs)) })
+  }
+}
+
+// What the pane is showing, to find a selection in: a file's preview, a diff or
+// a list of search hits.
+export type QuoteContext = { preview: Preview | null; diff: Diff | null; search: Search | null; tab: Tab; mode: string }
+
+// The marker, quote and label for text the person selected, found in whatever the
+// pane shows; undefined where the text is not in it (a selection in the prompt
+// box, or in the chat).
+export function quoteFromSelection(
+  text: string,
+  ctx: QuoteContext,
+): { id: string; label: string; marker: string; text: string } | undefined {
+  if (ctx.tab === 'changes' && ctx.diff !== null) {
+    const rows = locateDiffRows(shownRows(ctx.diff.lines), text)
+
+    return rows === undefined
+      ? undefined
+      : {
+          id: `diff:${ctx.diff.file}`,
+          label: 'the change',
+          marker: `[change to ${ctx.diff.file}]`,
+          text: askDiffText(ctx.diff.file, rows),
+        }
+  }
+  if (ctx.tab !== 'find') {
+    return undefined
+  }
+  if (ctx.mode === 'text') {
+    const items = hitItems(ctx.search?.hits ?? [])
+    const range = hitsFromSelection(items, text)
+    const quote = range === undefined || ctx.search === null ? undefined : hitsQuote(ctx.search.query, items, range.from, range.to)
+
+    return quote === undefined ? undefined : { id: 'hits', label: quote.marker, marker: quote.marker, text: quote.text }
+  }
+  const pv = ctx.preview
+  if (pv === null || pv.isImage === true || pv.isBinary) {
+    return undefined
+  }
+  const at = locateSelection(pv.source, text)
+  if (at === undefined || at.from === undefined || at.to === undefined) {
+    return undefined
+  }
+  const shift = (pv.start ?? 1) - 1
+  const label = rangeLabel(at.from + shift, at.to + shift)
+
+  return {
+    id: pv.file,
+    label,
+    marker: `[${pv.file} ${label}]`,
+    text: askText(pv.file, { from: at.from + shift, to: at.to + shift, text: at.text }),
+  }
+}
+
+// Reads the terminal's selection, and once it has held still for a tick puts it in
+// the prompt as a marker: the person selects as anywhere else, and it is done.
+let seen = ''
+let applied = ''
+let selectionTimer: Timer | undefined
+// How often the selection is read, in ms: it must hold still for one tick to count.
+const SELECTION_TICK = 350
+async function watchSelection($: EngineInterface) {
+  const picked = await $.ui.selection().catch(() => undefined)
+  const text = picked?.text ?? ''
+  if (picked === undefined || picked.requestId !== undefined || text.trim().length < 2) {
+    seen = ''
+
+    return
+  }
+  if (text !== seen) {
+    // Still moving: wait for it to hold still.
+    seen = text
+
+    return
+  }
+  if (text === applied) {
+    return
+  }
+  const at = quoteFromSelection(text, {
+    preview: await read($, preview),
+    diff: await read($, diff),
+    search: await read($, search),
+    tab: await read($, tabAtom),
+    mode: await read($, findMode),
+  })
+  if (at === undefined) {
+    return
+  }
+  applied = text
+  await fillRef($, at.marker, at.text)
+  await update($, viewSel, () => ({ id: at.id, label: at.label }))
+}
+
+const MARKDOWN = /\.(md|markdown|mdx)$/i
+const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
+const MD_IMAGES_MOST = 8
+const MD_CHARS = 100_000
+
+// `dir/ref` with its dots resolved: `a/b` and `../c` make `a/c`.
+export function joinPath(dir: string, ref: string) {
+  const parts = (ref.startsWith('/') ? ref : `${dir}/${ref}`).split('/')
+  const out: string[] = []
+  for (const part of parts) {
+    if (part === '..') {
+      out.pop()
+    } else if (part !== '' && part !== '.') {
+      out.push(part)
+    }
+  }
+
+  return `${ref.startsWith('/') || dir.startsWith('/') ? '/' : ''}${out.join('/')}`
+}
+
+// The local pictures a markdown file draws, copied into the cache as PNGs.
+async function markdownImages($: EngineInterface, cwd: string, file: string, text: string) {
+  const dir = absolute(file, cwd).slice(0, absolute(file, cwd).lastIndexOf('/')) || '/'
+  const found: NonNullable<Preview['images']> = []
+  for (const match of text.matchAll(MD_IMAGE)) {
+    const ref = match[2] ?? ''
+    if (/^[a-z][a-z0-9+.-]*:/i.test(ref) || ref.startsWith('//') || !IMAGE.test(ref) || found.some(one => one.ref === ref)) {
+      continue
+    }
+    if (found.length >= MD_IMAGES_MOST) {
+      break
+    }
+    const path = joinPath(dir, decodeURI(ref))
+    if (!(await $.fs.exists(path))) {
+      continue
+    }
+    const made = await freeze($, { src: path }, `md-${hashOf(path)}`, match[1] ?? '', 'read')
+    if (typeof made !== 'string') {
+      found.push({ ref, alt: match[1] ?? '', file: made.file, width: made.width, height: made.height })
+    }
+  }
+
+  return found
+}
+
 async function loadPreview($: EngineInterface, cwd: string, file: string, hit?: number): Promise<Preview> {
+  if (IMAGE.test(file)) {
+    const path = absolute(file, cwd)
+    const made = (await $.fs.exists(path)) ? await freeze($, { src: path }, `view-${hashOf(path)}`, nameOf(file), 'read') : 'missing'
+    if (typeof made === 'string') {
+      return { file, source: '', lines: 0, isCut: false, isBinary: true }
+    }
+
+    return {
+      file,
+      source: '',
+      lines: 0,
+      isCut: false,
+      isBinary: false,
+      isImage: true,
+      images: [{ ref: file, alt: nameOf(file), file: made.file, width: made.width, height: made.height }],
+    }
+  }
   const text = await $.fs.read(absolute(file, cwd)).catch(() => '')
   const source = typeof text === 'string' ? text : ''
   if (source.includes('\u0000')) {
     return { file, source: '', lines: 0, isCut: false, isBinary: true }
   }
   const lines = source.split('\n')
+  if (hit === undefined && MARKDOWN.test(file)) {
+    const shown = source.slice(0, MD_CHARS)
+
+    return {
+      file,
+      source: shown,
+      lines: lines.length,
+      isCut: source.length > MD_CHARS,
+      isBinary: false,
+      isMarkdown: true,
+      images: await markdownImages($, cwd, file, shown),
+    }
+  }
   const start = hit === undefined ? 1 : Math.max(1, hit - 10)
 
   return {
@@ -1119,8 +1382,7 @@ async function loadGit($: EngineInterface, cwd: string, note?: { text: string; i
   }
 }
 
-// A git command from the Git tab, then the tab, the Explorer's marks and
-// the commit graph read again.
+// A git command from the Git tab, then the tab and the Find marks read again.
 async function gitDo($: EngineInterface, cwd: string, argv: string[], timeoutMs = 30_000) {
   const ran = await $.process.run(['git', '-C', cwd, ...argv], { timeoutMs }).catch((error: unknown) => ({
     exitCode: 1,
@@ -1129,10 +1391,9 @@ async function gitDo($: EngineInterface, cwd: string, argv: string[], timeoutMs 
   }))
   const said = (ran.exitCode === 0 ? ran.stdout || ran.stderr : ran.stderr || ran.stdout).trim().split('\n')
   const note = { text: `git ${argv[0]}: ${said.at(-1) || (ran.exitCode === 0 ? 'done' : 'failed')}`, isError: ran.exitCode !== 0 }
-  const [state, codes, rows] = await Promise.all([loadGit($, cwd, note), loadStatus($, cwd), loadCommits($, cwd)])
+  const [state, codes] = await Promise.all([loadGit($, cwd, note), loadStatus($, cwd)])
   await update($, git, () => state)
   await update($, gitStatus, () => codes)
-  await update($, commits, () => rows)
 }
 
 // ripgrep where it is, git grep where it is not: smart case, a few hits a file.
@@ -1154,101 +1415,6 @@ async function runSearch($: EngineInterface, cwd: string, query: string): Promis
   return { query, ...parseHits(ran.stdout, HITS) }
 }
 
-// Children of the Run tab, by job: ending the stream kills the child.
-const children = new Map<string, HookStream<ProcessSpawnChunk, ProcessSpawnResult>>()
-
-// Runs a command in a shell and keeps the tail of its output in the job,
-// flushed a few times a second; the job ends with the child.
-async function runJob($: EngineInterface, cwd: string, command: string) {
-  const id = crypto.randomUUID()
-  const job: Job = { id, command, status: 'running', start: await $.clock.now(), output: [], total: 0 }
-  await update($, jobs, list => [...list, job].slice(-KEPT_JOBS))
-  await update($, pickedJob, () => id)
-  const child = $.process.spawn({ argv: ['bash', '-lc', command], ...(cwd === '' ? {} : { cwd }) })
-  children.set(id, child)
-  let carry = ''
-  let lines: string[] = []
-  let flushedAt = 0
-  const flush = async () => {
-    const fresh = lines
-    lines = []
-    flushedAt = await $.clock.now()
-    await update($, jobs, list =>
-      list.map(one =>
-        one.id === id
-          ? { ...one, output: [...one.output, ...fresh].slice(-JOB_LINES), total: one.total + fresh.length }
-          : one,
-      ),
-    )
-  }
-  let result: { code: number | null; signal: string | null } | undefined
-  try {
-    let step = await child.next()
-    while (step.done !== true) {
-      const parts = (carry + step.value.text).split('\n')
-      carry = parts.pop() ?? ''
-      lines.push(...parts.map(plain))
-      if ((await $.clock.now()) - flushedAt >= JOB_FLUSH) {
-        await flush()
-      }
-      step = await child.next()
-    }
-    result = step.value
-  } catch (error) {
-    lines.push(`(could not run: ${String(error)})`)
-  }
-  if (carry !== '') {
-    lines.push(plain(carry))
-  }
-  await flush()
-  const wasStopped = !children.has(id)
-  children.delete(id)
-  const end = await $.clock.now()
-  await update($, jobs, list =>
-    list.map(one =>
-      one.id === id
-        ? {
-            ...one,
-            end,
-            code: result?.code ?? null,
-            status: wasStopped ? 'stopped' : result?.code === 0 ? 'ok' : 'failed',
-          }
-        : one,
-    ),
-  )
-}
-
-function stopJob(id: string) {
-  const child = children.get(id)
-  children.delete(id)
-  void child?.return({ code: null, signal: 'SIGTERM' })
-}
-
-// This session's commits on every branch: those after the last commit made
-// before the session began.
-async function loadCommits($: EngineInterface, cwd: string): Promise<CommitRow[]> {
-  if (cwd === '') {
-    return []
-  }
-  try {
-    const { startedAt } = await $.session.usage()
-    const base = await $.process.run([
-      'git', '-C', cwd, 'rev-list', '-1', `--before=@${Math.floor(startedAt / 1000)}`, 'HEAD',
-    ])
-    const sha = base.stdout.trim()
-    const log = await $.process.run([
-      'git', '-C', cwd, 'log', '--graph', '--color=never', '--branches', '--shortstat',
-      '--format=%x1e%h%x1f%s%x1f%cr%x1f%D', '-n', '60',
-      ...(base.exitCode === 0 && sha !== '' ? [`^${sha}`] : []),
-    ])
-
-    return log.exitCode === 0 ? parseLog(log.stdout) : []
-  } catch {
-    // Not a repository, or no git: no commits to show.
-    return []
-  }
-}
-
 export const register: Register = on => {
   let cwd = ''
 
@@ -1263,19 +1429,16 @@ export const register: Register = on => {
       argumentHint: '[clear]',
     })
     void $.ui.open({ id: PANE, title: TITLE })
+    // The selection is read often enough to feel at once, and only acts on text of the pane.
+    selectionTimer?.cancel()
+    seen = ''
+    applied = ''
+    lastMarker = null
+    selectionTimer = $.clock.every(SELECTION_TICK, () => void watchSelection($))
     const started = await next(e)
-    const [shown, rows, files, codes] = await Promise.all([
-      loadMeter($),
-      loadCommits($, cwd),
-      loadTree($, cwd),
-      loadStatus($, cwd),
-    ])
-    if (shown !== null) {
-      await update($, meter, () => shown)
-    }
+    const [files, codes] = await Promise.all([loadTree($, cwd), loadStatus($, cwd)])
     const tall = await cellShape($)
     await update($, cellTall, () => tall ?? 2)
-    await update($, commits, () => rows)
     await update($, tree, () => files)
     await update($, gitStatus, () => codes)
     const state = await loadGit($, cwd)
@@ -1295,8 +1458,23 @@ export const register: Register = on => {
     }
   })
 
+  // A marker in the draft stands for lines quoted from a viewer; they go in as the prompt is sent.
+  on('prompt.edit', async ($, e, next) => {
+    const edited = await next(e)
+    const runs = markerRuns(edited.text, await read($, refs))
+
+    return runs.length === 0 ? edited : { ...edited, decorations: [...(edited.decorations ?? []), ...runs] }
+  })
+
   on('prompt.submit', async ($, e, next) => {
-    const entered = await next(e)
+    const expanded = expandRefs(e.text, await read($, refs))
+    if (expanded.used.length > 0) {
+      if (lastMarker !== null && expanded.used.includes(lastMarker)) {
+        lastMarker = null
+      }
+      await update($, refs, list => list.filter(one => !expanded.used.includes(one.marker)))
+    }
+    const entered = await next(expanded.used.length === 0 ? e : { ...e, text: expanded.text })
     if (entered.drop !== undefined || e.command !== undefined) {
       return entered
     }
@@ -1316,7 +1494,6 @@ export const register: Register = on => {
       await update($, plan, () => null)
       await update($, notes, () => [])
       await update($, activity, () => [])
-      await update($, changed, () => [])
       await update($, pictures, () => [])
       await update($, picked, () => null)
       await update($, diff, () => null)
@@ -1341,7 +1518,6 @@ export const register: Register = on => {
       steps,
       startedAt: old !== null && old.goal === goal ? (old.startedAt ?? now) : now,
     }))
-    await update($, showEarlier, () => false)
     const done = steps.filter(step => step.status === 'done').length
 
     return { result: `Plan shown: ${done}/${steps.length} steps done.` }
@@ -1485,14 +1661,10 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The turn's end carries its tokens; the session then says how full the
-  // window is, which is the turn's mark on the context chart.
+  // The turn's end closes its row in the log.
   on('turn.complete', async ($, e, next) => {
     const end = await $.clock.now()
     const done = await next(e)
-    const isMain = (await read($, turns)).some(one => one.id === e.turnId)
-    const shown = isMain ? await loadMeter($) : null
-    const used = done.usage
     await update($, turns, list =>
       list.map(one =>
         one.id === e.turnId
@@ -1500,24 +1672,10 @@ export const register: Register = on => {
               ...one,
               end,
               reason: e.reason,
-              ...(shown?.tokens === undefined ? {} : { context: shown.tokens }),
-              ...(used === undefined
-                ? {}
-                : {
-                    usage: {
-                      input: used.input_tokens,
-                      output: used.output_tokens,
-                      cacheRead: used.cache_read_input_tokens,
-                      cacheWrite: used.cache_creation_input_tokens,
-                    },
-                  }),
             }
           : one,
       ),
     )
-    if (shown !== null) {
-      await update($, meter, () => shown)
-    }
 
     return done
   })
@@ -1616,10 +1774,13 @@ export const register: Register = on => {
       const isEdit = what.kind === 'edit' && status === 'ok'
       await update($, touches, list => {
         const old = list.find(one => one.file === what.label)
+        const patch = isEdit && ran.deny === undefined ? patchCounts(ran.result) : { added: 0, removed: 0 }
         const touch: Touch = {
           file: what.label,
           reads: (old?.reads ?? 0) + (what.kind === 'read' ? 1 : 0),
           edits: (old?.edits ?? 0) + (isEdit ? 1 : 0),
+          added: (old?.added ?? 0) + patch.added,
+          removed: (old?.removed ?? 0) + patch.removed,
           at,
         }
 
@@ -1638,10 +1799,6 @@ export const register: Register = on => {
           isError: ran.isError === true,
         }
         await update($, tests, list => [...list, run].slice(-KEPT_RUNS))
-      }
-      if (status === 'ok' && GIT_MOVE.test(command)) {
-        const rows = await loadCommits($, cwd)
-        await update($, commits, () => rows)
       }
     }
     if (status === 'ok' && what.image !== undefined) {
@@ -1667,15 +1824,10 @@ export const register: Register = on => {
     }
     if (status === 'ok' && what.path !== undefined && what.path !== '') {
       const label = what.label
-      await update($, changed, list =>
-        list.includes(label) ? list : [...list, label],
-      )
-      // A diff open on this file goes stale with the edit: refresh it.
-      const open = await read($, diff)
-      if (open !== null && open.file === label) {
-        const fresh = await loadDiff($, what.path, label)
-        await update($, diff, () => fresh)
-      }
+      // The Changes tab opens on the latest edit's diff.
+      const fresh = await loadDiff($, what.path, label)
+      await update($, diff, () => fresh)
+      await update($, viewSel, () => null)
     }
 
     return ran
@@ -1818,6 +1970,16 @@ export const register: Register = on => {
   // While Claude works, a strip above the prompt: the pulse, the step it is
   // on, its agents and what waits on you. The context stays in the status
   // line, which shows it already.
+  // Clicking into the search box, or tabbing to it, brings up what Find shows.
+  on('ui.focus', async ($, e, next) => {
+    const moved = await next(e)
+    if (e.requestId === PANE && (e.element === 'ex-filter' || e.element === 'search-q')) {
+      await update($, tabAtom, () => 'find')
+    }
+
+    return moved
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const acts = await read($, activity)
     const shownPlan = await read($, plan)
@@ -1825,12 +1987,67 @@ export const register: Register = on => {
     const allNotes = await read($, notes)
     const runs = await read($, tests)
     const running = allLanes.filter(lane => lane.status === 'runs').length
-    const open = allNotes.filter(
-      note => note.kind === 'question' && !note.isReplied && isCurrent(note, shownPlan?.startedAt),
-    ).length
+    // What waits on the person, the questions first: each is a card here, where they look.
+    const waiting = allNotes
+      .filter(note => isCurrent(note, shownPlan?.startedAt) && !note.isReplied && note.isOk !== true)
+      .sort((a, b) => CARD_ORDER[a.kind] - CARD_ORDER[b.kind] || (b.at ?? 0) - (a.at ?? 0))
     forget(e.requestId)
-    if (e.props.hasSurvey || (!e.props.isWorking && running === 0 && open === 0)) {
+    if (e.props.hasSurvey) {
       return next(e)
+    }
+    const cards =
+      waiting.length === 0
+        ? undefined
+        : (() => {
+            const { Box, Button, Text } = $.ui.resolve(e)
+
+            return (
+              <Box flexDirection="column">
+                {waiting.slice(0, 3).map(note => (
+                  <Box
+                    key={`card-${note.id}`}
+                    flexDirection="column"
+                    borderStyle="round"
+                    borderColor={TAGS[note.kind].color}
+                    paddingX={1}
+                  >
+                    <Box flexDirection="row" columnGap={1}>
+                      <Text color={TAGS[note.kind].color} weight="bold">
+                        {TAGS[note.kind].tag}
+                      </Text>
+                      <Box flexGrow={1}>
+                        <Text wrap="truncate-end">{note.text}</Text>
+                      </Box>
+                      {note.kind === 'question' ? (
+                        <Button key={`card-reply-${note.id}`} variant="primary" onPress={() => replyToNote($, note)}>
+                          Answer
+                        </Button>
+                      ) : (
+                        <Button
+                          key={`card-reply-${note.id}`}
+                          variant="secondary"
+                          onPress={() => replyToNote($, note, fillOf(note))}
+                        >
+                          {replyWord(note)}
+                        </Button>
+                      )}
+                      <Button key={`card-ok-${note.id}`} plain onPress={() => markNoteOk($, note)}>
+                        {okWord(note)}
+                      </Button>
+                    </Box>
+                    {note.why !== undefined && (
+                      <Text dimColor wrap="truncate-end">
+                        {note.why}
+                      </Text>
+                    )}
+                  </Box>
+                ))}
+                {waiting.length > 3 && <Text dimColor>+{waiting.length - 3} more, in Now</Text>}
+              </Box>
+            )
+          })()
+    if (!e.props.isWorking && running === 0) {
+      return cards === undefined ? next(e) : cards
     }
 
     const { Box, Text } = $.ui.resolve(e)
@@ -1841,10 +2058,14 @@ export const register: Register = on => {
       ...(step === undefined ? [] : [`▸ ${step}`]),
       ...(running === 0 ? [] : [`${running} agent${running === 1 ? '' : 's'}`]),
       ...(last === undefined ? [] : [last.failed === 0 && !last.isError ? `✓ ${last.passed}` : `✗ ${last.failed} failing`]),
-      ...(open === 0 ? [] : [`${open} waiting on you`]),
     ]
     if (e.surface !== 'terminal') {
-      return <Text dimColor>{bits.join(' · ')}</Text>
+      return (
+        <Box flexDirection="column">
+          {cards}
+          <Text dimColor>{bits.join(' · ')}</Text>
+        </Box>
+      )
     }
 
     const { Raster } = $.ui.resolve(e)
@@ -1859,20 +2080,29 @@ export const register: Register = on => {
     startTicking($, now)
 
     return (
-      <Box flexDirection="row" gap={1}>
-        <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
-        <Text wrap="truncate-end" dimColor>
-          {bits.join(' · ')}
-        </Text>
+      <Box flexDirection="column">
+        {cards}
+        <Box flexDirection="row" gap={1}>
+          <Raster key="hud-pulse" {...pulse(beats, now, width, BEAT / 2)} />
+          <Text wrap="truncate-end" dimColor>
+            {bits.join(' · ')}
+          </Text>
+        </Box>
       </Box>
     )
   })
 
-  // A show call's row names its source in a few words, where the engine would
-  // print the whole source; ctrl+o still shows all of it.
-  on('ui.render', { component: 'ToolUse', props: { tool: 'mcp__show-work__show' } }, async (_, e, next) =>
-    e.props.isExpanded === true ? next(e) : next({ ...e, props: { ...e.props, input: briefShow(e.props.input) } }),
-  )
+  // A call's row to this plugin's tools sums its input up in a few words,
+  // where the engine would print all of it; ctrl+o still shows all of it.
+  for (const [tool, brief] of [
+    ['mcp__show-work__show', briefShow],
+    ['mcp__show-work__plan', briefPlan],
+    ['mcp__show-work__note', briefNote],
+  ] as const) {
+    on('ui.render', { component: 'ToolUse', props: { tool } }, async (_, e, next) =>
+      e.props.isExpanded === true ? next(e) : next({ ...e, props: { ...e.props, input: brief(e.props.input) } }),
+    )
+  }
 
   // A shown picture draws in the chat, under its tool row.
   on(
@@ -2011,35 +2241,32 @@ export const register: Register = on => {
     const shown = await read($, plan)
     const allNotes = await read($, notes)
     const acts = await read($, activity)
-    const files = await read($, changed)
     const pics = await read($, pictures)
     const pickedId = await read($, picked)
     const tab = await read($, tabAtom)
-    const isShowingEarlier = await read($, showEarlier)
+    const mode = await read($, findMode)
+    const wraps = await read($, wrapLines)
+    const dragged = await read($, viewSel)
     const openId = await read($, openNote)
     const shownDiff = await read($, diff)
     const allLanes = await read($, lanes)
     const allTurns = await read($, turns)
-    const shownMeter = await read($, meter)
     const runs = await read($, tests)
     const touched = await read($, touches)
-    const commitRows = await read($, commits)
     const projectFiles = await read($, tree)
     const codes = await read($, gitStatus)
     const opened = await read($, openDirs)
     const filterText = await read($, filter)
     const shownPreview = await read($, preview)
-    const allJobs = await read($, jobs)
-    const pickedJobId = await read($, pickedJob)
     const gitState = await read($, git)
     const found = await read($, search)
+    const tall = await shapeOf($)
     const now = await $.clock.now()
     // Only what this drawing holds can be repainted between drawings.
     forget(PANE)
     const Raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : undefined
     // The views draw a Raster only where the surface has one.
     const kit = { Box, Text, Button, ...(Raster === undefined ? {} : { Raster }) }
-    const bodyColumns = Math.max(24, Math.min(512, e.props.bodyColumns))
 
     // The tabs always show, the tools among them work from the start; the
     // Now tab says what will come while nothing has.
@@ -2047,27 +2274,16 @@ export const register: Register = on => {
 
     const since = shown?.startedAt
     const current = allNotes.filter(note => isCurrent(note, since))
-    const earlier = allNotes.length - current.length
-    const open = current.filter(note => note.kind === 'question' && !note.isReplied)
     const picture = pics.find(one => one.id === pickedId) ?? pics.at(-1)
-    const failed = acts.filter(act => act.status === 'failed').length
     // Lanes of this task, and any still running from before it.
     const currentLanes = allLanes.filter(
       lane => since === undefined || lane.at >= since || lane.status === 'runs',
     )
 
     // The note turns replied when the prompt is sent, in prompt.submit.
-    const reply = (note: Note, fill = '') => async () => {
-      await $.prompt.fill({ text: replyPrefix(note) + fill, mode: 'insert' })
-      await update($, openNote, () => null)
-    }
+    const reply = (note: Note, fill = '') => () => replyToNote($, note, fill)
 
-    const ok = (note: Note) => async () => {
-      await update($, notes, list =>
-        list.map(one => (one.id === note.id ? { ...one, isOk: true } : one)),
-      )
-      await update($, openNote, () => null)
-    }
+    const ok = (note: Note) => () => markNoteOk($, note)
 
     const noteRow = (note: Note) => {
       const isOpen = note.id === openId
@@ -2117,24 +2333,6 @@ export const register: Register = on => {
       )
     }
 
-    const actRow = (act: Act) => (
-      <Box flexDirection="column">
-        <Text wrap="truncate-end" dimColor={act.status === 'ok'}>
-          <Text color={ACT_MARK[act.status].color}>{ACT_MARK[act.status].mark}</Text>{' '}
-          {act.isSubagent ? '↳ ' : ''}
-          {act.kind.padEnd(6)}{' '}
-          {act.count === undefined ? '' : <Text weight="bold">×{act.count} </Text>}
-          {act.label}
-        </Text>
-        {act.detail !== undefined && (
-          <Text wrap="truncate-end" dimColor>
-            {'         $ '}
-            {act.detail}
-          </Text>
-        )}
-      </Box>
-    )
-
     const laneRow = (lane: Lane) => (
       <Box key={`lane-${lane.id}`} flexDirection="column">
         <Text wrap="truncate-end" dimColor={lane.status === 'ok'}>
@@ -2158,122 +2356,55 @@ export const register: Register = on => {
       await update($, diff, () => loaded)
     }
 
+    const toggleWrap = () => update($, wrapLines, is => !is)
+
+    const clearDrag = async () => {
+      await dropRef($)
+      await update($, viewSel, () => null)
+      applied = ''
+    }
+
+    // What the selection put in the prompt, when it came from what is showing.
+    const quotedFor = (id: string) => (dragged !== null && dragged.id === id ? dragged.label : '')
+
     const diffView = (shownDiff: Diff) => (
       <Box flexDirection="column">
-        <Box flexDirection="row" gap={2}>
-          <Text weight="bold">{shownDiff.file}</Text>
-          <Button key="diff-close" plain dimColor hotkey="x" onPress={() => update($, diff, () => null)}>
-            ✗ close
-          </Button>
-        </Box>
+        <QuoteLine kit={{ Box, Text, Button }} label={quotedFor(`diff:${shownDiff.file}`)} onClear={clearDrag} />
         {shownDiff.lines.length === 0 ? (
           <Text dimColor>No changes against git HEAD.</Text>
         ) : (
-          <Code source={shownDiff.lines.join('\n')} format="diff" path={shownDiff.file} />
+          <Code
+            source={shownDiff.lines.join('\n')}
+            format="diff"
+            path={shownDiff.file}
+            wrap={wraps ? 'wrap' : 'truncate-end'}
+          />
         )}
         {shownDiff.isCut && <Text dimColor>… cut at {DIFF_LINES} lines</Text>}
       </Box>
     )
 
-    // The last few turns, each followed by the subagents that started in it.
-    const timelineView = () => {
-      const shownTurns = allTurns.slice(-GANTT_TURNS)
-      const first = shownTurns[0]?.start
-      if (first === undefined) {
-        return <Text dimColor>No turns yet. Each prompt you send draws a bar here.</Text>
-      }
-      const bars: Bar[] = []
-      for (const turn of shownTurns) {
-        const isBad = turn.reason === 'error' || turn.reason === 'aborted' || turn.failed > 0
-        bars.push({
-          label: `turn ${turn.n}`,
-          start: turn.start,
-          ...(turn.end === undefined ? {} : { end: turn.end }),
-          color: isBad ? COLORS.failed : turn.end === undefined ? COLORS.live : COLORS.turn,
-          isSub: false,
-        })
-        const next = allTurns.find(one => one.n === turn.n + 1)?.start ?? Infinity
-        for (const lane of allLanes.filter(one => one.at >= turn.start && one.at < next)) {
-          bars.push({
-            label: lane.label,
-            start: lane.at,
-            ...(lane.end === undefined ? {} : { end: lane.end }),
-            color: lane.status === 'failed' ? COLORS.failed : COLORS.lane,
-            isSub: true,
-          })
-        }
-      }
-      const running = shownTurns.filter(one => one.end === undefined).length +
-        allLanes.filter(one => one.status === 'runs').length
-
-      if (e.surface !== 'terminal') {
-        return (
-          <Box flexDirection="column">
-            {bars.map(bar => (
-              <Text dimColor={bar.isSub}>
-                {bar.isSub ? '↳ ' : ''}
-                {bar.label} · {duration((bar.end ?? now) - bar.start)}
-                {bar.end === undefined ? '…' : ''}
-              </Text>
-            ))}
-          </Box>
-        )
-      }
-
-      const { Raster } = $.ui.resolve(e)
-      const columns = Math.max(24, Math.min(512, e.props.bodyColumns))
-      const chart = gantt(bars, now, columns, ticker.frame)
-      paint({
-        site: PANE,
-        key: 'gantt',
-        draw: (at, frame) => gantt(bars, at, columns, frame),
-        isLive: () => bars.some(bar => bar.end === undefined),
-      })
-      const key = legend([
-        [COLORS.turn, 'turn'],
-        [COLORS.lane, 'subagent'],
-        [COLORS.failed, 'failed'],
-      ])
+    // One line on what Claude is doing: working or idle, the call in
+    // flight, the agents running and the failures this turn.
+    const statusView = () => {
+      const turn = allTurns.at(-1)
+      const isBusy = turn !== undefined && turn.end === undefined
+      const call = acts.findLast(act => act.status === 'runs' && !act.isSubagent)
+      const agents = currentLanes.filter(lane => lane.status === 'runs').length
+      const broke = acts.filter(act => act.status === 'failed' && turn !== undefined && act.turn === turn.n).length
+      const bits = [
+        call === undefined ? '' : `${call.kind} ${call.label}`,
+        agents === 0 ? '' : `${agents} agent${agents === 1 ? '' : 's'} running`,
+        broke === 0 ? '' : `${broke} failed this turn`,
+      ].filter(bit => bit !== '')
 
       return (
-        <Box flexDirection="column">
-          <Text dimColor>
-            {shownTurns.length} turns · {running} running · · ={' '}
-            {duration(((now - chart.from) / Math.max(1, columns - 15)) * 6)}
+        <Text wrap="truncate-end">
+          <Text color={isBusy ? 'warning' : 'success'} weight="bold">
+            {isBusy ? '● working' : '○ idle'}
           </Text>
-          <Raster key="gantt" columns={columns} rows={chart.rows} cells={chart.cells} />
-          <Box flexDirection="row" justifyContent="space-between">
-            <Text dimColor>{''.padEnd(15)}0s</Text>
-            <Text dimColor>{duration(now - chart.from)} now</Text>
-          </Box>
-          <Raster key="gantt-key" columns={key.columns} rows={1} cells={key.cells} />
-        </Box>
-      )
-    }
-
-    // Calls over the last stretch, newest on the right: what Claude is doing
-    // at a glance. The context and spend stay in the status line.
-    const pulseView = () => {
-      const lastAt = acts.at(-1)?.at
-      if (Raster === undefined || lastAt === undefined) {
-        return undefined
-      }
-      const beats = acts.map(act => ({ at: act.at ?? 0, kind: act.kind, status: act.status }))
-      const span = bodyColumns * BEAT
-      paint({
-        site: PANE,
-        key: 'pulse',
-        draw: at => pulse(beats, at, bodyColumns, BEAT),
-        isLive: at => at - lastAt < span,
-      })
-
-      return (
-        <Box flexDirection="column">
-          <Raster key="pulse" {...pulse(beats, now, bodyColumns, BEAT)} />
-          <Text dimColor>
-            calls · last {Math.round(span / 60_000)}m
-          </Text>
-        </Box>
+          {bits.length === 0 ? '' : <Text dimColor> · {bits.join(' · ')}</Text>}
+        </Text>
       )
     }
 
@@ -2307,33 +2438,82 @@ export const register: Register = on => {
       )
     }
 
-    let body
-    if (tab === 'notes') {
-      const listed = isShowingEarlier ? allNotes : current
-      body = (
-        <Box flexDirection="column">
-          {listed.length === 0 ? (
-            <Text dimColor>No notes for this task yet.</Text>
-          ) : (
-            <Text dimColor>
-              Claude's notes on this task. Press a question to answer it, any
-              other note to open it.
-            </Text>
-          )}
-          {listed.slice(-30).map(note => noteRow(note))}
-          {earlier > 0 && (
-            <Button
-              key="earlier"
-              plain
-              dimColor
-              onPress={() => update($, showEarlier, is => !is)}
-            >
-              {isShowingEarlier ? 'Hide' : 'Show'} {earlier} from earlier tasks
-            </Button>
-          )}
-        </Box>
+    const findNames = () =>
+      explorerView(
+        {
+          ...kit,
+          Code,
+          Markdown: $.ui.resolve(e).Markdown,
+          ...(e.surface === 'terminal' ? { Image: $.ui.resolve(e).Image } : {}),
+        },
+        {
+          files: projectFiles,
+          codes,
+          touched: touched,
+          open: opened,
+          filter: filterText,
+          preview: shownPreview,
+          onToggle: dir => () =>
+            update($, openDirs, list => (list.includes(dir) ? list.filter(one => one !== dir) : [...list, dir])),
+          onOpen: file => async () => {
+            const loaded = await loadPreview($, cwd, file)
+            await update($, preview, () => loaded)
+            await $.ui.focus({ requestId: PANE, key: 'ex-mention' }).catch(() => undefined)
+          },
+          onClose: async () => {
+            await update($, preview, () => null)
+            await update($, viewSel, () => null)
+          },
+          onRaw: () => update($, preview, one => (one === null ? one : { ...one, isRaw: one.isRaw !== true })),
+          wraps,
+          onWrap: toggleWrap,
+          onLink: href => {
+            const target = joinPath(absolute(shownPreview?.file ?? '', cwd).replace(/\/[^/]*$/, '') || '/', decodeURI(href.split('#')[0] ?? ''))
+            void loadPreview($, cwd, relative(target, cwd)).then(loaded => update($, preview, () => loaded))
+          },
+          place: size => fit(size, Math.min(255, e.props.bodyColumns), 18, tall),
+          quoted: quotedFor(shownPreview?.file ?? ''),
+          onClearChip: clearDrag,
+          onMention: file => async () => {
+            await $.prompt.fill({ text: `@${file} `, mode: 'insert' })
+          },
+          onDiff: file => async () => {
+            const loaded = await loadDiff($, absolute(file, cwd), file)
+            await update($, diff, () => loaded)
+            await update($, tabAtom, () => 'changes')
+          },
+          onRefresh: async () => {
+            const [listed, status] = await Promise.all([loadTree($, cwd), loadStatus($, cwd)])
+            await update($, tree, () => listed)
+            await update($, gitStatus, () => status)
+          },
+        },
       )
-    } else if (tab === 'pictures') {
+
+    const findText = () =>
+      searchView(
+        kit,
+        {
+          search: found,
+          quoted: quotedFor('hits'),
+          onClearChip: clearDrag,
+          onSearch: query => async () => {
+            const result = await runSearch($, cwd, query)
+            await update($, search, () => result)
+            await update($, viewSel, () => null)
+            await $.ui.focus({ requestId: PANE, key: 'tab-find' }).catch(() => undefined)
+          },
+          onOpen: (file, line) => async () => {
+            const loaded = await loadPreview($, cwd, file, line)
+            await update($, preview, () => loaded)
+            await update($, findMode, () => 'files')
+            await update($, tabAtom, () => 'find')
+          },
+        },
+      )
+
+    let body
+    if (tab === 'pictures') {
       let view
       if (picture !== undefined && e.surface === 'terminal') {
         const { Image } = $.ui.resolve(e)
@@ -2390,86 +2570,38 @@ export const register: Register = on => {
                 ))}
           </Box>
         )
-    } else if (tab === 'timeline') {
-      body = timelineView()
-    } else if (tab === 'context') {
-      body = contextView(
-        kit,
-        { shown: shownMeter, turns: allTurns, columns: bodyColumns },
-      )
     } else if (tab === 'tests') {
       body = testsView(
         kit,
-        { runs, columns: bodyColumns, now },
-      )
-    } else if (tab === 'files') {
-      body = filesView(
-        kit,
         {
-          list: touched,
-          columns: bodyColumns,
-          onOpen: file => async () => {
-            const loaded = await loadDiff($, absolute(file, cwd), file)
-            await update($, diff, () => loaded)
-            await update($, tabAtom, () => 'activity')
-          },
-        },
-      )
-    } else if (tab === 'explorer') {
-      body = explorerView(
-        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }), Code },
-        {
-          files: projectFiles,
-          codes,
-          touched: touched,
-          open: opened,
-          filter: filterText,
-          preview: shownPreview,
-          onFilter: text => update($, filter, () => text),
-          onToggle: dir => () =>
-            update($, openDirs, list => (list.includes(dir) ? list.filter(one => one !== dir) : [...list, dir])),
-          onOpen: file => async () => {
-            const loaded = await loadPreview($, cwd, file)
-            await update($, preview, () => loaded)
-            await $.ui.focus({ requestId: PANE, key: 'ex-mention' }).catch(() => undefined)
-          },
-          onClose: () => update($, preview, () => null),
-          onMention: file => async () => {
-            await $.prompt.fill({ text: `@${file} `, mode: 'insert' })
-          },
-          onDiff: file => async () => {
-            const loaded = await loadDiff($, absolute(file, cwd), file)
-            await update($, diff, () => loaded)
-            await update($, tabAtom, () => 'activity')
-          },
-          onRefresh: async () => {
-            const [listed, status] = await Promise.all([loadTree($, cwd), loadStatus($, cwd)])
-            await update($, tree, () => listed)
-            await update($, gitStatus, () => status)
-          },
-        },
-      )
-    } else if (tab === 'run') {
-      body = runView(
-        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }) },
-        {
-          jobs: allJobs,
-          picked: pickedJobId,
+          runs,
           now,
-          onRun: command => () => {
-            void runJob($, cwd, command)
-            void $.ui.focus({ requestId: PANE, key: 'tab-run' }).catch(() => undefined)
-          },
-          onPick: id => () => update($, pickedJob, () => id),
-          onStop: id => () => stopJob(id),
-          onAsk: job => async () => {
-            const tail = job.output.slice(-40).join('\n')
-            await $.prompt.fill({
-              text: `The output of \`${job.command}\` (${job.status}${job.code === undefined || job.code === null ? '' : `, exit ${job.code}`}):\n\`\`\`\n${tail}\n\`\`\`\n`,
-              mode: 'insert',
-            })
+          onFix: run => async () => {
+            const names = run.names.filter(one => !one.ok).map(one => `- ${one.name}`)
+            const which = names.length === 0 ? '' : `:\n${names.slice(0, 20).join('\n')}\n`
+            await $.prompt.fill({ text: `Fix the failing tests from \`${run.command}\`${which}`, mode: 'insert' })
           },
         },
+      )
+    } else if (tab === 'find') {
+      body = (
+        <Box flexDirection="column" gap={1}>
+          <Box flexDirection="row" columnGap={2}>
+            <Button key="find-files" plain dimColor={mode !== 'files'} hotkey="o" onPress={async () => {
+                await update($, findMode, () => 'files')
+                await $.ui.focus({ requestId: PANE, key: 'ex-filter' }).catch(() => undefined)
+              }}>
+              <Text weight={mode === 'files' ? 'bold' : 'regular'}>Names</Text>
+            </Button>
+            <Button key="find-text" plain dimColor={mode !== 'text'} hotkey="t" onPress={async () => {
+                await update($, findMode, () => 'text')
+                await $.ui.focus({ requestId: PANE, key: 'search-q' }).catch(() => undefined)
+              }}>
+              <Text weight={mode === 'text' ? 'bold' : 'regular'}>Text</Text>
+            </Button>
+          </Box>
+          {mode === 'text' ? findText() : findNames()}
+        </Box>
       )
     } else if (tab === 'git') {
       body = gitView(
@@ -2481,7 +2613,7 @@ export const register: Register = on => {
           onDiff: file => async () => {
             const loaded = await loadDiff($, absolute(file, cwd), file)
             await update($, diff, () => loaded)
-            await update($, tabAtom, () => 'activity')
+            await update($, tabAtom, () => 'changes')
           },
           onStageAll: () => void gitDo($, cwd, ['add', '-A']),
           onUnstageAll: () => void gitDo($, cwd, ['reset', '-q']),
@@ -2493,92 +2625,46 @@ export const register: Register = on => {
           },
         },
       )
-    } else if (tab === 'search') {
-      body = searchView(
-        { ...kit, ...(e.surface === 'mobile' ? {} : { Input: $.ui.resolve(e).Input }) },
-        {
-          search: found,
-          onSearch: query => async () => {
-            const result = await runSearch($, cwd, query)
-            await update($, search, () => result)
-            await $.ui.focus({ requestId: PANE, key: 'tab-search' }).catch(() => undefined)
-          },
-          onOpen: (file, line) => async () => {
-            const loaded = await loadPreview($, cwd, file, line)
-            await update($, preview, () => loaded)
-            await update($, tabAtom, () => 'explorer')
-          },
-        },
-      )
-    } else if (tab === 'commits') {
-      body = commitsView(
-        kit,
-        {
-          rows: commitRows,
-          onRefresh: async () => {
-            const rows = await loadCommits($, cwd)
-            await update($, commits, () => rows)
-          },
-        },
-      )
-    } else if (tab === 'activity' && shownDiff !== null) {
-      body = diffView(shownDiff)
-    } else if (tab === 'activity') {
-      body = (
-        <Box flexDirection="column">
-          {files.length > 0 && (
-            <Box flexDirection="column" marginBottom={1}>
-              <Text weight="bold">
-                Changed <Text dimColor>press for the diff</Text>
-              </Text>
-              {files.slice(-12).map(file => (
-                <Button key={`file-${file}`} plain onPress={openDiff(file)}>
-                  <Text color="warning">±</Text> {file}
+    } else if (tab === 'changes') {
+      // The files Claude edited, newest first, and the diff of the one shown.
+      const edited = touched.filter(touch => touch.edits > 0).sort((a, b) => b.at - a.at)
+      const names = edited.some(touch => touch.file === shownDiff?.file) || shownDiff === null
+        ? edited.map(touch => touch.file)
+        : [shownDiff.file, ...edited.map(touch => touch.file)]
+      body =
+        names.length === 0 ? (
+          <Text dimColor>No files edited yet. The diff of each file Claude edits shows here.</Text>
+        ) : (
+          <Box flexDirection="column" gap={1}>
+            <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+              {names.slice(0, 12).map(file => (
+                <Button key={`file-${file}`} plain dimColor={file !== shownDiff?.file} onPress={openDiff(file)}>
+                  <Text weight={file === shownDiff?.file ? 'bold' : 'regular'}>{file}</Text>
                 </Button>
               ))}
             </Box>
-          )}
-          <Text dimColor>
-            {acts.reduce((sum, act) => sum + (act.count ?? 1), 0)} calls,{' '}
-            {files.length} files changed
-            {failed > 0 ? `, ${failed} failed` : ''}
-          </Text>
-          {acts.slice(-40).flatMap((act, i, list) =>
-            act.turn !== undefined && act.turn !== list[i - 1]?.turn
-              ? [
-                  <Text key={`turn-${act.turn}-${act.id}`} color="claude" dimColor wrap="truncate-end">
-                    {divider(
-                      allTurns.find(one => one.n === act.turn),
-                      act.turn,
-                      now,
-                    )}
-                  </Text>,
-                  actRow(act),
-                ]
-              : [actRow(act)],
-          )}
-        </Box>
-      )
+            {shownDiff !== null && (
+              <Box flexDirection="row" columnGap={2}>
+                <Button key="diff-wrap" plain dimColor hotkey="w" onPress={toggleWrap}>
+                  wrap: {wraps ? 'on' : 'off'} <Text dimColor>w</Text>
+                </Button>
+              </Box>
+            )}
+            {shownDiff === null ? <Text dimColor>Press a file for its diff.</Text> : diffView(shownDiff)}
+          </Box>
+        )
     } else if (isEmpty) {
       body = (
         <Text dimColor>
           Nothing yet. Claude posts its plan, decisions and questions here as it works, and logs the files and
-          commands it touches. Meanwhile: 0 explores the files, u runs a command, g is git, f searches.
+          commands it touches. Meanwhile: f finds files and text, g is git.
         </Text>
       )
     } else {
       body = (
         <Box flexDirection="column" gap={1}>
-          {pulseView()}
+          {statusView()}
           {planView()}
-          {open.length > 0 && (
-            <Box flexDirection="column">
-              <Text weight="bold">
-                Waiting on you <Text dimColor>press to reply</Text>
-              </Text>
-              {open.map(note => noteRow(note))}
-            </Box>
-          )}
           {currentLanes.length > 0 && (
             <Box flexDirection="column">
               <Text weight="bold">
@@ -2590,32 +2676,95 @@ export const register: Register = on => {
               {currentLanes.slice(-6).map(laneRow)}
             </Box>
           )}
-          {acts.length > 0 && (
+          {current.length > 0 && (
             <Box flexDirection="column">
-              <Text weight="bold">Latest</Text>
-              {acts.slice(-3).map(actRow)}
+              <Text weight="bold">
+                Notes <Text dimColor>what Claude chose, assumed and found this task</Text>
+              </Text>
+              {current.slice(-8).map(note => noteRow(note))}
             </Box>
           )}
         </Box>
       )
     }
 
-    const TABS: { id: Tab; label: string; count?: number; hotkey: string }[] = [
+    // No counts, and no Notes or Find: what needs an answer rides above the
+    // prompt, and the search box brings up Find.
+    const TABS: { id: Tab; label: string; hotkey: string }[] = [
       { id: 'now', label: 'Now', hotkey: '1' },
-      // A note replied to or OK'd is done: it greys out and stops counting.
-      { id: 'notes', label: 'Notes', count: current.filter(note => !note.isReplied && note.isOk !== true).length, hotkey: '2' },
-      { id: 'pictures', label: 'Pictures', count: pics.length, hotkey: '3' },
-      { id: 'activity', label: 'Activity', count: acts.length, hotkey: '4' },
-      { id: 'timeline', label: 'Timeline', count: allTurns.length, hotkey: '5' },
-      { id: 'context', label: 'Context', hotkey: '6' },
-      { id: 'tests', label: 'Tests', count: runs.length, hotkey: '7' },
-      { id: 'files', label: 'Files', count: touched.length, hotkey: '8' },
-      { id: 'commits', label: 'Commits', count: commitRows.filter(row => row.sha !== undefined).length, hotkey: '9' },
-      { id: 'explorer', label: 'Explorer', count: Object.keys(codes).length, hotkey: '0' },
-      { id: 'run', label: 'Run', count: allJobs.filter(job => job.status === 'running').length, hotkey: 'u' },
-      { id: 'git', label: 'Git', count: gitState?.files.length ?? 0, hotkey: 'g' },
-      { id: 'search', label: 'Search', count: found?.hits.length ?? 0, hotkey: 'f' },
+      { id: 'pictures', label: 'Pictures', hotkey: '2' },
+      { id: 'changes', label: 'Changes', hotkey: '3' },
+      { id: 'tests', label: 'Tests', hotkey: '4' },
+      { id: 'git', label: 'Git', hotkey: 'g' },
     ]
+
+    // The search box ends the tab bar and takes the rest of its row, or a row of
+    // its own where the tabs leave too little: one box for names and for text.
+    const Input = e.surface === 'mobile' ? undefined : $.ui.resolve(e).Input
+    const isText = mode === 'text'
+    const toFind = async () => {
+      await update($, tabAtom, () => 'find')
+    }
+    const searchBox =
+      Input === undefined ? null : (
+        <Box flexGrow={1} minWidth={30} borderStyle="round" borderDimColor={tab !== 'find'} paddingX={1} columnGap={1}>
+          <Button
+            key="tab-find"
+            plain
+            hotkey="f"
+            dimColor={tab !== 'find'}
+            onPress={async () => {
+              await toFind()
+              await $.ui.focus({ requestId: PANE, key: isText ? 'search-q' : 'ex-filter' }).catch(() => undefined)
+            }}
+          >
+            find
+          </Button>
+          <Input
+            key={isText ? 'search-q' : 'ex-filter'}
+            label="⌕"
+            placeholder={isText ? 'search the project’s text (regex)…' : 'find a file by a few letters…'}
+            submitLabel={isText ? 'search' : 'open'}
+            onInput={async value => {
+              await toFind()
+              if (!isText) {
+                await update($, filter, () => value)
+
+                return
+              }
+              // The text is searched as the typing pauses, each keystroke setting the last aside.
+              // The box is left to the person's typing: drawing a value back would eat keystrokes.
+              typing += 1
+              const mine = typing
+              await $.clock.sleep(SEARCH_WAIT)
+              if (mine !== typing) {
+                return
+              }
+              const result = value.trim().length < SEARCH_LEAST ? null : await runSearch($, cwd, value)
+              if (mine === typing) {
+                await update($, search, () => result)
+                await update($, viewSel, () => null)
+              }
+            }}
+            onSubmit={async value => {
+              await toFind()
+              if (isText) {
+                typing += 1
+                const result = await runSearch($, cwd, value)
+                await update($, search, () => result)
+                await update($, viewSel, () => null)
+              } else {
+                const first = matches(projectFiles, value, 1)[0]
+                if (first !== undefined) {
+                  const loaded = await loadPreview($, cwd, first)
+                  await update($, preview, () => loaded)
+                  await $.ui.focus({ requestId: PANE, key: 'ex-mention' }).catch(() => undefined)
+                }
+              }
+            }}
+          />
+        </Box>
+      )
 
     startTicking($, now)
 
@@ -2630,18 +2779,12 @@ export const register: Register = on => {
               hotkey={one.hotkey}
               onPress={async () => {
                 await update($, tabAtom, () => one.id)
-                // A tool's tab takes the typing at once; Enter there gives
-                // the keys back to the tabs.
-                const field = FIELDS[one.id]
-                if (field !== undefined) {
-                  await $.ui.focus({ requestId: PANE, key: field }).catch(() => undefined)
-                }
               }}
             >
               <Text weight={one.id === tab ? 'bold' : 'regular'}>{one.label}</Text>
-              {one.count === undefined || one.count === 0 ? '' : ` ${one.count}`}
             </Button>
           ))}
+          {searchBox}
         </Box>
         {body}
       </Box>

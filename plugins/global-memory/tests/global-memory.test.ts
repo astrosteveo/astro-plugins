@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { saveQuestion } from '../hooks/memory'
+import { briefWrite, saveQuestion } from '../hooks/memory'
 
 const DIR = '/home/u/.claude/memory'
 const INDEX = `${DIR}/MEMORY.md`
@@ -477,4 +477,16 @@ test('an index line with a bullet or an indent is an entry, and a duplicate goes
   expect(files.get(INDEX)).toBe('- [x](x.md) — new\n* [y](y.md) — y\n')
   await remove($, 'y')
   expect(files.get(INDEX)).toBe('- [x](x.md) — new\n')
+})
+
+test('a save call prints as its name and type, a cut description and the size of its body', () => {
+  const long = 'x'.repeat(200)
+  expect(briefWrite({ name: 'a', type: 'user', description: long, body: 'hello' })).toEqual({
+    name: 'a',
+    type: 'user',
+    description: `${'x'.repeat(79)}…`,
+    body: '5 characters',
+  })
+  expect(briefWrite({ name: 'a', description: 'short' })).toEqual({ name: 'a', description: 'short' })
+  expect(briefWrite(undefined)).toEqual({})
 })

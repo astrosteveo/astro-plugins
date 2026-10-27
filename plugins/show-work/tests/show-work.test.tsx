@@ -1,9 +1,10 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import { across, blowUp, errorLines, fromHex, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { briefShow, cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
+import { briefNote, briefPlan, briefShow, cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -20,6 +21,9 @@ const PANE = {
 } as const
 
 const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
+
+// What reached the engine as sent prompts, in order.
+const SENT: string[] = []
 
 // Nothing sits beneath the plugin: each hook here stands for the engine.
 function engine(
@@ -43,7 +47,11 @@ function engine(
 
     return { isFilled: true }
   })
-  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('prompt.submit', (_, e) => {
+    SENT.push(e.text)
+
+    return { text: e.text }
+  })
   on('tool.call', (_, e) => {
     const said = e.tool === 'Bash' ? bash?.(String(e.command), e.tool_use_id) : undefined
     if (said !== undefined) {
@@ -100,98 +108,6 @@ test('the plan tool draws the goal and steps', async ($, on) => {
   }
 })
 
-test('pressing a note quotes it into the prompt; sending a reply marks it', async ($, on) => {
-  const filled = engine(on)
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.tool.call({
-    tool: 'mcp__show-work__note',
-    kind: 'decision',
-    text: 'Use a CanvasLayer for the menu',
-    why: 'It draws above the game camera',
-  })
-  await $.tool.call({
-    tool: 'mcp__show-work__note',
-    kind: 'question',
-    text: 'Should Esc also close the menu?',
-  })
-
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ ...PANE, surface })
-    // Now holds the open question and no decision.
-    const ask = await ui.find({ type: 'Button', text: /Esc also close/ })
-    expect(ask?.text).toBe('I ask Should Esc also close the menu? · answer me')
-    expect(await ui.find({ type: 'Button', text: /CanvasLayer/ })).toBeUndefined()
-    await ui.press({ key: 'tab-notes' })
-    expect(await ui.find({ type: 'Text', text: /Press a question to answer/ })).toBeDefined()
-    expect((await ui.find({ type: 'Button', text: /CanvasLayer/ }))?.text).toBe(
-      'I chose Use a CanvasLayer for the menu · veto? ▸',
-    )
-    await ui.press({ key: 'tab-now' })
-    await ui.unmount()
-  }
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  const ask = await ui.find({ type: 'Button', text: /Esc also close/ })
-  await ui.press({ key: ask?.key ?? '' })
-  expect(filled).toEqual(['About your question "Should Esc also close the menu?": '])
-  // Pressing alone, or sending the quote with nothing after it, is no reply.
-  expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeDefined()
-  await $.prompt.submit({ text: filled[0] ?? '' })
-  expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeDefined()
-  await $.prompt.submit({ text: `${filled[0]}Yes, and Start too.` })
-  expect(await ui.find({ type: 'Button', text: /Esc also close/ })).toBeUndefined()
-  await ui.press({ key: 'tab-notes' })
-  expect((await ui.find({ type: 'Button', text: /Esc also close/ }))?.text).toMatch(/↩ replied$/)
-  await ui.unmount()
-})
-
-test('pressing another note opens it to its why, detail and actions', async ($, on) => {
-  const filled = engine(on)
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.tool.call({
-    tool: 'mcp__show-work__note',
-    kind: 'decision',
-    text: 'Use a CanvasLayer for the menu',
-    why: 'It draws above the game camera',
-    detail: 'A Control under the camera would scroll with the level.',
-  })
-  await $.tool.call({
-    tool: 'mcp__show-work__note',
-    kind: 'finding',
-    text: 'The save system already writes to user://',
-  })
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-notes' })
-  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes 2')
-  expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeUndefined()
-
-  const decision = await ui.find({ type: 'Button', text: /CanvasLayer/ })
-  await ui.press({ key: decision?.key ?? '' })
-  expect((await ui.find({ type: 'Button', text: /CanvasLayer/ }))?.text).toMatch(/veto\? ▾$/)
-  expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /would scroll with the level/ })).toBeDefined()
-  expect(filled).toEqual([])
-
-  // Veto starts a reply and closes the note; sending it marks it replied.
-  await ui.press({ key: `reply-${decision?.key}` })
-  expect(filled).toEqual([`About your decision "Use a CanvasLayer for the menu": I'd rather `])
-  expect(await ui.find({ type: 'Text', text: /why: It draws above/ })).toBeUndefined()
-  await $.prompt.submit({ text: `${filled[0]}use a Control.` })
-  expect((await ui.find({ type: 'Button', text: /CanvasLayer/ }))?.text).toMatch(/↩ replied$/)
-  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes 1')
-
-  // Got it marks the finding read without a reply.
-  const finding = await ui.find({ type: 'Button', text: /user:\/\// })
-  await ui.press({ key: finding?.key ?? '' })
-  await ui.press({ key: `ok-${finding?.key}` })
-  expect((await ui.find({ type: 'Button', text: /user:\/\// }))?.text).toMatch(/✓ ok$/)
-  // Every note is done, so the tab shows no count.
-  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes')
-  expect(filled).toHaveLength(1)
-  await ui.unmount()
-})
-
 test('a note without text is refused', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
@@ -199,7 +115,7 @@ test('a note without text is refused', async ($, on) => {
   expect(ran.deny).toBe('A note needs text.')
 })
 
-test('activity logs reads, edits and failed commands', async ($, on) => {
+test('changes list the edited files and nothing else', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Read', file_path: '/proj/scenes/main.tscn' })
@@ -214,44 +130,29 @@ test('activity logs reads, edits and failed commands', async ($, on) => {
 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: /main\.tscn/ })).toBeDefined()
-    await ui.press({ key: 'tab-activity' })
-    expect((await ui.find({ type: 'Text', text: /calls,/ }))?.text).toBe(
-      '3 calls, 1 files changed, 1 failed',
-    )
-    expect((await ui.find({ type: 'Text', text: /main\.tscn/ }))?.text).toBe(
-      '✓ read   scenes/main.tscn',
-    )
-    expect((await ui.find({ type: 'Text', text: /Run the tests/ }))?.text).toBe(
-      '✗ run    Run the tests',
-    )
-    expect((await ui.find({ type: 'Text', text: /\$ false/ }))?.text).toBe(
-      '         $ false && echo',
-    )
+    expect((await ui.find({ type: 'Text', text: /idle/ }))?.text).toBe('○ idle')
+    await ui.press({ key: 'tab-changes' })
+    expect(await ui.find({ type: 'Button', key: 'file-scripts/pause.gd' })).toBeDefined()
+    // Reads and commands are not Changes' business.
+    expect(await ui.find({ type: 'Text', text: /main\.tscn/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /Run the tests/ })).toBeUndefined()
     await ui.press({ key: 'tab-now' })
     await ui.unmount()
   }
 })
 
-test('repeated edits of a file fold into one row with a count', async ($, on) => {
+test('repeated edits of a file make one chip', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  const edit = { tool: 'Edit', file_path: '/proj/scripts/pause.gd', old_string: 'a', new_string: 'b' }
+  const edit = { tool: 'Edit', file_path: '/proj/scripts/pause.gd', old_string: 'a', new_string: 'b' } as const
   await $.tool.call(edit)
   await $.tool.call({ tool: 'Read', file_path: '/proj/scenes/main.tscn' })
   await $.tool.call(edit)
   await $.tool.call(edit)
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-activity' })
-  expect((await ui.find({ type: 'Text', text: /calls,/ }))?.text).toBe(
-    '4 calls, 1 files changed',
-  )
-  const rows = await ui.findAll({ type: 'Text', text: /^✓ (read|edit)/ })
-  expect(rows.map(row => row.text)).toEqual([
-    '✓ read   scenes/main.tscn',
-    '✓ edit   ×3 scripts/pause.gd',
-  ])
+  await ui.press({ key: 'tab-changes' })
+  expect((await ui.findAll({ type: 'Button', text: /\.gd$/ })).map(one => one.text)).toEqual(['scripts/pause.gd'])
   await ui.unmount()
 })
 
@@ -707,7 +608,28 @@ test('a brief show input keeps paths and URLs, and lists a sheet by its labels',
   expect(briefShow(undefined)).toEqual({})
 })
 
-test('pressing a tile of a sheet starts the prompt with the pick', async ($, on) => {
+test('a brief plan input counts its steps, and a brief note input sizes its reasons', () => {
+  expect(
+    briefPlan({
+      goal: 'Ship it',
+      steps: [
+        { text: 'Build', status: 'done' },
+        { text: 'Film the scene', status: 'doing' },
+        { text: 'Review', status: 'todo' },
+      ],
+    }),
+  ).toEqual({ goal: 'Ship it', steps: '1/3 done, doing: Film the scene' })
+  expect(briefPlan({ goal: 'x', steps: [{ text: 'a', status: 'done' }] })).toEqual({ goal: 'x', steps: '1/1 done' })
+  expect(briefPlan(undefined)).toEqual({ goal: undefined, steps: '0/0 done' })
+  expect(briefNote({ kind: 'decision', text: 'Use X.', why: 'Because.', detail: 'Longer.' })).toEqual({
+    kind: 'decision',
+    text: 'Use X.',
+    why: '8 characters',
+    detail: '7 characters',
+  })
+})
+
+test('pressing a tile of a sheet starts the prompt with the pick',async ($, on) => {
   const filled = engine(on)
   host(on, { answer: argv => (argv[0] === 'od' ? { stdout: PNG_HEAD } : undefined) })
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
@@ -987,7 +909,7 @@ test('a screenshot Claude reads lands in the pane, and the list picks one', asyn
   ])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Button', key: 'tab-pictures' }))?.text).toBe('Pictures 2')
+  expect((await ui.find({ type: 'Button', key: 'tab-pictures' }))?.text).toBe('Pictures')
   await ui.press({ key: 'tab-pictures' })
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({
     source: { file: '/home/u/.cache/show-work/toolu_r2.png' },
@@ -1013,29 +935,6 @@ test('reading a picture already in the cache adds no copy', async ($, on) => {
   expect(ran.some(argv => argv[0] === 'cp')).toBe(false)
 })
 
-test('a new goal starts a new task and hides the old notes', async ($, on) => {
-  engine(on)
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'mcp__show-work__plan', goal: 'First', steps: [] })
-  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'finding', text: 'Old news' })
-  await $.tool.call({ tool: 'mcp__show-work__plan', goal: 'First', steps: [] })
-  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'finding', text: 'Same task' })
-  await $.tool.call({ tool: 'mcp__show-work__plan', goal: 'Second', steps: [] })
-  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'risk', text: 'Fresh' })
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Button', key: 'tab-notes' }))?.text).toBe('Notes 1')
-  await ui.press({ key: 'tab-notes' })
-  expect(await ui.find({ type: 'Button', text: /Old news/ })).toBeUndefined()
-  expect((await ui.find({ type: 'Button', key: 'earlier' }))?.text).toBe(
-    'Show 2 from earlier tasks',
-  )
-  await ui.press({ key: 'earlier' })
-  expect(await ui.find({ type: 'Button', text: /Old news/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /Same task/ })).toBeDefined()
-  await ui.unmount()
-})
-
 const DIFF = `diff --git a/src/menu.gd b/src/menu.gd
 --- a/src/menu.gd
 +++ b/src/menu.gd
@@ -1045,7 +944,7 @@ const DIFF = `diff --git a/src/menu.gd b/src/menu.gd
 +var is_open := false
 `
 
-test('pressing a changed file shows its diff, colored, and close returns', async ($, on) => {
+test('Changes opens on the latest edit, colored, and a chip shows its diff', async ($, on) => {
   engine(on)
   const asked: string[][] = []
   on('process.run', (_, e) => {
@@ -1060,15 +959,15 @@ test('pressing a changed file shows its diff, colored, and close returns', async
   await $.tool.call({ tool: 'Edit', file_path: '/proj/src/menu.gd', old_string: 'a', new_string: 'b' })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-activity' })
+  await ui.press({ key: 'tab-changes' })
+  // The latest edit's diff is already open; pressing its chip loads it again.
+  expect(await ui.find({ type: 'Code' })).toBeDefined()
   await ui.press({ key: 'file-src/menu.gd' })
   expect(asked.at(-1)).toEqual(['git', '-C', '/proj/src', 'diff', '--no-color', 'HEAD', '--', '/proj/src/menu.gd'])
   // The hunks go to Code as a diff, which highlights them; the headers do not.
   const code = await ui.find({ type: 'Code' })
   expect(code?.props).toMatchObject({ format: 'diff', path: 'src/menu.gd' })
   expect(code?.props.source).toBe('@@ -1,2 +1,2 @@\n extends Control\n-var open = false\n+var is_open := false')
-  await ui.press({ key: 'diff-close' })
-  expect(await ui.find({ type: 'Code' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', text: /menu\.gd/ })).toBeDefined()
   await ui.unmount()
 })
@@ -1087,7 +986,7 @@ test('a new file diffs against nothing', async ($, on) => {
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: 'Write', file_path: '/proj/new.txt', content: 'hello' })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-activity' })
+  await ui.press({ key: 'tab-changes' })
   await ui.press({ key: 'file-new.txt' })
   expect((await ui.find({ type: 'Code' }))?.props.source).toBe('@@ -0,0 +1 @@\n+hello')
   await ui.unmount()
@@ -1121,22 +1020,15 @@ test('a subagent gets a lane with its latest call, done when it stops', async ($
   await ui.unmount()
 })
 
-import { divider, duration } from '../hooks/register'
+import { askDiffText, askText, duration, expandRefs, joinPath, markerRuns, quoteFromSelection } from '../hooks/register'
+import { hitItems, hitRowText, hitsFromSelection, hitsQuote, locateDiffRows, locateSelection, shownRows, splitFences } from '../hooks/explorer'
 import {
-  area,
   base64,
   patchCounts,
   shareBar,
-  flaky,
-  gantt,
-  gauge,
   glyphs,
-  legend,
-  parseLog,
   parseTests,
   pulse,
-  scoreboard,
-  treemap,
 } from '../hooks/charts'
 
 const decode = (cells: string, columns: number, rows: number) => {
@@ -1160,119 +1052,15 @@ test('base64 matches the standard padded form', () => {
   expect([enc(''), enc('f'), enc('fo'), enc('foo'), enc('foob')]).toEqual(['', 'Zg==', 'Zm8=', 'Zm9v', 'Zm9vYg=='])
 })
 
-test('durations and turn dividers read plainly', () => {
+test('durations read plainly, and a path joins with its dots resolved', () => {
   expect([duration(38_000), duration(252_000), duration(60_000)]).toEqual(['38s', '4m12s', '1m00s'])
-  const turn = { id: 't', n: 4, start: 0, end: 38_000, calls: 12, failed: 1 }
-  expect(divider(turn, 4, 99_000)).toBe('── turn 4 · 38s · 12 calls · 1 failed ──')
-  expect(divider({ ...turn, end: undefined, failed: 0 }, 4, 5_000)).toBe('── turn 4 · 5s… · 12 calls ──')
+  expect(joinPath('/proj/docs', '../img/a.png')).toBe('/proj/img/a.png')
+  expect(joinPath('/proj/docs', './b.md')).toBe('/proj/docs/b.md')
+  expect(joinPath('/proj/docs', '/abs/c.md')).toBe('/abs/c.md')
 })
 
-test('the gantt lays bars across time with half-cell ends', () => {
-  const columns = 35 // a 14-column label, a gap, 20 columns of bars
-  const chart = gantt(
-    [
-      { label: 'turn 1', start: 0, end: 10_000, color: 0xd97757, isSub: false },
-      { label: 'Find menu', start: 5_000, end: 7_500, color: 0x5fa8d3, isSub: true },
-      { label: 'turn 2', start: 15_000, color: 0xf0a070, isSub: false },
-    ],
-    20_000,
-    columns,
-  )
-  const { lines, words } = decode(chart.cells, columns, chart.rows)
-  // 20s over 20 columns: a column is a second, a half column half of one.
-  expect(lines).toEqual([
-    'turn 1         ██████████  ·     · ',
-    '↳ Find menu    ·    ██▌    ·     · ',
-    'turn 2         ·     ·     ·  █████',
-  ])
-  // A bar's cells carry its color; a label's do not.
-  expect(words[(0 * columns + 15) * 3 + 1]).toBe(0xd97757)
-})
-
-test('turns draw dividers in Activity and bars on the Timeline', async ($, on) => {
-  engine(on)
-  on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('turn.complete', () => ({ text: '' }))
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.turn.start({ text: 'fix it', turnId: 'turn-a' } as never)
-  await $.tool.call({ tool: 'Read', file_path: '/proj/a.gd' })
-  await $.tool.call({ tool: 'Bash', command: 'false' })
-  await $.turn.complete({ turnId: 'turn-a', reason: 'answer', answer: '', durationMs: 0, isAborted: false } as never)
-  await $.turn.start({ text: 'again', turnId: 'turn-b' } as never)
-  await $.tool.call({ tool: 'Read', file_path: '/proj/b.gd' })
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-activity' })
-  expect((await ui.find({ type: 'Text', text: /── turn 1/ }))?.text).toMatch(/^── turn 1 · \ds · 2 calls · 1 failed ──$/)
-  expect((await ui.find({ type: 'Text', text: /── turn 2/ }))?.text).toMatch(/^── turn 2 · \ds… · 1 call ──$/)
-  await ui.press({ key: 'tab-timeline' })
-  expect((await ui.find({ type: 'Text', text: /turns ·/ }))?.text).toMatch(/^2 turns · 1 running/)
-  const raster = await ui.find({ type: 'Raster' })
-  expect(raster?.props.rows).toBe(2)
-  await ui.unmount()
-
-  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await desk.press({ key: 'tab-timeline' })
-  expect((await desk.find({ type: 'Text', text: /^turn 2/ }))?.text).toMatch(/…$/)
-  await desk.unmount()
-})
-
-test('the legend swatches use the chart colors', () => {
-  const key = legend([
-    [0xd97757, 'turn'],
-    [0x5fa8d3, 'subagent'],
-  ])
-  const { lines, words } = decode(key.cells, key.columns, 1)
-  expect(lines[0]).toBe('█ turn  █ subagent')
-  expect(words[1]).toBe(0xd97757)
-  expect(words[8 * 3 + 1]).toBe(0x5fa8d3)
-})
-
-test('a running bar grows between redraws, repainted by blit, and stops when done', async ($, on) => {
-  engine(on, { isTicking: false })
-  const clock = mock.clock(on, { now: 1_000 })
-  const blits: { cells: string; columns: number; rows: number }[] = []
-  on('ui.blit', (_, e) => {
-    if ('cells' in e && e.cells !== undefined) {
-      blits.push({ cells: e.cells, columns: e.columns ?? 0, rows: e.rows ?? 0 })
-    }
-
-    return { value: {} }
-  })
-  on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('turn.complete', () => ({ text: '' }))
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.turn.start({ text: 'go', turnId: 'turn-a' } as never)
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-timeline' })
-  await clock.advance(10_000)
-  const count = blits.length
-  expect(count).toBeGreaterThan(30)
-  // The bar fills its row by now, and the leading cell pulses frame to frame.
-  const last = decode(blits.at(-1)!.cells, blits.at(-1)!.columns, 1)
-  expect(last.lines[0]?.slice(15).trim()).toMatch(/^█+$/)
-  const heads = blits.slice(-2).map(one => {
-    const words = decode(one.cells, one.columns, 1).words
-    return words[(one.columns - 1) * 3 + 1]
-  })
-  expect(new Set(heads).size).toBe(2)
-
-  await $.turn.complete({ turnId: 'turn-a', reason: 'answer', answer: '', durationMs: 0, isAborted: false } as never)
-  await clock.advance(2_000)
-  const after = blits.length
-  await clock.advance(5_000)
-  expect(blits.length).toBe(after)
-  await ui.unmount()
-})
-
-test('labels a Raster cannot draw turn to ?, and a narrow pane still fits', () => {
+test('labels a Raster cannot draw turn to ?', () => {
   expect(String.fromCharCode(...glyphs('fix 🐛 バグ ↳'))).toBe('fix ? ?? ↳')
-  const chart = gantt([{ label: 'ship 🚀', start: 0, end: 500, color: 0xd97757, isSub: true }], 1_000, 8)
-  expect(chart.columns).toBe(19)
-  const { lines } = decode(chart.cells, chart.columns, chart.rows)
-  expect(lines[0]?.slice(0, 9)).toBe('↳ ship ? ')
-  expect(gantt([], 1_000, 40)).toMatchObject({ rows: 0, cells: '' })
 })
 
 test('test output from five runners is read for counts and names', () => {
@@ -1308,23 +1096,6 @@ const run = (id: string, names: [string, boolean][], extra = {}) => ({
   ...extra,
 })
 
-test('the scoreboard puts failing tests first and flags flips as flaky', () => {
-  const runs = [
-    run('r1', [['jump', true], ['dash', true]]),
-    run('r2', [['jump', false], ['dash', true]]),
-    run('r3', [['jump', true], ['dash', false]]),
-  ]
-  expect([...flaky(runs)]).toEqual(['jump'])
-  const board = scoreboard(runs, 40, 10)
-  expect(board.names).toEqual(['dash', 'jump'])
-  const { lines, words } = decode(board.cells, board.columns, board.rows)
-  expect(lines).toEqual(['runs           █ █ █ ', 'dash           ▆ ▆ ▆ ', 'jump           ▆ ▆ ▆ '])
-  const fg = (row: number, col: number) => words[(row * board.columns + col) * 3 + 1]
-  expect([fg(0, 15), fg(0, 17), fg(0, 19)]).toEqual([0x6cc070, 0xe06c75, 0xe06c75])
-  expect([fg(1, 15), fg(1, 19)]).toEqual([0x6cc070, 0xe06c75])
-  expect(fg(2, 0)).toBe(0xe0a040)
-})
-
 test('the pulse stacks calls into buckets, newest on the right', () => {
   const beats = [
     { at: 9_500, kind: 'read', status: 'ok' },
@@ -1337,57 +1108,6 @@ test('the pulse stacks calls into buckets, newest on the right', () => {
   expect(lines[0]).toBe('▂▁▁▁▁▄')
   expect(words[5 * 3 + 1]).toBe(0xe0a040)
   expect(words[0 * 3 + 1]).toBe(0xe06c75)
-})
-
-test('the gauge fills by fraction, colors by level and marks compaction', () => {
-  const { lines, words } = decode(gauge(0.6, 10, 0.8).cells, 10, 1)
-  expect(lines[0]).toBe('██████░░┃░')
-  expect(words[1]).toBe(0xe0a040)
-})
-
-test('the area chart rises in eighths and draws the compaction line', () => {
-  const chart = area([0.25, 0.5, 1], 9, 4, 0.75)
-  expect(decode(chart.cells, 9, 4).lines).toEqual([
-    '──────██─',
-    '      ██ ',
-    '   ██ ██ ',
-    '██ ██ ██ ',
-  ])
-})
-
-test('the treemap covers the box and labels the tiles that fit', () => {
-  const map = treemap(
-    [
-      { label: 'player.gd', weight: 6, color: 0xb4532f },
-      { label: 'menu.gd', weight: 3, color: 0x2f5f80 },
-      { label: 'x', weight: 1, color: 0x2f5f80 },
-    ],
-    30,
-    6,
-  )
-  expect(map.placed.map(one => one.tile.label)).toEqual(['player.gd', 'menu.gd', 'x'])
-  const biggest = map.placed[0]!
-  expect(biggest.width * biggest.height).toBeGreaterThan(80)
-  const { lines, words } = decode(map.cells, 30, 6)
-  expect(lines[biggest.row]?.slice(biggest.col, biggest.col + 9)).toBe('player.gd')
-  expect(words[(biggest.row * 30 + biggest.col) * 3 + 2]).toBe(0xb4532f)
-})
-
-test('git log --graph reads into commits with stats and forks', () => {
-  const out = [
-    '* \x1e3d4035d\x1fadd timeline\x1f2 hours ago\x1fHEAD -> work',
-    '|  2 files changed, 418 insertions(+), 4 deletions(-)',
-    '| * \x1eabc1234\x1fside fix\x1f3 hours ago\x1f',
-    '|/  ',
-    '|  1 file changed, 1 deletion(-)',
-    '* \x1e0f88d45\x1freadme\x1f4 hours ago\x1f',
-  ].join('\n')
-  expect(parseLog(out)).toEqual([
-    { graph: '*', sha: '3d4035d', subject: 'add timeline', when: '2 hours ago', refs: 'HEAD -> work', added: 418, removed: 4 },
-    { graph: '| *', sha: 'abc1234', subject: 'side fix', when: '3 hours ago', added: 0, removed: 1 },
-    { graph: '|/' },
-    { graph: '*', sha: '0f88d45', subject: 'readme', when: '4 hours ago' },
-  ])
 })
 
 const USAGE = {
@@ -1409,46 +1129,12 @@ const USAGE = {
   cost: { usd: 4.2 },
 }
 
-test('the Context tab shows the gauge, what fills it and each turn', async ($, on) => {
-  engine(on)
-  on('session.usage', () => ({ value: USAGE }))
-  on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('turn.complete', () => ({
-    text: '',
-    usage: { model: 'm', input_tokens: 12_300, output_tokens: 1_200, cache_read_input_tokens: 98_000, cache_creation_input_tokens: 3_100 },
-  }))
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.turn.start({ text: 'go', turnId: 'turn-a' } as never)
-  await $.turn.complete({ turnId: 'turn-a', reason: 'answer', answer: '', durationMs: 0, isAborted: false } as never)
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-context' })
-  expect((await ui.find({ type: 'Text', text: /compacts at/ }))?.text).toBe(
-    'Context 60% 120k / 200k · compacts at 167k · $4.20 so far',
-  )
-  expect(await ui.find({ type: 'Raster', key: 'ctx-gauge' })).toBeDefined()
-  expect(await ui.find({ type: 'Raster', key: 'ctx-area' })).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /^turn 1:/ }))?.text).toBe(
-    'turn 1: 12.3k in · 1.2k out · 98.0k cache read · 3.1k cache write',
-  )
-  expect((await ui.find({ type: 'Text', text: /^limits/ }))?.text).toBe('limits: five hour 23%')
-  await ui.press({ key: 'tab-now' })
-  // The status line shows the context and spend; the Now tab leaves them out.
-  expect(await ui.find({ type: 'Text', text: /context 60%|\$4\.20/ })).toBeUndefined()
-  await ui.unmount()
-
-  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await desk.press({ key: 'tab-context' })
-  expect((await desk.find({ type: 'Text', text: /^Messages/ }))?.text).toBe('Messages 100k')
-  await desk.unmount()
-})
-
 const BUN_OUT = (jump: boolean) =>
   `(pass) dash [1ms]\n(${jump ? 'pass' : 'fail'}) jump [2ms]\n\n ${jump ? 2 : 1} pass\n ${jump ? 0 : 1} fail\n`
 
 test('test commands land on the Tests tab as runs', async ($, on) => {
   let jump = true
-  engine(on, {
+  const filled = engine(on, {
     bash: command =>
       command.startsWith('bun test') ? { text: BUN_OUT(jump), isError: !jump } : undefined,
   })
@@ -1462,54 +1148,13 @@ test('test commands land on the Tests tab as runs', async ($, on) => {
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'tab-tests' })
     expect((await ui.find({ type: 'Text', text: /pass · \d fail/ }))?.text).toMatch(/^✗ 1 pass · 1 fail bun test · \d+s ago$/)
-    expect((await ui.find({ type: 'Raster', key: 'tests-board' })) !== undefined).toBe(surface === 'terminal')
+    expect(await ui.find({ type: 'Button', key: 'tests-fix' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^✓\s+2 pass/ })).toBeDefined()
+    await ui.press({ key: 'tests-fix' })
+    expect(filled.at(-1)).toMatch(/^Fix the failing tests from `bun test`/)
     await ui.press({ key: 'tab-now' })
     await ui.unmount()
   }
-})
-
-test('files read and edited draw as tiles; pressing one opens its diff', async ($, on) => {
-  engine(on)
-  on('process.run', () => ({
-    value: { exitCode: 0, stdout: '@@ -1 +1 @@\n-a\n+b\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
-  }))
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'Read', file_path: '/proj/player.gd' })
-  await $.tool.call({ tool: 'Edit', file_path: '/proj/player.gd', old_string: 'a', new_string: 'b' })
-  await $.tool.call({ tool: 'Read', file_path: '/proj/menu.gd' })
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-files' })
-  expect(await ui.find({ type: 'Raster', key: 'files-map' })).toBeDefined()
-  expect((await ui.find({ type: 'Button', text: /player\.gd/ }))?.text).toBe('± player.gd 1 read · 1 edit')
-  await ui.press({ key: 'touch-player.gd' })
-  expect((await ui.find({ type: 'Code' }))?.props.source).toBe('@@ -1 +1 @@\n-a\n+b')
-  await ui.unmount()
-})
-
-test("the Commits tab draws this session's graph and refreshes after a commit", async ($, on) => {
-  let log = '* \x1e1111111\x1ffirst\x1f1 minute ago\x1fHEAD -> work\n|  1 file changed, 2 insertions(+)\n'
-  const asked: string[][] = []
-  engine(on)
-  on('session.usage', () => ({ value: { ...USAGE, startedAt: 1_700_000_000_000 } }))
-  on('process.run', (_, e) => {
-    asked.push([...e.argv])
-    const stdout = e.argv.includes('rev-list') ? 'basesha\n' : e.argv.includes('log') ? log : ''
-
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  expect(asked.find(argv => argv.includes('rev-list'))).toEqual(['git', '-C', '/proj', 'rev-list', '-1', '--before=@1700000000', 'HEAD'])
-  expect(asked.find(argv => argv.includes('log'))?.at(-1)).toBe('^basesha')
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-commits' })
-  expect((await ui.find({ type: 'Text', text: /1111111/ }))?.text).toBe('● 1111111 first (HEAD -> work) +2 −0 1 minute ago')
-  log = '* \x1e2222222\x1fsecond\x1fnow\x1fHEAD -> work\n' + log.replace('HEAD -> work', '')
-  await $.tool.call({ tool: 'Bash', command: 'git commit -m second', description: 'Commit' })
-  expect((await ui.find({ type: 'Text', text: /^This session's commits/ }))?.text).toBe("This session's commits 2")
-  await ui.unmount()
 })
 
 test('a share bar keeps its parts in proportion and shows each that has any', () => {
@@ -1547,7 +1192,7 @@ test("an edit's row in the chat gets a bar of lines added and removed", async ($
     surface: 'terminal',
   })
   const bar = await ui.find({ type: 'Raster', key: 'edit-toolu_e1' })
-  expect(decode(bar?.props.cells, bar?.props.columns, 1).lines[0]).toMatch(/^\+2 −1 █+$/)
+  expect(decode(bar?.props.cells as string, bar?.props.columns as number, 1).lines[0]).toMatch(/^\+2 −1 █+$/)
   await ui.unmount()
 })
 
@@ -1567,7 +1212,7 @@ test("a test command's row in the chat gets a pass and fail bar", async ($, on) 
     const ui = await $.ui.mount({ ...TOOL_RESULT(id, 'Bash', { stdout: '' }), surface })
     if (surface === 'terminal') {
       const bar = await ui.find({ type: 'Raster', key: `tests-${id}` })
-      expect(decode(bar?.props.cells, bar?.props.columns, 1).lines[0]).toMatch(/^✗ 1 pass 1 fail █+$/)
+      expect(decode(bar?.props.cells as string, bar?.props.columns as number, 1).lines[0]).toMatch(/^✗ 1 pass 1 fail █+$/)
     } else {
       expect((await ui.find({ type: 'Text', text: /pass/ }))?.text).toBe('✗ 1 pass · 1 fail')
     }
@@ -1585,8 +1230,8 @@ const BAND = (isWorking: boolean) =>
 
 test('the band shows the pulse and step while Claude works, and nothing idle', async ($, on) => {
   engine(on)
-  on('clock.every', () => ({ value: { cancel: () => {} } }))
-  on('session.usage', () => ({ value: USAGE }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.usage', () => ({ value: USAGE as never }))
   on('ui.render', ENGINE_ROW)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   await $.tool.call({
@@ -1652,8 +1297,8 @@ test('the Explorer walks the tree, filters, previews a file and mentions it', as
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-explorer' })
-  expect((await ui.find({ type: 'Button', key: 'tab-explorer' }))?.text).toBe('Explorer 1')
+  await ui.press({ key: 'tab-find' })
+  expect((await ui.find({ type: 'Button', key: 'tab-find' }))?.text).toBe('find')
   expect((await ui.find({ type: 'Text', text: /files/ }))?.text).toBe('5 files · 1 changed')
   await ui.press({ key: 'ex-hooks' })
   expect((await ui.find({ type: 'Button', key: 'ex-hooks/register.tsx' }))?.text).toBe('    register.tsx M')
@@ -1692,32 +1337,6 @@ test('git status, grep hits and coloured output are read plainly', () => {
   })
   expect(plain('\x1b[32m✓ ok\x1b[0m')).toBe('✓ ok')
   expect(plain('10%\r50%\r100% done')).toBe('100% done')
-})
-
-test('the Run tab streams a command, keeps its tail and hands it to Claude', async ($, on) => {
-  const filled = engine(on)
-  const spawned: string[][] = []
-  on('process.spawn', async function* ($, e, next) {
-    spawned.push([...e.argv])
-    yield { stream: 'stdout' as const, text: 'building\n\x1b[31merror: x\x1b[0m\npart' }
-    yield { stream: 'stderr' as const, text: 'ial\n' }
-
-    return { value: { code: 1, signal: null } } as never
-  })
-  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-run' })
-  await ui.input({ key: 'run-cmd', text: 'make build', kind: 'submit' })
-  expect(spawned).toEqual([['bash', '-lc', 'make build']])
-  expect((await ui.find({ type: 'Button', text: /^. make build/ }))?.text).toMatch(/^✗ make build \d+s · exit 1$/)
-  expect((await ui.findAll({ type: 'Text', text: /building|error|partial/ })).map(one => [one.text, one.props.color])).toEqual([
-    ['building', undefined],
-    ['error: x', 'error'],
-    ['partial', undefined],
-  ])
-  await ui.press({ key: 'run-ask' })
-  expect(filled[0]).toBe('The output of `make build` (failed, exit 1):\n```\nbuilding\nerror: x\npartial\n```\n')
-  await ui.unmount()
 })
 
 test('the Git tab stages a file, commits with a message and shows what git said', async ($, on) => {
@@ -1762,7 +1381,8 @@ test('the Search tab finds text and a hit opens the file at that line', async ($
   on('fs.read', () => ({ value: Array.from({ length: 80 }, (_, i) => `line ${i + 1}`).join('\n') }))
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'tab-search' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'find-text' })
   await ui.input({ key: 'search-q', text: 'jump', kind: 'submit' })
   expect((await ui.find({ type: 'Text', text: /hits in/ }))?.text).toBe('3 hits in 2 files')
   expect((await ui.find({ type: 'Button', key: 'hit-hooks/a.ts:42' }))?.text).toBe('   42 jump()')
@@ -1883,4 +1503,346 @@ test('a mermaid block that will not render shows its code and why', async ($, on
   expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('```mermaid\ngraph LR\n  A-->\n```')
   expect(await ui.find({ type: 'Image' })).toBeUndefined()
   await ui.unmount()
+})
+
+test('a markdown file previews as markdown, with a button for its source', async ($, on) => {
+  engine(on)
+  on('process.run', (_, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv.includes('ls-files') ? 'README.md\nsrc/a.ts\n' : '',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  on('fs.read', () => ({ value: '# Title\n\nSee [the guide](docs/guide.md) and [the web](https://example.com).\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-README.md' })
+  const md = await ui.find({ type: 'Markdown' })
+  expect(md?.props.text).toMatch(/^# Title/)
+  expect(md?.props.pressableLinks).toEqual(['docs/guide.md'])
+  expect(await ui.find({ type: 'Code' })).toBeUndefined()
+  await ui.press({ key: 'ex-raw' })
+  expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
+  expect((await ui.find({ type: 'Code' }))?.props.source).toMatch(/^# Title/)
+  expect((await ui.find({ type: 'Button', key: 'ex-raw' }))?.text).toBe('rendered')
+  await ui.unmount()
+})
+
+test('the prompt starts with the file, its lines and the quoted text', () => {
+  expect(askText('src/a.ts', { from: 3, to: 4, text: 'a\nb' })).toBe('About `src/a.ts`, lines 3 to 4:\n```ts\na\nb\n```\n')
+  expect(askText('README.md', { from: 7, to: 7, text: 'x' })).toBe('About `README.md`, line 7:\n```md\nx\n```\n')
+  expect(askText('a.md', { from: undefined, to: undefined, text: 'has ``` inside' })).toContain('````md')
+})
+
+test('markdown splits into prose and fenced code', () => {
+  expect(splitFences('Intro\n\n```ts\nconst a = 1\n```\n\nOutro\n')).toEqual([
+    { text: 'Intro\n\n' },
+    { code: 'const a = 1', lang: 'ts' },
+    { text: '\n\nOutro\n' },
+  ])
+  expect(splitFences('no fences here')).toEqual([{ text: 'no fences here' }])
+  expect(splitFences('````md\n```\nnested\n```\n````\n')[0]).toEqual({ code: '```\nnested\n```', lang: 'md' })
+  expect(askDiffText('src/a.ts', '-a\n+b')).toBe('About my change to `src/a.ts`:\n```diff\n-a\n+b\n```\n')
+})
+
+test('the wrap button turns wrapping off and on in the preview and the diff', async ($, on) => {
+  engine(on)
+  on('process.run', (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : e.argv.includes('HEAD') ? DIFF : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('fs.read', () => ({ value: 'one\ntwo\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/a.ts', old_string: 'a', new_string: 'b' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-a.ts' })
+  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('wrap')
+  expect((await ui.find({ type: 'Button', key: 'ex-wrap' }))?.text).toBe('wrap: on')
+  await ui.press({ key: 'ex-wrap' })
+  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('truncate-end')
+  expect((await ui.find({ type: 'Button', key: 'ex-wrap' }))?.text).toBe('wrap: off')
+  await ui.press({ key: 'tab-changes' })
+  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('truncate-end')
+  await ui.press({ key: 'diff-wrap' })
+  expect((await ui.find({ type: 'Code' }))?.props.wrap).toBe('wrap')
+  await ui.unmount()
+})
+
+test('a markdown fence draws as highlighted code between prose', async ($, on) => {
+  engine(on)
+  on('process.run', (_, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv.includes('ls-files') ? 'logo.png\nREADME.md\n' : e.argv.includes('identify') ? '64 32' : '',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/home/t' : undefined }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.read', () => ({ value: 'Text\n\n```ts\nconst a = 1\n```\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-README.md' })
+  const code = await ui.find({ type: 'Code' })
+  expect(code?.props).toMatchObject({ source: 'const a = 1', language: 'ts' })
+  expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('Text\n\n')
+  await ui.unmount()
+})
+
+test('a marker is painted in the draft and swapped for its quote on send', () => {
+  const list = [{ marker: '[a.ts lines 1 to 2]', text: 'About `a.ts`, lines 1 to 2:\n```ts\none\ntwo\n```\n' }]
+  expect(markerRuns('see [a.ts lines 1 to 2] why', list)).toEqual([
+    { start: 4, end: 23, color: 'claude', underline: true },
+  ])
+  expect(markerRuns('no marker', list)).toEqual([])
+  // The quote takes lines of its own, and the words around it stay.
+  expect(expandRefs('Why [a.ts lines 1 to 2] ?', list)).toEqual({
+    text: 'Why\nAbout `a.ts`, lines 1 to 2:\n```ts\none\ntwo\n```\n?',
+    used: ['[a.ts lines 1 to 2]'],
+  })
+  expect(expandRefs('[a.ts lines 1 to 2] why?', list).text).toBe('About `a.ts`, lines 1 to 2:\n```ts\none\ntwo\n```\nwhy?')
+  expect(expandRefs('a marker was deleted', list)).toEqual({ text: 'a marker was deleted', used: [] })
+})
+
+test('search hits list by file, and a drag over them quotes the hits with their places', () => {
+  const items = hitItems([
+    { file: 'a.ts', line: 42, text: 'jump()' },
+    { file: 'a.ts', line: 50, text: 'jump(2)' },
+    { file: 'b.md', line: 3, text: 'jump here' },
+  ])
+  expect(items.map(hitRowText)).toEqual(['a.ts 2', '   42 jump()', '   50 jump(2)', 'b.md 1', '    3 jump here'])
+  // A drag from the second row to the fourth picks two hits; the file rows add none.
+  expect(hitsQuote('jump', items, 1, 3)).toEqual({
+    marker: '[search "jump" 2 hits]',
+    text: 'About these search hits for `jump`:\n```\na.ts:42: jump()\na.ts:50: jump(2)\n```\n',
+  })
+  expect(hitsQuote('jump', items, 4, 4)?.marker).toBe('[search "jump" 1 hit]')
+  expect(hitsQuote('jump', items, 0, 0)).toBeUndefined()
+})
+
+test('notes ride above the prompt as cards: a question to answer, a decision to veto or OK', async ($, on) => {
+  const filled = engine(on)
+  on('ui.render', ENGINE_ROW)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'mcp__show-work__note',
+    kind: 'decision',
+    text: 'Use a CanvasLayer for the menu',
+    why: 'It draws above the game camera',
+  })
+  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'question', text: 'Should Esc also close the menu?' })
+  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'finding', text: 'The save system writes to user://' })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const band = await $.ui.mount({ ...BAND(false), surface })
+    // Idle, and still there: what needs an answer is not hidden. Questions come first.
+    const buttons = (await band.findAll({ type: 'Button' })).map(one => one.text)
+    expect(buttons).toEqual(['Answer', '✗', 'Veto', 'OK', 'Tell me more', 'Got it'])
+    expect(await band.find({ type: 'Text', text: /It draws above the game camera/ })).toBeDefined()
+    await band.unmount()
+  }
+
+  const band = await $.ui.mount({ ...BAND(false), surface: 'terminal' })
+  const answer = await band.find({ type: 'Button', text: 'Answer' })
+  await band.press({ key: answer?.key ?? '' })
+  expect(filled).toEqual(['About your question "Should Esc also close the menu?": '])
+  // Pressing alone is no reply; sending words after the quote is.
+  expect(await band.find({ type: 'Button', text: 'Answer' })).toBeDefined()
+  await $.prompt.submit({ text: `${filled[0]}Yes.`, wait: false, origin: { kind: 'composer' } })
+  expect(await band.find({ type: 'Button', text: 'Answer' })).toBeUndefined()
+  // Veto starts a reply; OK puts the card away without one.
+  const veto = await band.find({ type: 'Button', text: 'Veto' })
+  await band.press({ key: veto?.key ?? '' })
+  expect(filled.at(-1)).toBe(`About your decision "Use a CanvasLayer for the menu": I'd rather `)
+  const ok = await band.find({ type: 'Button', text: 'Got it' })
+  await band.press({ key: ok?.key ?? '' })
+  expect((await band.findAll({ type: 'Button' })).map(one => one.text)).toEqual(['Veto', 'OK'])
+  await band.unmount()
+})
+
+test('Now keeps a log of the task\'s notes, opened to their reasons, and a new goal hides the old', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__show-work__plan', goal: 'First', steps: [] })
+  await $.tool.call({ tool: 'mcp__show-work__note', kind: 'finding', text: 'Old news' })
+  await $.tool.call({ tool: 'mcp__show-work__plan', goal: 'Second', steps: [] })
+  await $.tool.call({
+    tool: 'mcp__show-work__note',
+    kind: 'decision',
+    text: 'Fresh call',
+    why: 'Because',
+    detail: 'More about it.',
+  })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Button', text: /Old news/ })).toBeUndefined()
+  const row = await ui.find({ type: 'Button', text: /Fresh call/ })
+  expect(row?.text).toBe('I chose Fresh call · veto? ▸')
+  expect(await ui.find({ type: 'Text', text: /More about it/ })).toBeUndefined()
+  await ui.press({ key: row?.key ?? '' })
+  expect(await ui.find({ type: 'Text', text: /More about it/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /why: Because/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the tabs are Now, Pictures, Changes, Tests and Git; the search box brings up Find when focused', async ($, on) => {
+  engine(on)
+  on('process.run', (_, e) => ({
+    value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('ui.focus', () => ({}))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const tabs = (await ui.findAll({ type: 'Button', text: /^(Now|Pictures|Changes|Tests|Git|Notes|Find)$/ })).map(one => one.text)
+  expect(tabs).toEqual(['Now', 'Pictures', 'Changes', 'Tests', 'Git'])
+  // Nothing of Find shows until the search box is used.
+  expect(await ui.find({ type: 'Text', text: /^\d+ files/ })).toBeUndefined()
+  await $.ui.focus({ component: 'Pane', requestId: 'show-work', element: 'ex-filter', origin: { kind: 'person' } } as never)
+  expect((await ui.find({ type: 'Text', text: /^\d+ files/ }))?.text).toBe('1 files')
+  await ui.press({ key: 'tab-now' })
+  expect(await ui.find({ type: 'Text', text: /^\d+ files/ })).toBeUndefined()
+  // The f hotkey lives on the box's own button, and brings Find up.
+  await ui.press({ key: 'tab-find' })
+  expect(await ui.find({ type: 'Text', text: /^\d+ files/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the text search runs as the typing pauses, and not for a single letter', async ($, on) => {
+  engine(on)
+  on('clock.sleep', () => ({ value: undefined }))
+  const asked: string[] = []
+  on('process.run', (_, e) => {
+    if (e.argv[0] === 'rg') {
+      asked.push(e.argv.at(-1) ?? '')
+    }
+
+    return {
+      value: {
+        exitCode: 0,
+        stdout: e.argv[0] === 'rg' ? 'hooks/a.ts:42:  jump()\n' : '',
+        stderr: '',
+        isStdoutTruncated: false,
+        isStderrTruncated: false,
+      },
+    }
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'find-text' })
+  await ui.input({ key: 'search-q', text: 'j', kind: 'change' })
+  expect(asked).toEqual([])
+  await ui.input({ key: 'search-q', text: 'jump', kind: 'change' })
+  expect(asked).toHaveLength(1)
+  expect((await ui.find({ type: 'Text', text: /hits in/ }))?.text).toBe('1 hits in 1 file')
+  // Back to a letter, and the results clear.
+  await ui.input({ key: 'search-q', text: 'j', kind: 'change' })
+  expect(await ui.find({ type: 'Text', text: /hits in/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+// A session with the clock mocked, so the selection watcher's ticks come when the test says.
+async function watched($: Parameters<TestBody>[0], on: On) {
+  const filled = engine(on, { isTicking: false })
+  const clock = mock.clock(on)
+  const state: { picked: { text: string; requestId?: string } | undefined } = { picked: undefined }
+  on('ui.selection', () => ({ value: state.picked }))
+  on('process.run', (_, e) => ({
+    value: {
+      exitCode: 0,
+      stdout: e.argv.includes('ls-files')
+        ? 'a.ts\n'
+        : e.argv[0] === 'rg'
+          ? 'hooks/a.ts:42:  jump()\nhooks/a.ts:50:jump(2)\n'
+          : e.argv.includes('HEAD')
+            ? '@@ -1,2 +1,2 @@\n-old\n+new\n same\n'
+            : '',
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  on('fs.read', () => ({ value: 'one\ntwo\nthree\n' }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+
+  return { filled, clock, state }
+}
+
+test('a selection in the file preview puts a marker in the prompt once it holds still, and send swaps in the quote', async ($, on) => {
+  const { filled, clock, state } = await watched($, on)
+  SENT.length = 0
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-a.ts' })
+  state.picked = { text: 'wo' }
+  await clock.advance(350)
+  // Still new: the person may be dragging yet.
+  expect(filled).toEqual([])
+  await clock.advance(350)
+  expect(filled).toEqual(['[a.ts line 2] '])
+  expect((await ui.find({ type: 'Text', text: /in your prompt/ }))?.text).toBe('in your prompt: line 2')
+  // The same selection is not put in twice.
+  await clock.advance(1000)
+  expect(filled).toHaveLength(1)
+  // Extending it changes the marker.
+  state.picked = { text: 'two\nthree' }
+  await clock.advance(700)
+  expect(filled).toHaveLength(2)
+  expect(filled.at(-1)).toBe('[a.ts lines 2 to 3] ')
+  await $.prompt.submit({ text: '[a.ts lines 2 to 3] why?', wait: false, origin: { kind: 'composer' } })
+  expect(SENT).toEqual(['About `a.ts`, lines 2 to 3:\n```ts\ntwo\nthree\n```\nwhy?'])
+  await ui.unmount()
+})
+
+test('a selection that is not in what the pane shows, or is in the chat, is left alone', async ($, on) => {
+  const { filled, clock, state } = await watched($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'ex-a.ts' })
+  state.picked = { text: 'words from the prompt box' }
+  await clock.advance(1000)
+  state.picked = { text: 'two', requestId: 'row-7' }
+  await clock.advance(1000)
+  expect(filled).toEqual([])
+  await ui.unmount()
+})
+
+test('a selection over a diff or the search hits is quoted from them', async ($, on) => {
+  const { filled, clock, state } = await watched($, on)
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/a.ts', old_string: 'a', new_string: 'b' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-changes' })
+  state.picked = { text: 'old\nnew' }
+  await clock.advance(700)
+  expect(filled).toEqual(['[change to a.ts] '])
+  await ui.press({ key: 'tab-find' })
+  await ui.press({ key: 'find-text' })
+  await ui.input({ key: 'search-q', text: 'jump', kind: 'submit' })
+  state.picked = { text: '42 jump()\n   50 jump(2)' }
+  await clock.advance(700)
+  expect(filled.at(-1)).toBe('[search "jump" 2 hits] ')
+  await ui.unmount()
+})
+
+test('selected text is found in its file by lines, with or without the gutter or the markdown marks', () => {
+  const source = 'import x\n\nexport function add() {\n  return a + b\n}\n'
+  expect(locateSelection(source, 'function add() {\n  return')).toEqual({ from: 3, to: 4, text: 'export function add() {\n  return a + b' })
+  expect(locateSelection(source, ' 3 export function add() {\n 4   return a + b')).toMatchObject({ from: 3, to: 4 })
+  const md = '# Title\n\nSome **bold** words, a [link](x.md) and `code`.\n'
+  expect(locateSelection(md, 'Title\n\nSome bold words, a link and code.')).toMatchObject({ from: 1, to: 3 })
+  expect(locateSelection(source, '   \n')).toBeUndefined()
+  expect(locateSelection(source, 'nowhere to be found')).toEqual({ from: undefined, to: undefined, text: 'nowhere to be found' })
+  const rows = ['-old line one', '+new line one', ' same']
+  expect(locateDiffRows(rows, 'line one\nnew line')).toBe('-old line one\n+new line one')
+  expect(locateDiffRows(rows, 'nowhere')).toBeUndefined()
+  expect(hitsFromSelection(hitItems([{ file: 'a.ts', line: 4, text: 'jump()' }, { file: 'b.ts', line: 9, text: 'jump here' }]), '4 jump()\n9 jump here')).toEqual({ from: 1, to: 3 })
+  expect(quoteFromSelection('x', { preview: null, diff: null, search: null, tab: 'now', mode: 'files' })).toBeUndefined()
+  expect(shownRows(['@@ -1 +1 @@', '-a'])).toEqual(['-a'])
 })

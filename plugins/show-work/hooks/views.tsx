@@ -1,21 +1,10 @@
-// The Context, Tests, Files and Commits tabs. Each takes the elements of the
+// The Tests, Git and Find views. Each takes the elements of the
 // surface it draws on, with a Raster where the surface has one, and the data.
 
 import type { Color, Elements, RenderElement } from 'claude-code'
 
-import type { CommitRow, GitFile, GitState, Job, Meter, Preview, Search, TestRun, Touch, Turn } from '../types'
-import { matches, treeRows } from './explorer'
-import {
-  PALETTE,
-  area,
-  gauge,
-  legend,
-  scoreboard,
-  stacked,
-  tokens,
-  touchColor,
-  treemap,
-} from './charts'
+import type { GitFile, GitState, Preview, Search, TestRun, Touch } from '../types'
+import { matches, splitFences, treeRows } from './explorer'
 
 export type Kit = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'> & {
   Raster?: Elements['terminal']['Raster']
@@ -32,102 +21,9 @@ export function ago(ms: number) {
 
 const basename = (path: string) => path.slice(path.lastIndexOf('/') + 1)
 
-export function contextView(
-  { Box, Text, Raster }: Kit,
-  { shown, turns, columns }: { shown: Meter | null; turns: Turn[]; columns: number },
-): RenderElement {
-  if (shown === null) {
-    return <Text dimColor>No reading yet. The meter fills after Claude's next answer.</Text>
-  }
-  const used = shown.tokens ?? 0
-  const fraction = used / Math.max(1, shown.window)
-  const mark = shown.buffer === undefined ? undefined : (shown.window - shown.buffer) / shown.window
-  const charted = turns.filter(turn => turn.context !== undefined)
-  const last = turns.findLast(turn => turn.usage !== undefined)
-  const color: Color = fraction < 0.5 ? 'success' : fraction < 0.8 ? 'warning' : 'error'
-
-  return (
-    <Box flexDirection="column" gap={1}>
-      <Box flexDirection="column">
-        <Text>
-          <Text weight="bold">Context</Text>{' '}
-          <Text color={color} weight="bold">
-            {shown.percent ?? Math.round(fraction * 100)}%
-          </Text>{' '}
-          {tokens(used)} / {tokens(shown.window)}
-          {mark === undefined ? '' : <Text dimColor> · compacts at {tokens(shown.window - (shown.buffer ?? 0))}</Text>}
-          {shown.usd === undefined ? '' : <Text dimColor> · ${shown.usd.toFixed(2)} so far</Text>}
-        </Text>
-        {Raster !== undefined && (
-          <Raster key="ctx-gauge" {...gauge(fraction, columns, mark)} />
-        )}
-      </Box>
-      {shown.categories.length > 0 && (
-        <Box flexDirection="column">
-          <Text weight="bold">What fills it</Text>
-          {Raster !== undefined && (
-            <Raster
-              key="ctx-stack"
-              {...stacked(
-                shown.categories.map((one, i) => ({ tokens: one.tokens, color: PALETTE[i % PALETTE.length]! })),
-                shown.window,
-                shown.buffer ?? 0,
-                columns,
-              )}
-            />
-          )}
-          {shown.categories.map((one, i) =>
-            Raster !== undefined ? (
-              <Raster
-                key={`ctx-cat-${i}`}
-                {...legend([[PALETTE[i % PALETTE.length]!, `${one.name}  ${tokens(one.tokens)}`]])}
-              />
-            ) : (
-              <Text key={`ctx-cat-${i}`} dimColor>
-                {one.name} {tokens(one.tokens)}
-              </Text>
-            ),
-          )}
-        </Box>
-      )}
-      {charted.length > 0 && (
-        <Box flexDirection="column">
-          <Text weight="bold">
-            After each turn <Text dimColor>{charted.length} turns</Text>
-          </Text>
-          {Raster !== undefined ? (
-            <Raster
-              key="ctx-area"
-              {...area(
-                charted.map(turn => (turn.context ?? 0) / Math.max(1, shown.window)),
-                columns,
-                8,
-                mark,
-              )}
-            />
-          ) : (
-            <Text dimColor>{charted.map(turn => tokens(turn.context ?? 0)).join(' → ')}</Text>
-          )}
-        </Box>
-      )}
-      {last?.usage !== undefined && (
-        <Text dimColor>
-          turn {last.n}: {tokens(last.usage.input)} in · {tokens(last.usage.output)} out ·{' '}
-          {tokens(last.usage.cacheRead)} cache read · {tokens(last.usage.cacheWrite)} cache write
-        </Text>
-      )}
-      {shown.limits.length > 0 && (
-        <Text dimColor>
-          limits: {shown.limits.map(one => `${one.kind.replace('_', ' ')} ${Math.round(one.percentUsed)}%`).join(' · ')}
-        </Text>
-      )}
-    </Box>
-  )
-}
-
 export function testsView(
-  { Box, Text, Raster }: Kit,
-  { runs, columns, now }: { runs: TestRun[]; columns: number; now: number },
+  { Box, Text, Button }: Kit,
+  { runs, now, onFix }: { runs: TestRun[]; now: number; onFix?: (run: TestRun) => () => void },
 ): RenderElement {
   const last = runs.at(-1)
   if (last === undefined) {
@@ -139,7 +35,7 @@ export function testsView(
     )
   }
   const isGreen = last.failed === 0 && !last.isError
-  const board = scoreboard(runs, columns, 20)
+  const failing = last.names.filter(one => !one.ok)
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -151,11 +47,20 @@ export function testsView(
           {last.command} · {ago(now - last.at)}
         </Text>
       </Text>
-      {Raster !== undefined && <Raster key="tests-board" {...board} />}
-      {board.shaky.size > 0 && (
-        <Text color="warning" wrap="truncate-end">
-          flaky: {[...board.shaky].join(', ')}
-        </Text>
+      {!isGreen && onFix !== undefined && (
+        <Button key="tests-fix" hotkey="x" variant="primary" onPress={onFix(last)}>
+          Fix these (x)
+        </Button>
+      )}
+      {failing.length > 0 && (
+        <Box flexDirection="column">
+          {failing.slice(0, 15).map(one => (
+            <Text key={`fail-${one.name}`} color="error" wrap="truncate-end">
+              ✗ {one.name}
+            </Text>
+          ))}
+          {failing.length > 15 && <Text dimColor>… {failing.length - 15} more</Text>}
+        </Box>
       )}
       <Box flexDirection="column">
         {runs
@@ -174,124 +79,144 @@ export function testsView(
   )
 }
 
-export function filesView(
-  { Box, Text, Button, Raster }: Kit,
-  { list, columns, onOpen }: { list: Touch[]; columns: number; onOpen: (file: string) => () => void },
-): RenderElement {
-  if (list.length === 0) {
-    return <Text dimColor>No files touched yet. Each file Claude reads or edits gets a tile here.</Text>
-  }
-  const ranked = [...list].sort((a, b) => b.reads + b.edits * 2 - (a.reads + a.edits * 2))
-
-  return (
-    <Box flexDirection="column" gap={1}>
-      {Raster !== undefined && (
-        <Box flexDirection="column">
-          <Raster
-            key="files-map"
-            {...treemap(
-              ranked.slice(0, 40).map(touch => ({
-                label: basename(touch.file),
-                weight: touch.reads + touch.edits * 2,
-                color: touchColor(touch.reads, touch.edits),
-              })),
-              columns,
-              12,
-            )}
-          />
-          <Raster
-            key="files-key"
-            {...legend([
-              [touchColor(1, 0), 'read'],
-              [touchColor(1, 1), 'both'],
-              [touchColor(0, 1), 'edited · size is how often'],
-            ])}
-          />
-        </Box>
-      )}
-      <Box flexDirection="column">
-        {ranked.slice(0, 10).map(touch => (
-          <Button key={`touch-${touch.file}`} plain dimColor={touch.edits === 0} onPress={onOpen(touch.file)}>
-            <Text color={touch.edits > 0 ? 'warning' : 'suggestion'}>{touch.edits > 0 ? '±' : '·'}</Text>{' '}
-            {touch.file}{' '}
-            <Text dimColor>
-              {touch.reads} read{touch.reads === 1 ? '' : 's'} · {touch.edits} edit{touch.edits === 1 ? '' : 's'}
-            </Text>
-          </Button>
-        ))}
-      </Box>
-    </Box>
-  )
-}
-
-// Each column of the graph keeps one color, as git colors its lanes.
-const LANES: Color[] = ['claude', 'suggestion', 'success', 'warning', 'error']
-const GRAPH: Record<string, string> = { '*': '●', '|': '│', '/': '╱', '\\': '╲' }
-
-export function commitsView(
-  { Box, Text, Button }: Kit,
-  { rows, onRefresh }: { rows: CommitRow[]; onRefresh: () => void },
-): RenderElement {
-  const count = rows.filter(row => row.sha !== undefined).length
-
-  return (
-    <Box flexDirection="column" gap={1}>
-      <Box flexDirection="row" gap={2}>
-        <Text weight="bold">
-          This session's commits <Text dimColor>{count}</Text>
-        </Text>
-        <Button key="commits-refresh" plain dimColor hotkey="r" onPress={onRefresh}>
-          ↻ refresh
-        </Button>
-      </Box>
-      {count === 0 ? (
-        <Text dimColor>No commits since the session began.</Text>
-      ) : (
-        <Box flexDirection="column">
-          {rows.map((row, i) => (
-            <Text key={`commit-${row.sha ?? `g${i}`}`} wrap="truncate-end">
-              {[...row.graph].map((ch, col) =>
-                ch === ' ' ? (
-                  ' '
-                ) : (
-                  <Text color={LANES[Math.floor(col / 2) % LANES.length]}>{GRAPH[ch] ?? ch}</Text>
-                ),
-              )}
-              {row.sha !== undefined && (
-                <Text>
-                  {' '}
-                  <Text color="warning">{row.sha}</Text> {row.subject}
-                  {row.refs !== undefined && <Text color="success"> ({row.refs})</Text>}
-                  {row.added !== undefined && (
-                    <Text>
-                      {' '}
-                      <Text color="success">+{row.added}</Text> <Text color="error">−{row.removed ?? 0}</Text>
-                    </Text>
-                  )}
-                  <Text dimColor> {row.when}</Text>
-                </Text>
-              )}
-            </Text>
-          ))}
-        </Box>
-      )}
-    </Box>
-  )
-}
-
 // A git status code's color: changed, added or new, deleted.
 const STATUS_COLOR: Record<string, Color> = { M: 'warning', A: 'success', '??': 'success', D: 'error', R: 'suggestion' }
 const statusColor = (code: string) => STATUS_COLOR[code] ?? STATUS_COLOR[code[0] ?? ''] ?? 'warning'
 
 export type ExplorerKit = Kit & {
-  Input?: Elements['terminal']['Input']
   Code: Elements['terminal']['Code']
+  Markdown: Elements['terminal']['Markdown']
+  Image?: Elements['terminal']['Image']
+}
+
+const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g
+const LOCAL_LINK = /\]\(\s*<?(?![a-z][a-z0-9+.-]*:|#|\/\/)([^)\s>]+)/gi
+
+// `line 4` or `lines 4 to 9`.
+export const rangeLabel = (from: number, to: number) => (from === to ? `line ${from}` : `lines ${from} to ${to}`)
+
+// The line that says what the selection put in the prompt, with a way to take it
+// out. One row always, so a selection never moves what is under it.
+export function QuoteLine({
+  kit,
+  label,
+  onClear,
+}: {
+  kit: Pick<ExplorerKit, 'Box' | 'Text' | 'Button'>
+  label: string
+  onClear: () => void
+}) {
+  const { Box, Text, Button } = kit
+
+  return (
+    <Box flexDirection="row" height={1} columnGap={2}>
+      <Box flexGrow={1} flexShrink={1}>
+        <Text dimColor wrap="truncate-end">
+          {label === '' ? 'select text to quote it in your prompt' : `in your prompt: ${label}`}
+        </Text>
+      </Box>
+      {label !== '' && (
+        <Box flexShrink={0}>
+          <Button key="chip-clear" plain dimColor onPress={onClear}>
+            ✗ drop it
+          </Button>
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+// An image file as a picture, sized to the pane; elsewhere its name and size.
+function imageBody(
+  { Box, Text, Image }: ExplorerKit,
+  shown: Preview,
+  data: { place: (size: { width: number; height: number }) => { columns: number; rows: number } },
+) {
+  const one = shown.images?.[0]
+  if (one === undefined) {
+    return <Text dimColor>No picture.</Text>
+  }
+
+  return (
+    <Box flexDirection="column">
+      {Image === undefined ? (
+        <Text dimColor>An image, {one.width}x{one.height}; this surface cannot draw it.</Text>
+      ) : (
+        <Image key="view-pic" source={{ file: one.file, format: 'png' }} {...data.place(one)} alt={one.alt || ' '} />
+      )}
+      <Text dimColor>
+        {one.width}x{one.height}
+      </Text>
+    </Box>
+  )
+}
+
+function markdownBody(
+  { Box, Text, Markdown, Image, Code }: ExplorerKit,
+  shown: Preview,
+  data: { wraps: boolean; place: (size: { width: number; height: number }) => { columns: number; rows: number }; onLink: (href: string) => void },
+) {
+  const parts: (
+    | { text: string }
+    | { image: NonNullable<Preview['images']>[number] }
+    | { code: string; lang: string }
+  )[] = []
+  let at = 0
+  let text = ''
+  for (const match of shown.source.matchAll(MD_IMAGE)) {
+    const image = Image === undefined ? undefined : shown.images?.find(one => one.ref === match[2])
+    if (image === undefined) {
+      continue
+    }
+    text += shown.source.slice(at, match.index)
+    at = (match.index ?? 0) + match[0].length
+    parts.push({ text }, { image })
+    text = ''
+  }
+  parts.push({ text: text + shown.source.slice(at) })
+  // Fenced code is drawn as highlighted code; the prose between as markdown.
+  const drawn: typeof parts = parts.flatMap((part): typeof parts => ('text' in part ? splitFences(part.text) : [part]))
+  const links = [...new Set([...shown.source.matchAll(LOCAL_LINK)].map(one => one[1] ?? ''))].filter(one => one !== '')
+
+  return (
+    <Box flexDirection="column">
+      {drawn.map((part, n) =>
+        'code' in part ? (
+          <Box key={`md-code-${n}`} flexDirection="column" marginY={1}>
+            <Code
+              source={part.code === '' ? ' ' : part.code}
+              {...(part.lang === '' ? {} : { language: part.lang })}
+              wrap={data.wraps ? 'wrap' : 'truncate-end'}
+            />
+          </Box>
+        ) : 'image' in part ? (
+          Image === undefined ? null : (
+            <Box key={`md-img-${n}`} flexDirection="column">
+              <Image
+                key={`md-pic-${n}`}
+                source={{ file: part.image.file, format: 'png' }}
+                {...data.place(part.image)}
+                alt={part.image.alt || ' '}
+              />
+              {part.image.alt !== '' && <Text dimColor>{part.image.alt}</Text>}
+            </Box>
+          )
+        ) : part.text.trim() === '' ? null : (
+          <Markdown
+            key={`md-${n}`}
+            text={part.text}
+            {...(links.length === 0 ? {} : { pressableLinks: links, onLinkPress: link => data.onLink(link.href) })}
+          />
+        ),
+      )}
+    </Box>
+  )
 }
 
 // The project's files: a tree to walk, a filter that finds a file by a few
 // of its letters, and a preview with a button that mentions it in the prompt.
 export function explorerView(
-  { Box, Text, Button, Input, Code }: ExplorerKit,
+  kit: ExplorerKit,
   data: {
     files: string[]
     codes: Record<string, string>
@@ -299,15 +224,23 @@ export function explorerView(
     open: string[]
     filter: string
     preview: Preview | null
-    onFilter: (text: string) => void
     onToggle: (dir: string) => () => void
     onOpen: (file: string) => () => void
     onClose: () => void
     onMention: (file: string) => () => void
     onDiff: (file: string) => () => void
     onRefresh: () => void
+    onRaw: () => void
+    wraps: boolean
+    onWrap: () => void
+    // What the selection put in the prompt, if anything, and the way to take it out.
+    quoted: string
+    onClearChip: () => void
+    onLink: (href: string) => void
+    place: (size: { width: number; height: number }) => { columns: number; rows: number }
   },
 ): RenderElement {
+  const { Box, Text, Button, Code } = kit
   const changed = Object.keys(data.codes).length
   const touch = new Map(data.touched.map(one => [one.file, one]))
   const marks = (path: string) => {
@@ -335,7 +268,11 @@ export function explorerView(
             <Text weight="bold">{shown.file}</Text>
             <Text dimColor>
               {' '}
-              {shown.hit === undefined ? `${shown.lines} lines` : `line ${shown.hit} of ${shown.lines}`}
+              {shown.isImage === true
+                ? 'image'
+                : shown.hit === undefined
+                  ? `${shown.lines} lines`
+                  : `line ${shown.hit} of ${shown.lines}`}
             </Text>
             {marks(shown.file)}
           </Text>
@@ -348,15 +285,37 @@ export function explorerView(
                 diff
               </Button>
             )}
+            {shown.isMarkdown === true && (
+              <Button key="ex-raw" variant="secondary" hotkey="v" onPress={data.onRaw}>
+                {shown.isRaw === true ? 'rendered' : 'source'}
+              </Button>
+            )}
+            {shown.isImage !== true && shown.isBinary !== true && (shown.isMarkdown !== true || shown.isRaw === true) && (
+              <Button key="ex-wrap" plain dimColor hotkey="w" onPress={data.onWrap}>
+                wrap: {data.wraps ? 'on' : 'off'}
+              </Button>
+            )}
             <Button key="ex-close" plain dimColor hotkey="x" onPress={data.onClose}>
               ✗ close
             </Button>
           </Box>
         </Box>
+        {shown.isBinary !== true && shown.isImage !== true && (
+          <QuoteLine kit={kit} label={data.quoted} onClear={data.onClearChip} />
+        )}
         {shown.isBinary ? (
           <Text dimColor>A binary file: nothing to preview.</Text>
+        ) : shown.isImage === true ? (
+          imageBody(kit, shown, data)
+        ) : shown.isMarkdown === true && shown.isRaw !== true ? (
+          markdownBody(kit, shown, data)
         ) : (
-          <Code source={shown.source === '' ? ' ' : shown.source} path={shown.file} startLine={shown.start ?? 1} />
+          <Code
+            source={shown.source === '' ? ' ' : shown.source}
+            path={shown.file}
+            startLine={shown.start ?? 1}
+            wrap={data.wraps ? 'wrap' : 'truncate-end'}
+          />
         )}
         {shown.isCut && (
           <Text dimColor>
@@ -373,20 +332,6 @@ export function explorerView(
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
-        {Input !== undefined && (
-          <Input
-            key="ex-filter"
-            placeholder="find a file by a few letters…"
-            value={data.filter}
-            onInput={value => data.onFilter(value)}
-            onSubmit={value => {
-              const first = matches(data.files, value, 1)[0]
-              if (first !== undefined) {
-                data.onOpen(first)()
-              }
-            }}
-          />
-        )}
         <Box flexDirection="row" gap={2}>
           <Text dimColor>
             {data.files.length} files{changed > 0 ? ` · ${changed} changed` : ''}
@@ -424,119 +369,6 @@ export function explorerView(
               {!row.isDir && marks(row.path)}
             </Button>
           ))}
-        </Box>
-      )}
-    </Box>
-  )
-}
-
-const since = (ms: number) => {
-  const sec = Math.max(0, Math.round(ms / 1000))
-
-  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`
-}
-
-const JOB_MARK: Record<Job['status'], { mark: string; color: Color }> = {
-  running: { mark: '…', color: 'warning' },
-  ok: { mark: '✓', color: 'success' },
-  failed: { mark: '✗', color: 'error' },
-  stopped: { mark: '■', color: 'inactive' },
-}
-
-// A line of output's color: errors red, warnings yellow, the rest as is.
-const lineColor = (line: string): Color | undefined =>
-  /\b(error|fail(ed|ure)?|panic|exception)\b/i.test(line)
-    ? 'error'
-    : /\bwarn(ing)?\b/i.test(line)
-      ? 'warning'
-      : undefined
-
-// Commands you start from the pane: a field to type one, the recent ones to
-// run again, and the chosen one's output as it streams, to stop or hand to
-// Claude.
-export function runView(
-  { Box, Text, Button, Input }: Kit & { Input?: Elements['terminal']['Input'] },
-  data: {
-    jobs: Job[]
-    picked: string | null
-    now: number
-    onRun: (command: string) => () => void
-    onPick: (id: string) => () => void
-    onStop: (id: string) => () => void
-    onAsk: (job: Job) => () => void
-  },
-): RenderElement {
-  const job = data.jobs.find(one => one.id === data.picked) ?? data.jobs.at(-1)
-  const recent = [...new Set(data.jobs.map(one => one.command).reverse())].slice(0, 5)
-
-  return (
-    <Box flexDirection="column" gap={1}>
-      <Box flexDirection="column">
-        {Input !== undefined && (
-          <Input
-            key="run-cmd"
-            placeholder="run a command: bun test, godot --headless --export-release …"
-            submitLabel="run"
-            onSubmit={value => {
-              if (value.trim() !== '') {
-                data.onRun(value.trim())()
-              }
-            }}
-          />
-        )}
-        {recent.length > 0 && (
-          <Box flexDirection="row" columnGap={2} flexWrap="wrap">
-            <Text dimColor>again:</Text>
-            {recent.map((command, i) => (
-              <Button key={`run-again-${i}`} plain dimColor onPress={data.onRun(command)}>
-                {command.length > 40 ? command.slice(0, 39) + '…' : command}
-              </Button>
-            ))}
-          </Box>
-        )}
-      </Box>
-      {job === undefined ? (
-        <Text dimColor>Nothing run yet. Type a command above and press Enter; its output streams here.</Text>
-      ) : (
-        <Box flexDirection="column">
-          <Box flexDirection="column">
-            {data.jobs
-              .slice(-5)
-              .reverse()
-              .map(one => (
-                <Button key={`job-${one.id}`} plain dimColor={one.id !== job.id} onPress={data.onPick(one.id)}>
-                  <Text color={JOB_MARK[one.status].color}>{JOB_MARK[one.status].mark}</Text> {one.command}
-                  <Text dimColor>
-                    {' '}
-                    {since((one.end ?? data.now) - one.start)}
-                    {one.code === undefined || one.code === null || one.code === 0 ? '' : ` · exit ${one.code}`}
-                  </Text>
-                </Button>
-              ))}
-          </Box>
-          <Box flexDirection="row" gap={2}>
-            {job.status === 'running' && (
-              <Button key="run-stop" variant="secondary" hotkey="k" onPress={data.onStop(job.id)}>
-                ■ stop
-              </Button>
-            )}
-            <Button key="run-rerun" plain dimColor hotkey="e" onPress={data.onRun(job.command)}>
-              ↻ again
-            </Button>
-            <Button key="run-ask" plain dimColor hotkey="a" onPress={data.onAsk(job)}>
-              → ask Claude
-            </Button>
-            <Text dimColor>
-              {job.total} lines{job.total > job.output.length ? `, last ${job.output.length} kept` : ''}
-            </Text>
-          </Box>
-          <Box flexDirection="column">
-            {job.output.slice(-40).map((line, i) => (
-              <Text key={`out-${i}`} wrap="truncate-end" color={lineColor(line)}>
-                {line === '' ? ' ' : line}
-              </Text>
-            ))}
-          </Box>
         </Box>
       )}
     </Box>
@@ -655,13 +487,16 @@ export function gitView(
 // A search of the project's text: the hits by file, each opening the file
 // at that line in the Explorer's preview.
 export function searchView(
-  { Box, Text, Button, Input }: Kit & { Input?: Elements['terminal']['Input'] },
+  kit: Kit,
   data: {
     search: Search | null
     onSearch: (query: string) => () => void
     onOpen: (file: string, line?: number) => () => void
+    quoted: string
+    onClearChip: () => void
   },
 ): RenderElement {
+  const { Box, Text, Button } = kit
   const found = data.search
   const byFile = new Map<string, { line: number; text: string }[]>()
   for (const hit of found?.hits ?? []) {
@@ -671,15 +506,6 @@ export function searchView(
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
-        {Input !== undefined && (
-          <Input
-            key="search-q"
-            placeholder="search the project's text (regex, smart case)…"
-            value={found?.query ?? ''}
-            submitLabel="search"
-            onSubmit={value => data.onSearch(value)()}
-          />
-        )}
         {found !== null && found.query !== '' && (
           <Text dimColor>
             {found.error !== undefined
@@ -692,6 +518,7 @@ export function searchView(
         <Text dimColor>Type a word or a pattern and press Enter. A hit opens its file at that line.</Text>
       ) : (
         <Box flexDirection="column">
+          <QuoteLine kit={kit} label={data.quoted} onClear={data.onClearChip} />
           {[...byFile].slice(0, 40).map(([file, hits]) => (
             <Box key={`hits-${file}`} flexDirection="column">
               <Button key={`hit-file-${file}`} plain onPress={data.onOpen(file)}>

@@ -137,3 +137,125 @@ export function parseHits(stdout: string, most: number) {
 export function plain(line: string) {
   return (line.split('\r').at(-1) ?? '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b[()][0-9A-Za-z]/g, '')
 }
+
+// Markdown cut into prose and fenced code, in order, so the fences can be
+// drawn as highlighted code and the prose as markdown.
+export function splitFences(text: string) {
+  const parts: ({ text: string } | { code: string; lang: string })[] = []
+  const fence = /^(`{3,})[ \t]*([\w+#.-]*)[^\n]*\n([\s\S]*?)^\1[ \t]*$/gm
+  let at = 0
+  for (const match of text.matchAll(fence)) {
+    parts.push({ text: text.slice(at, match.index) }, { code: (match[3] ?? '').replace(/\n$/, ''), lang: match[2] ?? '' })
+    at = (match.index ?? 0) + match[0].length
+  }
+  parts.push({ text: text.slice(at) })
+
+  return parts.filter(part => !('text' in part) || part.text.trim() !== '')
+}
+
+// The rows of a search's result list: each file, then its first hits.
+export type HitItem =
+  | { kind: 'file'; file: string; count: number }
+  | { kind: 'hit'; file: string; line: number; text: string }
+
+export function hitItems(hits: readonly { file: string; line: number; text: string }[]) {
+  const byFile = new Map<string, { line: number; text: string }[]>()
+  for (const hit of hits) {
+    byFile.set(hit.file, [...(byFile.get(hit.file) ?? []), hit])
+  }
+
+  return [...byFile].slice(0, 40).flatMap(([file, list]): HitItem[] => [
+    { kind: 'file', file, count: list.length },
+    ...list.slice(0, 8).map((hit): HitItem => ({ kind: 'hit', file, line: hit.line, text: hit.text })),
+  ])
+}
+
+// What a row of the result list shows, as one line of text.
+export const hitRowText = (item: HitItem) =>
+  item.kind === 'file' ? `${item.file} ${item.count}` : `${String(item.line).padStart(5)} ${item.text}`
+
+// The hits a drag over the list picked, as a prompt: where each is and what it says.
+export function hitsQuote(query: string, items: HitItem[], from: number, to: number) {
+  const picked = items.slice(from, to + 1).filter((item): item is Extract<HitItem, { kind: 'hit' }> => item.kind === 'hit')
+  if (picked.length === 0) {
+    return undefined
+  }
+  const rows = picked.map(hit => `${hit.file}:${hit.line}: ${hit.text.trim()}`).join('\n')
+  const word = picked.length === 1 ? 'hit' : 'hits'
+
+  return {
+    marker: `[search "${query}" ${picked.length} ${word}]`,
+    text: `About ${picked.length === 1 ? 'this search hit' : 'these search hits'} for \`${query}\`:\n\`\`\`\n${rows}\n\`\`\`\n`,
+  }
+}
+
+// Where a selection lies in the file it was taken from: its 1-based lines,
+// quoted whole as the file has them. The screen's text may carry the gutter's
+// line numbers or the markdown's rendering, so the exact text is tried first,
+// then the text without a gutter, then its first and last lines alone.
+export function locateSelection(source: string, text: string) {
+  const lines = source.split('\n')
+  const whole = (from: number, to: number) => ({ from, to, text: lines.slice(from - 1, to).join('\n') })
+  const picked = text.replace(/\s+$/, '')
+  if (picked.trim() === '') {
+    return undefined
+  }
+  const lineOf = (at: number) => source.slice(0, at).split('\n').length
+  const at = source.indexOf(picked)
+  if (at >= 0) {
+    return whole(lineOf(at), lineOf(at) + picked.split('\n').length - 1)
+  }
+  const bare = picked.split('\n').map(line => line.replace(/^\s*\d+(?: |\t)/, ''))
+  const bareAt = source.indexOf(bare.join('\n'))
+  if (bareAt >= 0) {
+    return whole(lineOf(bareAt), lineOf(bareAt) + bare.length - 1)
+  }
+  // The text may be the rendered form of markdown: match with its marks and spacing taken out.
+  const plain = (line: string) =>
+    line
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/[*_`#>|]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const kept = bare.map(plain).filter(line => line !== '')
+  const flat = lines.map(plain)
+  const first = flat.findIndex(line => line !== '' && line.includes(kept[0] ?? '\u0000'))
+  const last = flat.findLastIndex(line => line !== '' && line.includes(kept.at(-1) ?? '\u0000'))
+  if (first >= 0 && last >= first) {
+    return whole(first + 1, last + 1)
+  }
+
+  return { from: undefined, to: undefined, text: picked }
+}
+
+// The diff rows a selection covers, whole and with their + or -. The drawn
+// diff keeps its gutter and markers out of a selection, so the picked text is
+// matched against each row's text: the first picked line may be the tail of its
+// row, the last the head of its own.
+export function locateDiffRows(rows: string[], text: string) {
+  const picked = text.replace(/\s+$/, '').split('\n').map(line => line.trim())
+  if (picked.every(line => line === '')) {
+    return undefined
+  }
+  const body = rows.map(row => row.slice(1))
+  for (let at = 0; at + picked.length <= rows.length; at += 1) {
+    if (picked.every((line, k) => (body[at + k] ?? '').includes(line))) {
+      return rows.slice(at, at + picked.length).join('\n')
+    }
+  }
+
+  return undefined
+}
+
+// The lines a diff draws: its hunk headers are read, not drawn.
+export const shownRows = (lines: string[]) => lines.filter(line => !line.startsWith('@@'))
+
+// The hits a selection over the result list covers: the rows whose text the
+// selection holds, first to last.
+export function hitsFromSelection(items: HitItem[], text: string) {
+  const picked = text.split('\n').map(line => line.trim()).filter(line => line !== '')
+  const rows = items.map(item => hitRowText(item).trim())
+  const found = rows.flatMap((row, index) => (picked.some(line => line.includes(row) || row.includes(line)) ? [index] : []))
+
+  return found.length === 0 ? undefined : { from: Math.min(...found), to: Math.max(...found) }
+}

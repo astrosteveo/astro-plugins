@@ -5,6 +5,7 @@ import {
   entryCount,
   guide,
   hasEntry,
+  briefWrite,
   isName,
   memoryFile,
   overLimit,
@@ -271,6 +272,11 @@ export const register: Register = on => {
     if (e.agentId === undefined) $.ui.invalidate('prompt.section')
     return compacted
   })
+
+  // A save's row names the memory and sizes its body; ctrl+o still shows all of it.
+  on('ui.render', { component: 'ToolUse', props: { tool: `${OWN}global_memory_write` } }, (_, e, next) =>
+    e.props.isExpanded === true ? next(e) : next({ ...e, props: { ...e.props, input: briefWrite(e.props.input) } }),
+  )
 
   on('tool.call', { tool: `${OWN}global_memory_write` }, ($, e) => save($, dir, e)).catch(() =>
     unfinished('save', 'Read it with global_memory_read before saving again.'),
