@@ -1,10 +1,11 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
+import type { Act } from '../types'
 
 import { across, blowUp, errorLines, fromHex, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { briefPlan, briefShow, cardWidth, fit, markScope, markText, readMarks, tileText } from '../hooks/register'
+import { bandBits, briefPlan, briefShow, cardWidth, doingText, fit, markScope, markText, readMarks, tileText } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -1300,8 +1301,31 @@ test('the band shows the pulse and step while Claude works, and nothing idle', a
   expect(await ui.find({ type: 'Raster', key: 'hud-pulse' })).toBeDefined()
   // The context is the status line's to show.
   expect(await ui.find({ type: 'Raster', key: 'hud-gauge' })).toBeUndefined()
-  expect((await ui.find({ type: 'Text', text: /▸/ }))?.text).toBe('▸ Write the band')
+  expect((await ui.find({ type: 'Text', text: /▸/ }))?.text).toBe('▸ Write the band 0/1')
   await ui.unmount()
+})
+
+test('the band says the step and progress, the call in flight, the agents, and only a test run of this turn', () => {
+  const plan = {
+    goal: 'Ship it',
+    steps: [
+      { text: 'Build', status: 'done' as const },
+      { text: 'Test it', status: 'doing' as const },
+      { text: 'Review', status: 'todo' as const },
+    ],
+  }
+  const act = (over: Partial<Act>): Act => ({ id: 'a', kind: 'run', label: 'Run the suite', status: 'runs', isSubagent: false, ...over })
+  const run = { id: 'r', at: 50, command: 'bun test', passed: 3, failed: 1, isError: true, names: [] }
+  const turn = { id: 't', n: 2, start: 40, calls: 1, failed: 0 }
+  expect(bandBits(plan, [act({})], 2, [run], turn)).toEqual(['▸ Test it 1/3', 'Run the suite', '2 agents', '✗ 1 failing'])
+  // A run from an earlier turn, a finished call and a subagent's call say nothing.
+  expect(
+    bandBits(plan, [act({ status: 'ok' }), act({ isSubagent: true })], 0, [run], { ...turn, start: 60 }),
+  ).toEqual(['▸ Test it 1/3'])
+  expect(bandBits(null, [], 0, [{ ...run, failed: 0, isError: false }], turn)).toEqual(['✓ 3 pass'])
+  expect(doingText({ kind: 'read', label: 'a.ts', count: 3 })).toBe('reading a.ts ×3')
+  expect(doingText({ kind: 'edit', label: 'b.ts' })).toBe('editing b.ts')
+  expect(doingText({ kind: 'agent', label: 'Explore' })).toBeUndefined()
 })
 
 import { matches, parseStatus, treeRows } from '../hooks/explorer'
