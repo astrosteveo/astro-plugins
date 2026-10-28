@@ -20,6 +20,7 @@ import type {
   Lane,
   Picture,
   Plan,
+  PlanPost,
   Step,
   StepStatus,
   Tab,
@@ -96,6 +97,10 @@ const lanes = atom({ plugin: 'show-work', key: 'lanes' } as const, [], {
 const turns = atom({ plugin: 'show-work', key: 'turns' } as const, [], {
   shape: 'turns-1',
 })
+// Each plan post its card in the chat draws, the newest PLAN_POSTS.
+const planPosts = atom({ plugin: 'show-work', key: 'planPosts' } as const, [], {
+  shape: 'planPosts-1',
+})
 const tests = atom({ plugin: 'show-work', key: 'tests' } as const, [], {
   shape: 'tests-1',
 })
@@ -157,6 +162,8 @@ const DIFF_LINES = 300
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
 // The most marks one picture takes.
 const MARKS_MOST = 12
+// The plan posts kept for their cards in the chat.
+const PLAN_POSTS = 30
 
 const STEP_STATUSES: readonly StepStatus[] = ['todo', 'doing', 'done', 'dropped']
 
@@ -292,6 +299,11 @@ const ACT_MARK: Record<ActStatus, { mark: string; color: Color }> = {
   runs: { mark: '…', color: 'warning' },
   ok: { mark: '✓', color: 'success' },
   failed: { mark: '✗', color: 'error' },
+}
+
+// The steps a plan post changed: each whose status moved, and each new one.
+export function planChanges(prev: Step[], steps: Step[]) {
+  return steps.filter(step => prev.find(old => old.text === step.text)?.status !== step.status)
 }
 
 // The pane opens only when asked, by /work or a card's button, on the tab
@@ -1426,6 +1438,7 @@ export const register: Register = on => {
   on('command.run', { command: 'work' }, async ($, e) => {
     if (asText(e.args) === 'clear') {
       await update($, plan, () => null)
+      await update($, planPosts, () => [])
       await update($, activity, () => [])
       await update($, pictures, () => [])
       await update($, picked, () => null)
@@ -1446,6 +1459,14 @@ export const register: Register = on => {
     const goal = asText(e.goal)
     const steps = readSteps(e.steps)
     const now = await $.clock.now()
+    const old = await read($, plan)
+    const post: PlanPost = {
+      id: e.tool_use_id ?? crypto.randomUUID(),
+      goal,
+      steps,
+      ...(old !== null && old.goal === goal ? { prev: old.steps } : {}),
+    }
+    await update($, planPosts, list => [...list, post].slice(-PLAN_POSTS))
     await update($, plan, old => ({
       goal,
       steps,
@@ -1939,6 +1960,79 @@ export const register: Register = on => {
       e.props.isExpanded === true ? next(e) : next({ ...e, props: { ...e.props, input: brief(e.props.input) } }),
     )
   }
+
+  // A plan post draws in the chat as what it changed: the whole checklist
+  // for a new goal, one line of the steps that moved after that, and the
+  // goal ticked off once every step is through.
+  on('ui.render', { component: 'ToolResult', props: { tool: 'mcp__show-work__plan' } }, async ($, e, next) => {
+    const post = (await read($, planPosts)).find(one => one.id === e.props.tool_use_id)
+    if (post === undefined || e.props.isErrored || e.props.isExpanded === true) {
+      return next(e)
+    }
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const done = post.steps.filter(step => step.status === 'done').length
+    const isOver = post.steps.length > 0 && post.steps.every(step => step.status === 'done' || step.status === 'dropped')
+    const mark = (step: Step) => (
+      <Text color={STEP_MARK[step.status].color}>{STEP_MARK[step.status].mark}</Text>
+    )
+
+    if (isOver) {
+      return (
+        <Text>
+          <Text color="success">✓</Text> <Text weight="bold">{post.goal || 'Plan'}</Text>
+          <Text dimColor>
+            {' '}· {done}/{post.steps.length} done
+          </Text>
+        </Text>
+      )
+    }
+    if (post.prev !== undefined) {
+      const moved = planChanges(post.prev, post.steps)
+
+      return (
+        <Text wrap="truncate-end">
+          {moved.length === 0 ? (
+            <Text dimColor>No step moved</Text>
+          ) : (
+            moved.map((step, n) => (
+              <Text key={`moved-${n}`} strikethrough={step.status === 'dropped'}>
+                {n === 0 ? '' : '  '}
+                {mark(step)} {step.text}
+              </Text>
+            ))
+          )}
+          <Text dimColor>
+            {'  '}
+            {done}/{post.steps.length}
+          </Text>
+        </Text>
+      )
+    }
+
+    return (
+      <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1} alignSelf="flex-start">
+        <Box flexDirection="row" columnGap={2}>
+          <Text weight="bold">{post.goal || 'Plan'}</Text>
+          <Text dimColor>
+            {done}/{post.steps.length}
+          </Text>
+          <Button key={`plan-pane-${post.id}`} plain dimColor onPress={() => openPane($, 'now')}>
+            pane
+          </Button>
+        </Box>
+        {post.steps.map((step, n) => (
+          <Text
+            key={`step-${n}`}
+            dimColor={step.status !== 'doing'}
+            strikethrough={step.status === 'dropped'}
+            weight={step.status === 'doing' ? 'bold' : 'regular'}
+          >
+            {mark(step)} {step.text}
+          </Text>
+        ))}
+      </Box>
+    )
+  })
 
   // A shown picture draws in the chat, under its tool row.
   on(
