@@ -171,7 +171,7 @@ const QUIET = new Set([
 
 const GUIDE = `# Showing your work
 
-The person watches a "Show work" pane beside the chat. Keep it current so they can follow and steer your work without reading every tool call. It already logs your reads, edits and commands by itself.
+The person follows your work in the band above the prompt and in cards in the chat, and opens a "Show work" pane when they want to dig in. Keep them current so they can follow and steer your work without reading every tool call. Your reads, edits, commands and test runs are logged by themselves.
 
 - For any task of more than a couple of steps, call mcp__show-work__plan first with the goal as you understand it and your steps. Call it again whenever a step starts, finishes or the plan changes; mark exactly one step "doing" while you work.
 - Give each Bash call a description that says why you run it, not only what it does: the pane shows it as the reason above the command.
@@ -290,6 +290,15 @@ const ACT_MARK: Record<ActStatus, { mark: string; color: Color }> = {
   runs: { mark: '…', color: 'warning' },
   ok: { mark: '✓', color: 'success' },
   failed: { mark: '✗', color: 'error' },
+}
+
+// The pane opens only when asked, by /work or a card's button, on the tab
+// that button names.
+export async function openPane($: EngineInterface, tab?: Tab) {
+  if (tab !== undefined) {
+    await update($, tabAtom, () => tab)
+  }
+  await $.ui.open({ id: PANE, title: TITLE })
 }
 
 // A sheet's tiles go by letters, A first: the digits switch the pane's tabs.
@@ -1318,7 +1327,6 @@ export const register: Register = on => {
       description: "Show Claude's plan and activity in a pane",
       argumentHint: '[clear]',
     })
-    void $.ui.open({ id: PANE, title: TITLE })
     // The selection is read often enough to feel at once, and only acts on text of the pane.
     selectionTimer?.cancel()
     seen = ''
@@ -1382,7 +1390,7 @@ export const register: Register = on => {
 
       return { text: 'Show work cleared.' }
     }
-    await $.ui.open({ id: PANE, title: TITLE })
+    await openPane($)
 
     return { text: 'Show work pane opened.' }
   })
@@ -2028,7 +2036,7 @@ export const register: Register = on => {
     const acts = await read($, activity)
     const pics = await read($, pictures)
     const pickedId = await read($, picked)
-    const tab = await read($, tabAtom)
+    const shownTab = await read($, tabAtom)
     const mode = await read($, findMode)
     const wraps = await read($, wrapLines)
     const dragged = await read($, viewSel)
@@ -2052,11 +2060,35 @@ export const register: Register = on => {
     // The views draw a Raster only where the surface has one.
     const kit = { Box, Text, Button, ...(Raster === undefined ? {} : { Raster }) }
 
-    // The tabs always show, the tools among them work from the start; the
-    // Now tab says what will come while nothing has.
     const isEmpty = shown === null && [acts, pics, allTurns, runs].every(list => list.length === 0)
 
     const since = shown?.startedAt
+    const edited = touched.filter(touch => touch.edits > 0).sort((a, b) => b.at - a.at)
+    const lastRun = runs.at(-1)
+    const isFailing = lastRun !== undefined && (lastRun.failed > 0 || lastRun.isError)
+    // A tab shows once it holds something; Now and Git always do. Each keeps
+    // its hotkey, so the keys never shift as tabs come.
+    const TABS: { id: Tab; label: string; hotkey: string; count?: string; color?: Color }[] = [
+      { id: 'now', label: 'Now', hotkey: '1' },
+      ...(pics.length === 0 ? [] : [{ id: 'pictures' as const, label: 'Pictures', hotkey: '2', count: `${pics.length}` }]),
+      ...(edited.length === 0 && shownDiff === null
+        ? []
+        : [{ id: 'changes' as const, label: 'Changes', hotkey: '3', ...(edited.length === 0 ? {} : { count: `${edited.length}` }) }]),
+      ...(lastRun === undefined
+        ? []
+        : [
+            {
+              id: 'tests' as const,
+              label: 'Tests',
+              hotkey: '4',
+              count: isFailing ? `✗${lastRun.failed}` : `✓${lastRun.passed}`,
+              color: (isFailing ? 'error' : 'success') as Color,
+            },
+          ]),
+      { id: 'git', label: 'Git', hotkey: 'g' },
+    ]
+    // A tab that has nothing to show, as after /work clear, gives way to Now.
+    const tab = shownTab === 'find' || TABS.some(one => one.id === shownTab) ? shownTab : 'now'
     const picture = pics.find(one => one.id === pickedId) ?? pics.at(-1)
     // Lanes of this task, and any still running from before it.
     const currentLanes = allLanes.filter(
@@ -2357,7 +2389,6 @@ export const register: Register = on => {
       )
     } else if (tab === 'changes') {
       // The files Claude edited, newest first, and the diff of the one shown.
-      const edited = touched.filter(touch => touch.edits > 0).sort((a, b) => b.at - a.at)
       const names = edited.some(touch => touch.file === shownDiff?.file) || shownDiff === null
         ? edited.map(touch => touch.file)
         : [shownDiff.file, ...edited.map(touch => touch.file)]
@@ -2384,17 +2415,30 @@ export const register: Register = on => {
           </Box>
         )
     } else if (isEmpty) {
-      body = (
-        <Text dimColor>
-          Nothing yet. Claude posts its plan here as it works, and logs the files and commands it touches.
-          Meanwhile: f finds files and text, g is git.
-        </Text>
-      )
+      body = <Text dimColor>Nothing yet: f finds files and text, g is git.</Text>
     } else {
+      // What needs the person comes first: a failing run of this task, then
+      // the plan, the agents, and the latest picture.
+      const failing = isFailing && lastRun !== undefined && (since === undefined || lastRun.at >= since) ? lastRun : undefined
+      const latest = pics.at(-1)
       body = (
         <Box flexDirection="column" gap={1}>
           {statusView()}
-          {planView()}
+          {failing !== undefined && (
+            <Button key="now-failing" plain onPress={() => update($, tabAtom, () => 'tests')}>
+              <Text color="error" weight="bold">
+                ✗ {failing.isError && failing.failed === 0 ? 'the test command failed' : `${failing.failed} failing`}
+              </Text>
+              <Text dimColor>
+                {failing.names
+                  .filter(one => !one.ok)
+                  .slice(0, 3)
+                  .map(one => ` · ${one.name}`)
+                  .join('')}
+              </Text>
+            </Button>
+          )}
+          {shown !== null && planView()}
           {currentLanes.length > 0 && (
             <Box flexDirection="column">
               <Text weight="bold">
@@ -2406,18 +2450,14 @@ export const register: Register = on => {
               {currentLanes.slice(-6).map(laneRow)}
             </Box>
           )}
+          {latest !== undefined && (
+            <Button key="now-picture" plain dimColor onPress={() => update($, tabAtom, () => 'pictures')}>
+              ▣ {latest.caption}
+            </Button>
+          )}
         </Box>
       )
     }
-
-    // No counts, and no Find: the search box brings it up.
-    const TABS: { id: Tab; label: string; hotkey: string }[] = [
-      { id: 'now', label: 'Now', hotkey: '1' },
-      { id: 'pictures', label: 'Pictures', hotkey: '2' },
-      { id: 'changes', label: 'Changes', hotkey: '3' },
-      { id: 'tests', label: 'Tests', hotkey: '4' },
-      { id: 'git', label: 'Git', hotkey: 'g' },
-    ]
 
     // The search box ends the tab bar and takes the rest of its row, or a row of
     // its own where the tabs leave too little: one box for names and for text.
@@ -2503,6 +2543,7 @@ export const register: Register = on => {
               }}
             >
               <Text weight={one.id === tab ? 'bold' : 'regular'}>{one.label}</Text>
+              {one.count !== undefined && <Text color={one.color}> {one.count}</Text>}
             </Button>
           ))}
           {searchBox}

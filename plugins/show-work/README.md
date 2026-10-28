@@ -1,8 +1,8 @@
 # show-work
 
-A pane beside the chat where Claude shows its work as it goes, so you can follow and steer it without reading every tool call.
+Claude shows its work as it goes, in the band above the prompt and in cards in the chat, so you can follow and steer it without reading every tool call. A pane beside the chat holds the detail, and opens only when you ask for it.
 
-The pane has five tabs (hotkeys 1 to 4 and g while it has focus) and a search box. **Now**, the default, holds a one-line status (working or idle, the call in flight, agents running, failures this turn), the plan and the subagents. The other tabs hold the rest. A plan with a new goal starts a new task, and the lanes of earlier tasks drop off Now.
+The pane has up to five tabs (hotkeys 1 to 4 and g while it has focus) and a search box. Now and Git are always there; Pictures, Changes and Tests appear once they hold something, each with a count (`Changes 4`, `Tests ✗2`), and keep their hotkeys. **Now**, the default, holds a one-line status (working or idle, the call in flight, agents running, failures this turn), then what needs you first: a failing test run of this task, the plan, the subagents and the latest picture, each a button to its tab. A plan with a new goal starts a new task, and the lanes of earlier tasks drop off Now.
 
 - **Plan**: the goal as Claude understands it and its steps, with the current one marked. Claude posts it with the `plan` tool; a `TodoWrite` list shows here too.
 - **Agents**: each subagent Claude starts gets a lane on the Now tab: its task, its type, a count of its calls and, while it runs, its latest call. A lane turns ✓ when the subagent stops, background ones included.
@@ -39,7 +39,7 @@ A short section in the system prompt tells Claude when to post a plan and when t
 
 ## Use
 
-The pane opens by itself in a wide fullscreen terminal (144 columns or more). Otherwise:
+The pane never opens by itself:
 
 - `/work` opens the pane.
 - `/work clear` empties it.
