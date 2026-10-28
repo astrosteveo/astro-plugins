@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { classify, emptyLedger, fixedIds, fresh, globTest, merge, parseGuide, parseLedger, rank, streak, tally } from '../hooks/ledger'
+import { emptyLedger, fixedIds, fresh, globTest, merge, parseGuide, parseLedger, rank, streak, tally } from '../hooks/ledger'
 import type { Candidate, CheckerReply, Kept } from '../hooks/ledger'
-import { lastJson, readFindings, readVerdicts } from '../hooks/prompts'
+import { lastJson, readFindings, readRisk, readVerdicts } from '../hooks/prompts'
 
 const candidate = (over: Partial<Candidate>): Candidate => ({
   file: 'src/app.ts',
@@ -72,7 +72,7 @@ test('a glob reads as in .gitignore: anchored with a slash, at any depth without
   for (const [pattern, path, matches] of cases) expect({ pattern, path, matches: globTest(pattern)(path) }).toEqual({ pattern, path, matches })
 })
 
-test("a REVIEW.md's Skip and Needs a person lists speak for its own folder", () => {
+test("a REVIEW.md's Skip list speaks for its own folder, and no other heading is a list", () => {
   const text = [
     '# Review rules',
     '',
@@ -83,10 +83,6 @@ test("a REVIEW.md's Skip and Needs a person lists speak for its own folder", () 
     '- `*.lock`',
     '- generated/',
     '',
-    '## Needs a person',
-    '',
-    '- hooks/register.ts',
-    '',
     '## Style',
     '',
     '- not-a-glob-list',
@@ -95,7 +91,6 @@ test("a REVIEW.md's Skip and Needs a person lists speak for its own folder", () 
     path: 'plugins/gates/REVIEW.md',
     text,
     skip: ['/plugins/gates/**/*.lock', '/plugins/gates/**/generated/'],
-    person: ['/plugins/gates/hooks/register.ts'],
   })
   expect(parseGuide('REVIEW.md', '## Skip\n- *.lock\n').skip).toEqual(['*.lock'])
   const guide = parseGuide('plugins/gates/REVIEW.md', text)
@@ -103,17 +98,13 @@ test("a REVIEW.md's Skip and Needs a person lists speak for its own folder", () 
   expect(globTest(guide.skip[1] ?? '')('plugins/other/generated/table.ts')).toBe(false)
 })
 
-test('a change touching a path a person approves is high risk, docs alone low, the rest medium', () => {
-  expect(classify(['README.md', 'docs/setup.md'], [])).toEqual({ tier: 'low', why: ['it changes only docs'] })
-  expect(classify(['src/app.ts', 'README.md'], [])).toEqual({ tier: 'medium', why: [] })
-  expect(classify(['src/app.ts', '.github/workflows/ci.yml'], [])).toEqual({
-    tier: 'high',
-    why: ['it changes .github/workflows/ci.yml, a path a person approves'],
-  })
-  expect(classify(['plugins/gates/hooks/register.ts', 'Dockerfile'], ['/plugins/gates/hooks/register.ts'])).toEqual({
-    tier: 'high',
-    why: ['it changes plugins/gates/hooks/register.ts, Dockerfile, paths a person approves'],
-  })
+test("the classifier's verdict is read with up to three reasons, and a reply naming no tier reads as none", () => {
+  expect(
+    readRisk('```json\n{"tier": "high", "why": ["hooks/guard.ts decides which commands may run", "", "a", "b", "c"]}\n```'),
+  ).toEqual({ tier: 'high', why: ['hooks/guard.ts decides which commands may run', 'a', 'b'] })
+  expect(readRisk('{"tier": "low"}')).toEqual({ tier: 'low', why: [] })
+  expect(readRisk('{"tier": "severe", "why": []}')).toBe(undefined)
+  expect(readRisk('It looks fine.')).toBe(undefined)
 })
 
 test('reports of one defect merge, keeping the gravest word; a defect the branch had before is not raised again', () => {

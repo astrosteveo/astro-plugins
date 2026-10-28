@@ -13,6 +13,9 @@ export const DEPTHS: Record<Depth, { focuses: readonly string[]; checkers: numbe
   deep: { focuses: ['logic', 'failure', 'fit', 'security', 'state'], checkers: 5 },
 }
 
+/** The verdict when the classifier gives none: a person looks, as a gate that cannot tell refuses. */
+export const UNJUDGED: Risk = { tier: 'high', why: ['the classifier gave no verdict on its risk, so a person looks'] }
+
 /** The depth a risk calls for: a change that can do more harm gets more eyes. */
 export const depthFor = (risk: Risk): Depth => (risk.tier === 'low' ? 'quick' : risk.tier === 'high' ? 'deep' : 'standard')
 
@@ -52,7 +55,7 @@ export const lastRound = (ledger: Ledger): Round | undefined => ledger.rounds[le
 export const securityReason = (findings: readonly Finding[]) =>
   `it has security finding${findings.length === 1 ? '' : 's'} ${findings.map(finding => finding.id).join(', ')} not fixed`
 
-/** A security finding, open or dismissed, puts a person in the loop whatever the paths say. */
+/** A security finding, open or dismissed, puts a person in the loop whatever the classifier said. */
 export function riskNow(ledger: Ledger): Risk | undefined {
   const risk = lastRound(ledger)?.risk
   if (risk === undefined) return undefined
@@ -222,8 +225,8 @@ export function globTest(pattern: string): (path: string) => boolean {
   }
 }
 
-/** A REVIEW.md: its text for the reviewers, and the globs under its Skip and Needs a person headings. */
-export type Guide = { path: string; text: string; skip: string[]; person: string[] }
+/** A REVIEW.md: its text for the agents, and the globs under its Skip heading. */
+export type Guide = { path: string; text: string; skip: string[] }
 
 // A glob in a folder's REVIEW.md speaks for that folder: a bare name matches at any depth below it,
 // a path is taken from it.
@@ -236,52 +239,16 @@ function scoped(folder: string, pattern: string) {
 export function parseGuide(path: string, text: string): Guide {
   const folder = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''
   const skip: string[] = []
-  const person: string[] = []
   let into: string[] | undefined
   for (const line of text.split('\n')) {
     const heading = /^#{1,6}\s+(.*)$/.exec(line)
     if (heading !== null) {
       const title = (heading[1] ?? '').trim().toLowerCase()
-      into = title.startsWith('skip') ? skip : title.includes('needs a person') ? person : undefined
+      into = title.startsWith('skip') ? skip : undefined
       continue
     }
     const item = /^\s*[-*+]\s+`?([^`\s]+)`?/.exec(line)
     if (into !== undefined && item?.[1] !== undefined) into.push(scoped(folder, item[1]))
   }
-  return { path, text, skip, person }
-}
-
-/** Paths whose change a person approves in any repository: CI, installers, releases, auth and secrets. */
-export const PERSON_PATHS = [
-  '.github/workflows/',
-  '.gitlab-ci.yml',
-  '.circleci/',
-  'Jenkinsfile',
-  'install.sh',
-  'install.ps1',
-  'release.sh',
-  'deploy/',
-  'Dockerfile',
-  'auth/',
-  '*secret*',
-  '*credential*',
-  '.env*',
-]
-
-const DOCS = ['*.md', '*.mdx', '*.txt', '*.rst', 'docs/', 'LICENSE*'].map(globTest)
-
-function listed(items: readonly string[], most = 3) {
-  return items.length <= most ? items.join(', ') : `${items.slice(0, most).join(', ')} and ${items.length - most} more`
-}
-
-/**
- * How much is at stake in a change, by the paths it touches: one that touches a path a person
- * approves is high, one that touches only docs is low, and any other is medium.
- */
-export function classify(files: readonly string[], personGlobs: readonly string[]): Risk {
-  const rules = [...PERSON_PATHS, ...personGlobs].map(globTest)
-  const hits = files.filter(file => rules.some(test => test(file)))
-  if (hits.length > 0) return { tier: 'high', why: [`it changes ${listed(hits)}, ${hits.length === 1 ? 'a path' : 'paths'} a person approves`] }
-  if (files.length > 0 && files.every(file => DOCS.some(test => test(file)))) return { tier: 'low', why: ['it changes only docs'] }
-  return { tier: 'medium', why: [] }
+  return { path, text, skip }
 }

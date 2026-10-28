@@ -23,11 +23,16 @@ type World = {
   agents?: { id: string; type: string }[]
   /** What the person picks when the gate asks. */
   answer?: string
+  /** The risk classifier's reply; undefined for no answer at all. */
+  risk?: string
 }
 
 type Spawned = { id: string; type: string; description: string; prompt: string }
 
+const MEDIUM = '```json\n{"tier": "medium", "why": ["src/app.ts changes how results are paged"]}\n```'
+
 const world = (over: Partial<World> = {}): World => ({
+  risk: MEDIUM,
   branch: 'feat/app',
   head: ONE,
   history: [BASE, ONE],
@@ -42,6 +47,8 @@ function engine(on: On, repo: World) {
   const files = new Map<string, string>()
   const spawned: Spawned[] = []
   const asked: string[] = []
+  // What the risk classifier was asked, and with which model.
+  const judged: { model: string; prompt: string }[] = []
   const ran = (exitCode: number, stdout = '') => ({
     value: { exitCode, stdout, stderr: exitCode === 0 ? '' : 'failed', isStdoutTruncated: false, isStderrTruncated: false },
   })
@@ -99,6 +106,17 @@ function engine(on: On, repo: World) {
     return { model: 'claude-test', agentId: id, result: { status: 'async_launched', agentId: id, description: e.description, prompt: e.prompt } } as never
   })
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('model.complete', (_, e) => {
+    judged.push({ model: e.model, prompt: e.prompt })
+    const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
+    return {
+      value:
+        repo.risk === undefined
+          ? { isAnswered: false as const, reason: 'empty-reply' as const, usage }
+          : { isAnswered: true as const, text: repo.risk, usage },
+    }
+  })
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('clock.now', () => ({ value: 1_000 }))
   on('fs.read', (_, e) => {
@@ -136,7 +154,7 @@ function engine(on: On, repo: World) {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  return { files, spawned, asked }
+  return { files, spawned, asked, judged }
 }
 
 const start = ($: Engine) => $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
@@ -214,11 +232,14 @@ const vote = (id: string, real: boolean) => ({ id, real, introduced: true, sever
 
 test('a round sends one reviewer per focus, has checkers vote, and records what most hold real', async ($, on) => {
   const repo = world()
-  const { files, spawned } = engine(on, repo)
+  const { files, spawned, judged } = engine(on, repo)
   await start($)
 
   const call = $.tool.call({ tool: REVIEW, intent: 'Page through search results.' })
   await until($, 'four reviewers', () => spawned.length === 4)
+  expect(judged.map(one => one.model)).toEqual(['claude-opus-5-5'])
+  expect(judged[0]?.prompt).toContain('Judge the change on branch feat/app at commit 1111111: everything it would merge.')
+  expect(judged[0]?.prompt).toContain('diff --git a/src/app.ts b/src/app.ts')
   expect(spawned.map(agent => agent.description)).toEqual(['review: correctness', 'review: failure paths', 'review: fit', 'review: security'])
   expect(spawned.map(agent => agent.type)).toEqual(Array(4).fill('review-gate:reviewer'))
   expect(spawned[0]?.prompt).toContain('This round covers the whole branch: git diff bbbbbbb 1111111')
@@ -238,7 +259,9 @@ test('a round sends one reviewer per focus, has checkers vote, and records what 
 
   const result = await call
   const text = String(result.result)
-  expect(text.split('\n')[0]).toBe('Review round 1 of feat/app at 1111111: the whole branch, standard depth (4 reviewers, 3 checkers), risk medium.')
+  expect(text.split('\n')[0]).toBe(
+    'Review round 1 of feat/app at 1111111: the whole branch, standard depth (4 reviewers, 3 checkers), risk medium (src/app.ts changes how results are paged).',
+  )
   expect(text).toContain('R1-1 · important · src/app.ts:12 · 2 of 2 checkers agree')
   expect(text).toContain('1 agent reply could not be read and counted for nothing.')
   // The shell finding had one vote of two: not kept.
@@ -271,12 +294,42 @@ test('the next round reads only the new commits, hands the reviewers what was ra
   }
 
   const text = String((await call).result)
-  expect(text.split('\n')[0]).toBe('Review round 2 of feat/app at 2222222: the commits since 1111111, standard depth (4 reviewers, 3 checkers), risk medium.')
+  expect(text.split('\n')[0]).toBe(
+    'Review round 2 of feat/app at 2222222: the commits since 1111111, standard depth (4 reviewers, 3 checkers), risk medium (src/app.ts changes how results are paged).',
+  )
   expect(text).toContain('Found fixed this round: R1-1 (The last page is skipped).')
   expect(text).toContain('Nothing is open. feat/app at 2222222 is ready for a pull request.')
   const ledger = ledgerOf(files)
   expect(ledger.findings.map(one => [one.id, one.status, one.answer, one.closedRound])).toEqual([['R1-1', 'fixed', 'fixed at 2222222', 2]])
   expect(ledger.reviewed).toBe(TWO)
+})
+
+test("the classifier's verdict on the code sets the risk: high reads deeper, and a person approves the pull request", async ($, on) => {
+  const repo = world({ risk: '```json\n{"tier": "high", "why": ["src/app.ts builds a shell command from the query"]}\n```' })
+  const { files, spawned } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW, intent: 'Search the log.' })
+  await until($, 'five reviewers', () => spawned.length === 5)
+  expect(spawned.map(agent => agent.description).at(-1)).toBe('review: state and data')
+  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
+  const text = String((await call).result)
+  expect(text.split('\n')[0]).toBe(
+    'Review round 1 of feat/app at 1111111: the whole branch, deep depth (5 reviewers, 5 checkers), risk high (src/app.ts builds a shell command from the query).',
+  )
+  expect(text).toContain('It is high risk, so the gate asks the user to approve it when the pull request is opened or merged.')
+  expect(ledgerOf(files).rounds[0]?.risk).toEqual({ tier: 'high', why: ['src/app.ts builds a shell command from the query'] })
+})
+
+test('a classifier that gives no verdict is asked again, and then leaves the change to a person', async ($, on) => {
+  const repo = world({ risk: undefined })
+  const { files, spawned, judged } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'five reviewers', () => spawned.length === 5)
+  expect(judged.length).toBe(2)
+  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
+  await call
+  expect(ledgerOf(files).rounds[0]?.risk).toEqual({ tier: 'high', why: ['the classifier gave no verdict on its risk, so a person looks'] })
 })
 
 test('a review is refused on the default branch, with no commits past it, and with changes not committed', async ($, on) => {

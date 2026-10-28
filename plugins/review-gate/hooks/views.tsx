@@ -18,7 +18,7 @@ export function band($: EngineInterface, e: RenderInput, repo: Repo | null, ledg
       <Box flexDirection="row">
         {label}
         <Text color="suggestion">
-          round {run.round}: {who} {run.done} of {run.of} done
+          round {run.round}: {run.phase === 'judging' ? "judging the change's risk" : `${who} ${run.done} of ${run.of} done`}
         </Text>
       </Box>
     )

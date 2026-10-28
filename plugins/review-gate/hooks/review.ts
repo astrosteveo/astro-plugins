@@ -5,8 +5,8 @@ import type { Place } from './git'
 import {
   DEPTHS,
   ROUND_CAP,
+  UNJUDGED,
   securityReason,
-  classify,
   depthFor,
   fixedIds,
   fresh,
@@ -20,7 +20,7 @@ import {
   tally,
 } from './ledger'
 import type { CheckerReply, Kept } from './ledger'
-import { FOCUS, checkerPrompt, readFindings, readVerdicts, reviewerPrompt } from './prompts'
+import { FOCUS, RISK, checkerPrompt, readFindings, readRisk, readVerdicts, reviewerPrompt, riskPrompt } from './prompts'
 import type { Context } from './prompts'
 
 export const REVIEWER_TYPE = 'review-gate:reviewer'
@@ -176,6 +176,22 @@ function riskWith(risk: Risk, findings: readonly Finding[]): Risk {
 
 const nameOf = (focus: string) => FOCUS[focus]?.label ?? focus
 
+/**
+ * How much is at stake in the branch's change, as a classifier reads it from the code. It is asked
+ * twice at most; with no verdict, a person looks.
+ */
+async function judge($: EngineInterface, ask: RoundAsk, context: Context, diff: string): Promise<Risk> {
+  const model = ask.model ?? (await $.session.model())
+  for (let tries = 0; tries < 2 && !ask.signal.aborted; tries++) {
+    const reply = await $.model
+      .complete({ model, system: RISK, prompt: riskPrompt(context, diff), maxTokens: 1_024 }, { signal: ask.signal })
+      .catch(() => undefined)
+    const risk = reply?.isAnswered === true ? readRisk(reply.text) : undefined
+    if (risk !== undefined) return risk
+  }
+  return UNJUDGED
+}
+
 /** Runs one round of review on the branch's latest commit and records what it found. */
 export async function runRound($: EngineInterface, ask: RoundAsk): Promise<RoundResult> {
   const { place, ledger } = ask
@@ -202,8 +218,6 @@ export async function runRound($: EngineInterface, ask: RoundAsk): Promise<Round
   const guides = (await guideFiles(git, place.head, files)).map(file => parseGuide(file.path, file.text))
   const skip = guides.flatMap(guide => guide.skip).map(globTest)
   const kept = (list: readonly string[]) => list.filter(file => !skip.some(test => test(file)))
-  const pathRisk = classify(files, guides.flatMap(guide => guide.person))
-  const depth = ask.depth ?? (ask.depthOption === 'auto' ? depthFor(riskWith(pathRisk, ledger.findings)) : ask.depthOption)
 
   // After the first round, a round reads only the commits since the last one, as long as they
   // build on it; a rebase or an amend sends it back over the whole branch.
@@ -229,6 +243,12 @@ export async function runRound($: EngineInterface, ask: RoundAsk): Promise<Round
     guides,
     earlier: ledger.findings,
   }
+
+  // The change's risk picks the round's depth, unless the call or the options name one.
+  await ask.progress({ round: n, phase: 'judging', done: 0, of: 1 })
+  const judged = await judge($, ask, context, whole.body)
+  if (ask.signal.aborted) return refuse('The review was stopped before it finished, so nothing was recorded.')
+  const depth = ask.depth ?? (ask.depthOption === 'auto' ? depthFor(riskWith(judged, ledger.findings)) : ask.depthOption)
 
   const plan = DEPTHS[depth]
   const focuses = roundFiles.length === 0 ? [] : plan.focuses
@@ -297,7 +317,7 @@ export async function runRound($: EngineInterface, ask: RoundAsk): Promise<Round
     from,
     scope: isDelta ? 'delta' : 'full',
     depth,
-    risk: riskWith(pathRisk, findings),
+    risk: riskWith(judged, findings),
     raised: candidates.length,
     kept: added.length,
     fixed: fixed.length,

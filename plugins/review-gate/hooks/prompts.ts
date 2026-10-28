@@ -1,4 +1,4 @@
-import type { Finding, FindingKind } from '../types'
+import type { Finding, FindingKind, Risk } from '../types'
 import { short } from './git'
 import type { Candidate, CheckerReply, Guide, Recheck, Verdict } from './ledger'
 
@@ -54,6 +54,27 @@ ${FENCE}
 
 Give a verdict for every finding and every earlier one listed.`
 
+/**
+ * The system prompt of the risk classifier: it reads a change before a round and says how much is
+ * at stake, which picks the round's depth and whether a person approves the pull request.
+ */
+export const RISK = `You judge how much is at stake in one change to a git repository by reading its code, so that the review it gets, and the attention a person gives it, match what could go wrong.
+
+Pick one tier:
+- low: nothing that runs can break. Docs, comments, tests alone, text people read, or code nothing calls yet.
+- medium: an ordinary change to behaviour, such as a feature, a fix or a refactor, where a defect that slips through means a bug report and a quick fix.
+- high: a defect that slips through could do lasting harm or reach beyond this code, so a person should look before it merges. That is code that decides what someone or something may do (authentication, permissions, a gate, a guard, a sandbox), runs commands or reads input from outside, handles secrets, moves money, deletes or migrates data, changes how the project is built, tested, released, installed or updated, or sets a pattern other code will copy. A change too large to review well is high too.
+
+Judge the code, not the names of the files: renaming a variable in auth.ts is low, and one line that builds a shell command from its input is high.
+
+Answer with one fenced json block and nothing else:
+
+${FENCE}json
+{"tier": "medium", "why": ["one line per reason: the file, and what in it carries the risk"]}
+${FENCE}
+
+Give one to three reasons.`
+
 /** What each reviewer looks for: each round sends one reviewer per focus its depth names. */
 export const FOCUS: Record<string, { label: string; text: string; kind: FindingKind }> = {
   logic: {
@@ -102,6 +123,7 @@ export type Context = {
 }
 
 const REVIEWER_DIFF = 80_000
+const RISK_DIFF = 60_000
 const CHECKER_DIFF = 30_000
 
 function scopeLine(context: Context) {
@@ -128,6 +150,19 @@ const findingLine = (finding: Finding) =>
   `- ${finding.id} [${finding.status}] ${finding.file}:${finding.line} ${finding.title}${
     finding.status === 'dismissed' && finding.answer !== undefined ? ` (dismissed: ${finding.answer})` : ''
   }`
+
+/** The classifier's task: everything the branch would merge, `diff` being the branch's whole diff. */
+export function riskPrompt(context: Context, diff: string) {
+  return `Judge the change on branch ${context.branch} at commit ${short(context.head)}: everything it would merge.
+
+What the change is for: ${context.intent.trim() === '' ? 'not stated; read it from the commits.' : context.intent.trim()}
+
+Commits on the branch:
+${context.commits || '(none listed)'}
+
+Files the branch changes:
+${context.stat || '(none)'}${guides(context)}${diffBlock({ ...context, diff }, RISK_DIFF)}`
+}
 
 /** A reviewer's task: the change, and the one focus it hunts in. */
 export function reviewerPrompt(context: Context, focus: string) {
@@ -239,6 +274,19 @@ export function readFindings(reply: string, focus: string): Candidate[] | undefi
       } satisfies Candidate,
     ]
   })
+}
+
+const TIERS = new Set(['low', 'medium', 'high'])
+
+/** The classifier's verdict, or undefined when its reply names no tier. */
+export function readRisk(reply: string): Risk | undefined {
+  const value = lastJson(reply)
+  if (!isRecord(value) || typeof value.tier !== 'string' || !TIERS.has(value.tier)) return undefined
+  const why = (Array.isArray(value.why) ? value.why : [])
+    .map(reason => text(reason, 300))
+    .filter(reason => reason !== '')
+    .slice(0, 3)
+  return { tier: value.tier as Risk['tier'], why }
 }
 
 /** A checker's votes, or undefined when its reply holds none to read. */

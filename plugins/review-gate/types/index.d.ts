@@ -7,7 +7,7 @@ export type FindingKind = 'bug' | 'security' | 'convention'
 /** How many reviewers and checkers a round runs. */
 export type Depth = 'quick' | 'standard' | 'deep'
 
-/** How much is at stake in a change, and why; `high` needs the person's approval at the gate. */
+/** How much is at stake in a change, as a classifier read it from the code; `high` needs the person's approval at the gate. */
 export type Risk = { tier: 'low' | 'medium' | 'high'; why: string[] }
 
 /** One finding the checkers held real, and how it was answered. */
@@ -69,7 +69,7 @@ export type Ledger = {
 }
 
 /** A round in progress, for the band. */
-export type Run = { round: number; phase: 'reviewing' | 'checking'; done: number; of: number }
+export type Run = { round: number; phase: 'judging' | 'reviewing' | 'checking'; done: number; of: number }
 
 /** Where the session's repository stands, for the band. */
 export type Repo = { branch: string; head: string; main: string; isDefault: boolean; ahead: number }

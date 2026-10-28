@@ -16,7 +16,7 @@ Every finding needs an answer. Claude fixes it and commits, and the next round c
 
 `gh pr create` and `gh pr merge` are refused until the commit they propose has been reviewed and no finding is open. A review covers one commit, so a commit made after it needs a round of its own. For a merge, the gate asks gh for the pull request's head and checks that commit.
 
-A change is high risk when it touches a path a person approves, or has a security finding that is not fixed. The paths are CI workflows, installers, release and deploy files, Dockerfiles, auth, secrets and credentials, and any a REVIEW.md lists. A change that touches only docs is low risk, and any other is medium. Risk picks the depth: quick (2 reviewers, 1 checker) for low, standard (4 and 3) for medium, and deep (5 and 5) for high.
+Before each round a classifier reads the branch's whole diff and judges its risk from the code, not from a list of paths. Low is a change where nothing that runs can break, such as docs or tests alone. Medium is an ordinary change to behaviour. High is code where a missed defect could do lasting harm: code that decides what may run or who may act, runs commands or reads outside input, handles secrets, deletes or migrates data, or changes how the project is built, released or installed. The classifier gives its reasons, and a security finding that is not fixed also makes a change high risk. It runs on the reviewers' model; if it gives no verdict after two tries, the change counts as high. Risk picks the depth: quick (2 reviewers, 1 checker) for low, standard (4 and 3) for medium, and deep (5 and 5) for high.
 
 For a high-risk change the gate asks you, in Claude Code's question dialog, to approve that commit before its pull request is opened or merged. Claude cannot answer the dialog, and the approval holds for that commit alone.
 
@@ -24,7 +24,7 @@ The review's agents only read. They get Read and Bash, and each command they run
 
 ## In the terminal
 
-The band above the prompt says where the branch stands: a round in progress (`round 2: checkers 1 of 3 done`), findings open, commits not reviewed yet, or a commit ready for its pull request, with a note when it waits for your approval. A review's row in the chat draws as a card that lists each finding with its grade, place and votes; fixed ones are ticked, and dismissed ones show their reason. ctrl+o shows the text Claude read.
+The band above the prompt says where the branch stands: a round in progress (`round 2: judging the change's risk`, then `round 2: checkers 1 of 3 done`), findings open, commits not reviewed yet, or a commit ready for its pull request, with a note when it waits for your approval. A review's row in the chat draws as a card that lists each finding with its grade, place and votes; fixed ones are ticked, and dismissed ones show their reason. ctrl+o shows the text Claude read.
 
 - `/review-gate` runs a round now; `/review-gate quick`, `standard` or `deep` picks its depth. Your run goes past the cap and reviews a commit again.
 - `/review-gate status` shows the latest round.
@@ -33,18 +33,13 @@ The band above the prompt says where the branch stands: a round in progress (`ro
 
 ## REVIEW.md
 
-A REVIEW.md at the root, or in any folder above a changed file, goes to every reviewer and checker. Say what a defect looks like in that code. Two headings are read as lists of globs, written as in .gitignore and relative to the file's folder:
+A REVIEW.md at the root, or in any folder above a changed file, goes to every reviewer and checker, and to the risk classifier. Say what a defect looks like in that code. A Skip heading is read as a list of globs, written as in .gitignore and relative to the file's folder, for files to leave out of the diff the agents read:
 
 ```markdown
 ## Skip
 - `*.lock`
 - `generated/`
-
-## Needs a person
-- `src/billing/`
 ```
-
-Files under Skip are left out of the diff the agents read. A change to a file under Needs a person is high risk.
 
 ## Where the record lives
 
@@ -56,7 +51,7 @@ In `/config`, **Review depth** is `auto` by default, which picks by risk, or alw
 
 ## Limits
 
-- A round runs one agent per reviewer and per checker: 3, 7 or 10 of them. A standard round over a small change takes a minute or two.
+- A round runs one agent per reviewer and per checker, 3, 7 or 10 of them, and one completion for the risk. A standard round over a small change takes a minute or two.
 - The gate sees pull requests that a Claude Code session opens or merges with gh. One opened on github.com, or from another shell, does not pass through it.
 - The record belongs to one clone; another clone starts with none.
 - It needs git, gh for merges, and the `sleep`, `mkdir`, `mv` and `rm` commands. Windows is not supported.
