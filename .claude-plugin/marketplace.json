@@ -8,11 +8,6 @@
   },
   "plugins": [
     {
-      "name": "show-work",
-      "source": "./plugins/show-work",
-      "description": "A pane where Claude shows its plan, its subagents and the files and commands it touches, and draws designs in the chat."
-    },
-    {
       "name": "inline-thinking",
       "source": "./plugins/inline-thinking",
       "description": "Draws Claude's thinking in the chat, above the reply or tool call it led to, in place of the folded \"Thought for 4s\"."
