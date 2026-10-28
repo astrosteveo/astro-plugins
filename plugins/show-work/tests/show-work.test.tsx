@@ -5,7 +5,7 @@ import type { Act } from '../types'
 
 import { across, blowUp, errorLines, fromHex, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { bandBits, briefPlan, briefShow, cardWidth, doingText, fit, markScope, markText, readMarks, tileText } from '../hooks/register'
+import { bandBits, briefDecide, briefPlan, briefShow, cardWidth, doingText, fit, markScope, markText, readDecision, readMarks, switchText, tileText } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -197,6 +197,53 @@ test('a plan post draws in the chat as the checklist, then as what moved, then t
   const fresh = await card('p4')
   expect(fresh.texts).toContain('Another goal')
   await fresh.ui.unmount()
+})
+
+test('a decision draws as the choice made, with a button per alternative to switch', async ($, on) => {
+  const filled = engine(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const ran = await $.tool.call({
+    tool: 'mcp__show-work__decide',
+    tool_use_id: 'd1',
+    decision: 'Session storage',
+    options: [{ label: 'SQLite', detail: 'one file' }, { label: 'Postgres' }, { label: 'Flat JSON files' }],
+    chose: 'A',
+    why: 'No server to run',
+  })
+  expect(ran.result).toBe('Shown: Session storage: A (SQLite). Carry on with it; the person can press an alternative to redirect you.')
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({
+      plugin: 'show-work',
+      component: 'ToolResult',
+      requestId: 'd1',
+      props: { tool_use_id: 'd1', tool: 'mcp__show-work__decide', output: '', isErrored: false },
+      surface,
+    } as never)
+    expect((await ui.find({ type: 'Text', text: /^✓/ }))?.text).toBe('✓ A SQLite · No server to run')
+    expect(await ui.find({ type: 'Button', key: 'alt-d1-A' })).toBeUndefined()
+    expect((await ui.find({ type: 'Button', key: 'alt-d1-C' }))?.text).toBe('C Flat JSON files')
+    await ui.press({ key: 'alt-d1-C' })
+    await ui.unmount()
+  }
+  expect(filled.at(-1)).toBe('Switch "Session storage" to C (Flat JSON files): ')
+
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await pane.find({ type: 'Text', text: /^✓ Session storage/ }))?.text).toBe('✓ Session storage: SQLite · 2 others')
+  await pane.unmount()
+
+  const bad = await $.tool.call({ tool: 'mcp__show-work__decide', decision: 'x', options: [{ label: 'a' }], chose: 'A' })
+  expect(bad.deny).toBe('Give 2 to 6 options, each with a label.')
+})
+
+test('a decision takes its choice by letter or label, and its row sums it up', () => {
+  const options = [{ label: 'SQLite' }, { label: 'Postgres' }]
+  expect(readDecision({ decision: 'Store', options, chose: 'b' })).toEqual({ decision: 'Store', options, chose: 1 })
+  expect(readDecision({ decision: 'Store', options, chose: 'Postgres' })).toMatchObject({ chose: 1 })
+  expect(readDecision({ decision: 'Store', options, chose: 'Z' })).toBe('chose names no option: give its letter, A to B.')
+  expect(readDecision({ options, chose: 'A' })).toBe('Say what was decided, in a few words.')
+  expect(briefDecide({ decision: 'Store', options, chose: 'A' })).toEqual({ decision: 'Store', chose: 'A SQLite' })
+  expect(switchText({ decision: 'Store', options }, 1)).toBe('Switch "Store" to B (Postgres): ')
 })
 
 test('changes list the edited files and nothing else', async ($, on) => {
