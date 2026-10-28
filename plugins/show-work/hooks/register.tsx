@@ -177,7 +177,7 @@ The person watches a "Show work" pane beside the chat. Keep it current so they c
 - Give each Bash call a description that says why you run it, not only what it does: the pane shows it as the reason above the command.
 - Once the goal is clear, keep working until it is met; stop only for a question that blocks the work or a snag that needs their direction.
 - To show the person a design, call mcp__show-work__show and describe its structure; the tool lays it out. Use d2 for architecture, mermaid for flows, sequences and states, and html with the wireframe classes for a screen, menu or HUD; svg only for a freeform drawing. Show a design before you build it, so they can veto it. The result hands you the picture: fix overlaps and cut or crowded text, and show it again before you go on. Images you Read land in the pane by themselves.
-- To show the person an image, call mcp__show-work__show with a path, a url for one on the web (reference art, an asset, a screenshot in docs), or images to set several side by side for them to compare and pick from. Add marks to point at what matters in it: a bug in a screenshot, what changed in a mockup.`
+- To show the person an image, call mcp__show-work__show with a path, a url for one on the web (reference art, an asset, a screenshot in docs), or images to set several side by side: to compare (before and after, states, variants) or, with ask "pick", for them to choose one. Add marks to point at what matters in it: a bug in a screenshot, what changed in a mockup.`
 
 const PLAN_TOOL = {
   name: 'plan',
@@ -222,7 +222,7 @@ const SHOW_TOOL = {
 - svg: a freeform drawing; give it a background rect and a width of 800 or more.
 - path: an image file that already exists.
 - url: an image on the web: the image's own address, not the page it sits on. The result hands you what came back, so check it is the picture you meant.
-- images: several images (paths or URLs) side by side on one sheet, lettered A, B, C… and labeled, to compare options. The person can press a tile's letter in the pane to pick it, which starts their prompt with "I pick B".
+- images: several images (paths or URLs) side by side on one sheet, lettered A, B, C… and labeled. A button per tile starts the person's reply about it ("About B"); with ask "pick", for options they choose between, it starts "I pick B".
 Add marks to any of these to point things out: numbered boxes or rings in the picture's own pixels. Each note is a button in a card under the picture that starts the person's reply about it; a detail shows there while they hover over the mark.`,
   isDeferred: false,
   inputSchema: {
@@ -254,6 +254,12 @@ Add marks to any of these to point things out: numbered boxes or rings in the pi
           },
           required: ['x', 'y', 'note'],
         },
+      },
+      ask: {
+        type: 'string',
+        enum: ['compare', 'pick'],
+        description:
+          'images: what the sheet asks of the person. compare (the default): look at them side by side, such as before and after. pick: choose one of them.',
       },
       images: {
         type: 'array',
@@ -289,9 +295,15 @@ const ACT_MARK: Record<ActStatus, { mark: string; color: Color }> = {
 // A sheet's tiles go by letters, A first: the digits switch the pane's tabs.
 export const letterOf = (n: number) => String.fromCharCode(65 + n)
 
+// What a sheet's tile buttons sit after: a choice only when Claude asked
+// for one.
+export const tileLead = (picture: Pick<Picture, 'pick'>) => (picture.pick === true ? 'Pick one:' : 'About:')
+
 // What pressing a sheet's tile starts the prompt with.
-export function pickText(picture: Pick<Picture, 'caption' | 'tiles'>, n: number) {
-  return `I pick ${letterOf(n)} (${picture.tiles?.[n] ?? ''}) from "${picture.caption}". `
+export function tileText(picture: Pick<Picture, 'caption' | 'tiles' | 'pick'>, n: number) {
+  const tile = `${letterOf(n)} (${picture.tiles?.[n] ?? ''})`
+
+  return picture.pick === true ? `I pick ${tile} from "${picture.caption}". ` : `About ${tile} in "${picture.caption}": `
 }
 
 // What pressing a mark's button starts the prompt with.
@@ -304,9 +316,9 @@ export function markText(picture: Pick<Picture, 'caption' | 'marks'>, n: number)
 
 // How wide a picture's card is drawn: as its longest line, a detail
 // included, so revealing one never widens it; at most `room`.
-export function cardWidth(picture: Pick<Picture, 'tiles' | 'marks'>, room: number) {
+export function cardWidth(picture: Pick<Picture, 'tiles' | 'marks' | 'pick'>, room: number) {
   const tiles = picture.tiles ?? []
-  const pick = tiles.length === 0 ? 0 : `Pick: ${tiles.map((label, n) => `[ ${letterOf(n)} ${label} ]`).join(' ')}`.length
+  const pick = tiles.length === 0 ? 0 : `${tileLead(picture)} ${tiles.map((label, n) => `[ ${letterOf(n)} ${label} ]`).join(' ')}`.length
   const marks = picture.marks ?? []
   const lines = marks.flatMap((mark, n) => [`${n + 1} ${mark.note} ↩`.length, mark.detail?.length ?? 0])
   const hint = marks.some(mark => mark.detail !== undefined) ? 'Point at a mark for its detail.'.length : 0
@@ -1439,10 +1451,11 @@ export const register: Register = on => {
     const named = 'src' in source ? nameOf(source.src) : ''
     const caption = asText(e.caption) || named || 'design'
     const id = e.tool_use_id ?? crypto.randomUUID()
-    const made = await freeze($, source, id, caption, 'shown', marks)
-    if (typeof made === 'string') {
-      return { deny: made }
+    const frozen = await freeze($, source, id, caption, 'shown', marks)
+    if (typeof frozen === 'string') {
+      return { deny: frozen }
     }
+    const made = 'sheet' in source && e.ask === 'pick' ? { ...frozen, pick: true } : frozen
     await keep($, made)
     const said = `Shown in the chat and the pane: ${caption} (${made.width}x${made.height}).`
     // A file on disk Claude can Read; anything else comes back as the
@@ -1891,8 +1904,8 @@ export const register: Register = on => {
 
       const { Box, Button, Text } = $.ui.resolve(e)
       const fill = (text: string) => () => $.prompt.fill({ text, mode: 'insert' })
-      // A card of what the picture asks of the person: a sheet's tiles to
-      // pick, a mark to answer. Pressing one starts the reply in the prompt;
+      // A card of what the picture asks of the person: a sheet's tile to
+      // ask about or pick, a mark to answer. Pressing one starts the reply in the prompt;
       // hovering a mark, on the picture or here, lights its row and shows
       // its detail.
       const tiles = picture.tiles ?? []
@@ -1916,9 +1929,9 @@ export const register: Register = on => {
           >
             {tiles.length > 0 && (
               <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-                <Text dimColor>Pick:</Text>
+                <Text dimColor>{tileLead(picture)}</Text>
                 {tiles.map((label, n) => (
-                  <Button key={`pick-${picture.id}-${letterOf(n)}`} onPress={fill(pickText(picture, n))}>
+                  <Button key={`tile-${picture.id}-${letterOf(n)}`} onPress={fill(tileText(picture, n))}>
                     <Text weight="bold">{letterOf(n)}</Text> {label}
                   </Button>
                 ))}
@@ -2246,12 +2259,12 @@ export const register: Register = on => {
             <Text italic>{picture.caption}</Text>
             {picture.tiles !== undefined && (
               <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-                <Text dimColor>Pick:</Text>
+                <Text dimColor>{tileLead(picture)}</Text>
                 {picture.tiles.map((label, n) => (
                   <Button
                     key={`tile-${letterOf(n)}`}
                     hotkey={letterOf(n).toLowerCase()}
-                    onPress={() => $.prompt.fill({ text: pickText(picture, n), mode: 'insert' })}
+                    onPress={() => $.prompt.fill({ text: tileText(picture, n), mode: 'insert' })}
                   >
                     <Text weight="bold">{letterOf(n)}</Text> {label}
                   </Button>
