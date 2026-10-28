@@ -1,8 +1,8 @@
 import type { On } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { emptyLedger } from '../hooks/ledger'
+import { emptyLedger, globTest } from '../hooks/ledger'
 
 const ROOT = '/repo'
 const RECORD = `${ROOT}/.git/review-gate/feat%2Fapp.json`
@@ -25,6 +25,12 @@ type World = {
   answer?: string
   /** The risk classifier's reply; undefined for no answer at all. */
   risk?: string
+  /** The repository's local branches. */
+  branches?: string[]
+  /** The commit whose tree holds the REVIEW.md `guide` is: the base, unless the branch added it. */
+  guideAt?: string
+  /** Whether git fails to list the changed files. */
+  failDiff?: boolean
 }
 
 type Spawned = { id: string; type: string; description: string; prompt: string }
@@ -47,8 +53,9 @@ function engine(on: On, repo: World) {
   const files = new Map<string, string>()
   const spawned: Spawned[] = []
   const asked: string[] = []
-  // What the risk classifier was asked, and with which model.
+  // What the risk classifier was asked, and with which model; and every git call, by its arguments.
   const judged: { model: string; prompt: string }[] = []
+  const calls: string[][] = []
   const ran = (exitCode: number, stdout = '') => ({
     value: { exitCode, stdout, stderr: exitCode === 0 ? '' : 'failed', isStdoutTruncated: false, isStderrTruncated: false },
   })
@@ -56,9 +63,11 @@ function engine(on: On, repo: World) {
     const commits = repo.history.slice(repo.history.indexOf(from) + 1, repo.history.indexOf(to) + 1)
     return [...new Set(commits.flatMap(commit => repo.changes[commit] ?? []))]
   }
-  const git = (args: string[]) => {
+  const git = (args: string[], cwd: string) => {
+    calls.push(args)
     const [sub, ...rest] = args
     const last = rest[rest.length - 1] ?? ''
+    if (cwd !== ROOT && !cwd.startsWith(`${ROOT}/`)) return ran(128)
     if (sub === 'rev-parse') {
       if (rest[0] === '--show-toplevel') return ran(0, `${ROOT}\n`)
       if (rest[0] === '--path-format=absolute') return ran(0, `${ROOT}/.git\n`)
@@ -74,15 +83,19 @@ function engine(on: On, repo: World) {
     if (sub === 'rev-list') return ran(0, `${repo.history.indexOf(repo.head)}\n`)
     if (sub === 'status') return ran(0, repo.dirty.map(path => ` M ${path}\0`).join(''))
     if (sub === 'log') return ran(0, '1111111 Add the app\n\nIt pages through results.\n\0')
-    if (sub === 'ls-tree') return ran(0, repo.guide === undefined ? '' : 'REVIEW.md\0')
-    if (sub === 'show') return ran(0, repo.guide ?? '')
+    if (sub === 'for-each-ref') return ran(0, (repo.branches ?? ['main', 'feat/app']).map(name => `${name}\n`).join(''))
+    const guided = repo.guide !== undefined && (rest.includes(repo.guideAt ?? BASE) || rest[0] === `${repo.guideAt ?? BASE}:REVIEW.md`)
+    if (sub === 'ls-tree') return ran(0, guided ? 'REVIEW.md\0' : '')
+    if (sub === 'show') return guided ? ran(0, repo.guide ?? '') : ran(128)
     if (sub === 'diff') {
       const dash = rest.indexOf('--')
       const range = (dash < 0 ? rest : rest.slice(0, dash)).filter(arg => !arg.startsWith('-'))
       const changed = between(range[0] ?? BASE, range[1] ?? repo.head)
-      if (rest[0] === '--name-only') return ran(0, changed.map(file => `${file}\0`).join(''))
+      if (rest[0] === '--name-only') return repo.failDiff === true ? ran(1) : ran(0, changed.map(file => `${file}\0`).join(''))
       if (rest[0] === '-U0') return ran(0, changed.map(file => `+++ b/${file}\n@@ -0,0 +1,40 @@\n`).join(''))
-      const listed = dash < 0 ? changed : rest.slice(dash + 1)
+      // `-- . :(exclude,glob)…` keeps the changed files no exclusion names.
+      const left = rest.slice(dash + 2).map(spec => globTest(`/${spec.replace(':(exclude,glob)', '')}`))
+      const listed = dash < 0 ? changed : changed.filter(file => !left.some(test => test(file)))
       if ((rest[0] ?? '').startsWith('--stat')) return ran(0, listed.map(file => ` ${file} | 40 +`).join('\n'))
       return ran(0, listed.map(file => `diff --git a/${file} b/${file}\n+export const page = 1\n`).join(''))
     }
@@ -128,9 +141,16 @@ function engine(on: On, repo: World) {
     files.set(String(e.path), String(e.text))
     return { value: undefined }
   })
+  on('fs.list', (_, e) => ({
+    value: [...files.keys()]
+      .filter(path => path.startsWith(`${e.path}/`) && !path.slice(e.path.length + 1).includes('/'))
+      .map(path => ({ name: path.slice(e.path.length + 1), kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })),
+  }))
+  mock.store(on)
+  mock.env(on, { HOME: '/home/u' })
   on('process.run', (_, e) => {
     const argv = e.argv.map(String)
-    if (argv[0] === 'git') return git(argv.slice(3))
+    if (argv[0] === 'git') return git(argv.slice(3), e.init?.cwd ?? ROOT)
     if (argv[0] === 'mv') {
       files.set(argv[4] ?? '', files.get(argv[3] ?? '') ?? '')
       files.delete(argv[3] ?? '')
@@ -154,7 +174,7 @@ function engine(on: On, repo: World) {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  return { files, spawned, asked, judged }
+  return { files, spawned, asked, judged, calls }
 }
 
 const start = ($: Engine) => $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
@@ -437,7 +457,8 @@ test('a high-risk change waits for the person, and their approval holds for that
 
   repo.answer = 'Approve'
   expect((await create()).deny).toBe(undefined)
-  expect(ledgerOf(files).approved).toEqual({ sha: ONE, at: 1_000 })
+  // The approval is kept in the plugin's store, apart from the file a command could write.
+  expect(ledgerOf(files).approved).toBe(undefined)
   expect((await create()).deny).toBe(undefined)
   expect(asked.length).toBe(2)
 })
@@ -518,4 +539,91 @@ test('a row that is not a round, or a refused review, draws as the engine draws 
   })
   expect((await row.findAll({ type: 'Text' })).map(text => text.text)).toEqual(['engine'])
   await row.unmount()
+})
+
+test('a record left by an earlier branch of the same name reads as none', async ($, on) => {
+  const { files } = engine(on, world())
+  seed(files, { rounds: [round(1, ONE, 0)], findings: [], reviewed: ONE, base: 'c'.repeat(40) })
+  await start($)
+  expect((await $.tool.call({ tool: 'Bash', command: 'gh pr create --fill' })).deny).toBe(
+    'Review first: feat/app at 1111111 has not been reviewed. Call mcp__review-gate__review with what the change is for, answer each finding, then run this again.',
+  )
+})
+
+test('the records of branches that no longer exist are dropped', async ($, on) => {
+  const { files } = engine(on, world())
+  seed(files, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
+  files.set(`${ROOT}/.git/review-gate/feat%2Fold.json`, JSON.stringify(emptyLedger('feat/old')))
+  await start($)
+  expect([...files.keys()].filter(path => path.includes('/review-gate/'))).toEqual([RECORD])
+})
+
+test("Claude's file tools and shell commands are refused the review record", async ($, on) => {
+  engine(on, world())
+  await start($)
+  const refusal =
+    "review-gate: the review record is the gate's own, so this was refused. Answer a finding by fixing it, or with mcp__review-gate__dismiss and a reason; only the user resets the record, with /review-gate reset."
+  expect((await $.tool.call({ tool: 'Write', file_path: RECORD, content: '{}' })).deny).toBe(refusal)
+  expect((await $.tool.call({ tool: 'Edit', file_path: RECORD, old_string: 'a', new_string: 'b' })).deny).toBe(refusal)
+  expect((await $.tool.call({ tool: 'Bash', command: 'rm .git/review-gate/feat%2Fapp.json' })).deny).toBe(refusal)
+  expect((await $.tool.call({ tool: 'Bash', command: 'cd .git && rm -f review-gate/feat%2Fapp.json' })).deny).toBe(refusal)
+  expect((await $.tool.call({ tool: 'Bash', command: 'git log -- plugins/review-gate' })).deny).toBe(undefined)
+  expect((await $.tool.call({ tool: 'Write', file_path: `${ROOT}/plugins/review-gate/README.md`, content: '#' })).deny).toBe(undefined)
+})
+
+test('the gate refuses a pull request command when it cannot tell what the command acts on', async ($, on) => {
+  engine(on, world())
+  await start($)
+  const deny = async (command: string) => (await $.tool.call({ tool: 'Bash', command })).deny ?? ''
+  expect(await deny('cd "$REPO" && gh pr create --fill')).toBe(
+    'review-gate cannot tell which repository this pull request command acts on: a cd before it uses a variable, ~user or cd -. Run it in the repository, or cd to a plain path first.',
+  )
+  expect(await deny('cd ~/elsewhere && gh pr create --fill')).toBe(
+    'review-gate cannot check the review: /home/u/elsewhere is not in a git repository. Run the pull request command in the repository it is for.',
+  )
+  expect(await deny('echo 3 | xargs gh pr merge')).toBe(
+    'review-gate cannot tell which pull request this acts on, as xargs supplies its arguments. Run gh pr merge with the pull request named.',
+  )
+  expect(await deny('gh pr create --head gone --fill')).toBe(
+    'review-gate cannot see branch gone in /repo, so it cannot check its review. Open the pull request from the clone that has the branch.',
+  )
+  // gh's alias, and a second command in the same line, are gated too.
+  expect((await deny('gh pr new --fill')).startsWith('Review first: feat/app at 1111111')).toBe(true)
+  expect((await deny("bash -c 'gh pr merge'")).startsWith('Review first: feat/app at 1111111')).toBe(true)
+})
+
+test("a git read that fails ends the round with git's words, and nothing is recorded", async ($, on) => {
+  const { files, spawned } = engine(on, world({ failDiff: true }))
+  await start($)
+  expect((await $.tool.call({ tool: REVIEW })).deny).toBe('git could not list the changed files: failed. Nothing was recorded.')
+  expect(spawned).toEqual([])
+  expect(files.has(RECORD)).toBe(false)
+})
+
+test('REVIEW.md is read where the branch forked, its Skip files kept from the agents but not from the classifier', async ($, on) => {
+  const repo = world({ guide: '# Rules\n\n## Skip\n- src/\n', changes: { [ONE]: ['src/app.ts', 'README.md'] } })
+  const { spawned, judged, calls } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'four reviewers', () => spawned.length === 4)
+  expect(calls.some(args => args[0] === 'ls-tree' && args.includes(BASE))).toBe(true)
+  expect(calls.filter(args => args[0] === 'diff').every(args => args.includes('--no-ext-diff'))).toBe(true)
+  expect(judged[0]?.prompt).toContain('diff --git a/src/app.ts b/src/app.ts')
+  expect(spawned[0]?.prompt).toContain('--- REVIEW.md')
+  expect(spawned[0]?.prompt).toContain('diff --git a/README.md b/README.md')
+  expect(spawned[0]?.prompt.includes('diff --git a/src/app.ts')).toBe(false)
+  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
+  await call
+})
+
+test('a REVIEW.md the branch adds does not apply to its own review', async ($, on) => {
+  const repo = world({ guide: '## Skip\n- src/\n', guideAt: ONE })
+  const { spawned } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'four reviewers', () => spawned.length === 4)
+  expect(spawned[0]?.prompt.includes('REVIEW.md')).toBe(false)
+  expect(spawned[0]?.prompt).toContain('diff --git a/src/app.ts b/src/app.ts')
+  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
+  await call
 })

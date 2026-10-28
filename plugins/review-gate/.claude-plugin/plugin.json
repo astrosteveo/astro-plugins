@@ -11,7 +11,7 @@
     "depth": {
       "type": "string",
       "title": "Review depth",
-      "description": "How many reviewers and checkers a round runs. auto picks by the change's risk: quick for docs, standard for most code, deep for paths that need a person.",
+      "description": "How many reviewers and checkers a round runs. auto picks by the risk a classifier reads from the change: quick for low, standard for medium, deep for high.",
       "default": "auto",
       "options": ["auto", "quick", "standard", "deep"]
     },

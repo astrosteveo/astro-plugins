@@ -70,10 +70,10 @@ Judge the code, not the names of the files: renaming a variable in auth.ts is lo
 Answer with one fenced json block and nothing else:
 
 ${FENCE}json
-{"tier": "medium", "why": ["one line per reason: the file, and what in it carries the risk"]}
+{"tier": "medium", "why": ["src/pay.ts sends the refund amount the request names"]}
 ${FENCE}
 
-Give one to three reasons.`
+Give one to three reasons, each one short sentence of at most twenty words that names a file and what in it carries the risk.`
 
 /** What each reviewer looks for: each round sends one reviewer per focus its depth names. */
 export const FOCUS: Record<string, { label: string; text: string; kind: FindingKind }> = {
@@ -282,8 +282,9 @@ const TIERS = new Set(['low', 'medium', 'high'])
 export function readRisk(reply: string): Risk | undefined {
   const value = lastJson(reply)
   if (!isRecord(value) || typeof value.tier !== 'string' || !TIERS.has(value.tier)) return undefined
+  // A reason is its first sentence, without the full stop, so reasons join into one line.
   const why = (Array.isArray(value.why) ? value.why : [])
-    .map(reason => text(reason, 300))
+    .map(reason => (text(reason, 1_000).split(/(?<=[.!?])\s/)[0] ?? '').slice(0, 200).replace(/[.\s]+$/, ''))
     .filter(reason => reason !== '')
     .slice(0, 3)
   return { tier: value.tier as Risk['tier'], why }

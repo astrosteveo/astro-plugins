@@ -8,6 +8,7 @@ import {
   UNJUDGED,
   securityReason,
   depthFor,
+  excludes,
   fixedIds,
   fresh,
   globTest,
@@ -192,8 +193,19 @@ async function judge($: EngineInterface, ask: RoundAsk, context: Context, diff: 
   return UNJUDGED
 }
 
-/** Runs one round of review on the branch's latest commit and records what it found. */
+/**
+ * Runs one round of review on the branch's latest commit and records what it found. A git read that
+ * fails ends the round with git's words, and nothing is recorded.
+ */
 export async function runRound($: EngineInterface, ask: RoundAsk): Promise<RoundResult> {
+  try {
+    return await roundOf($, ask)
+  } catch (error) {
+    return refuse(`${error instanceof Error ? error.message : String(error)}. Nothing was recorded.`)
+  }
+}
+
+async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> {
   const { place, ledger } = ask
   const git = place.git
   if (place.branch === '') return refuse('HEAD is detached: check out the branch the change is on, then review it.')
@@ -215,9 +227,11 @@ export async function runRound($: EngineInterface, ask: RoundAsk): Promise<Round
 
   const n = (last?.n ?? 0) + 1
   const files = await changedFiles(git, place.base, place.head)
-  const guides = (await guideFiles(git, place.head, files)).map(file => parseGuide(file.path, file.text))
-  const skip = guides.flatMap(guide => guide.skip).map(globTest)
+  const guides = (await guideFiles(git, place.base, files)).map(file => parseGuide(file.path, file.text))
+  const skipped = guides.flatMap(guide => guide.skip)
+  const skip = skipped.map(globTest)
   const kept = (list: readonly string[]) => list.filter(file => !skip.some(test => test(file)))
+  const left = excludes(skipped)
 
   // After the first round, a round reads only the commits since the last one, as long as they
   // build on it; a rebase or an amend sends it back over the whole branch.
@@ -225,12 +239,15 @@ export async function runRound($: EngineInterface, ask: RoundAsk): Promise<Round
   const isDelta = reviewed !== undefined && reviewed !== place.head && last !== undefined && (await isAncestor(git, reviewed, place.head))
   const from = isDelta && reviewed !== undefined ? reviewed : place.base
   const roundFiles = kept(isDelta ? await changedFiles(git, from, place.head) : files)
-  const [whole, diff, commits, lines] = await Promise.all([
-    diffOf(git, place.base, place.head, kept(files)),
-    diffOf(git, from, place.head, roundFiles),
+  // The agents read the diff with REVIEW.md's Skip files left out; the risk classifier reads all of it.
+  const [whole, full, diff, commits, lines] = await Promise.all([
+    diffOf(git, place.base, place.head, left),
+    left.length === 0 ? undefined : diffOf(git, place.base, place.head, []),
+    diffOf(git, from, place.head, left),
     commitLog(git, place.base, place.head),
     changedLines(git, place.base, place.head),
   ])
+  const everything = full ?? whole
   const context: Context = {
     branch: place.branch,
     head: place.head,
@@ -246,7 +263,7 @@ export async function runRound($: EngineInterface, ask: RoundAsk): Promise<Round
 
   // The change's risk picks the round's depth, unless the call or the options name one.
   await ask.progress({ round: n, phase: 'judging', done: 0, of: 1 })
-  const judged = await judge($, ask, context, whole.body)
+  const judged = await judge($, ask, { ...context, stat: everything.stat }, everything.body)
   if (ask.signal.aborted) return refuse('The review was stopped before it finished, so nothing was recorded.')
   const depth = ask.depth ?? (ask.depthOption === 'auto' ? depthFor(riskWith(judged, ledger.findings)) : ask.depthOption)
 
@@ -325,7 +342,7 @@ export async function runRound($: EngineInterface, ask: RoundAsk): Promise<Round
     unread: unreadReviewers + unreadCheckers,
     at: await $.clock.now(),
   }
-  const next: Ledger = { ...ledger, rounds: [...ledger.rounds, round], findings, reviewed: place.head }
+  const next: Ledger = { ...ledger, rounds: [...ledger.rounds, round], findings, reviewed: place.head, base: ledger.base ?? place.base }
   await ask.save(next)
   return { ok: true, ledger: next, round: n, text: summary(next, n) }
 }

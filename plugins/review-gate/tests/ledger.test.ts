@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { emptyLedger, fixedIds, fresh, globTest, merge, parseGuide, parseLedger, rank, streak, tally } from '../hooks/ledger'
+import { emptyLedger, excludes, fixedIds, fresh, globTest, merge, parseGuide, parseLedger, rank, streak, tally } from '../hooks/ledger'
 import type { Candidate, CheckerReply, Kept } from '../hooks/ledger'
 import { lastJson, readFindings, readRisk, readVerdicts } from '../hooks/prompts'
 
@@ -70,6 +70,16 @@ test('a glob reads as in .gitignore: anchored with a slash, at any depth without
     ['src/*.ts', 'src/lib/app.ts', false],
   ]
   for (const [pattern, path, matches] of cases) expect({ pattern, path, matches: globTest(pattern)(path) }).toEqual({ pattern, path, matches })
+})
+
+test("Skip globs become git pathspecs that leave a file, or a folder's contents, out of a diff", () => {
+  expect(excludes(['*.lock', '/plugins/x/**/generated/', 'docs'])).toEqual([
+    ':(exclude,glob)**/*.lock',
+    ':(exclude,glob)**/*.lock/**',
+    ':(exclude,glob)plugins/x/**/generated/**',
+    ':(exclude,glob)**/docs',
+    ':(exclude,glob)**/docs/**',
+  ])
 })
 
 test("a REVIEW.md's Skip list speaks for its own folder, and no other heading is a list", () => {

@@ -1,13 +1,17 @@
 // Shell reading for two jobs: keeping the review's own agents to commands that only look, and
 // spotting the pull request commands the gate stands in front of.
 
-// Output thrown away, or one stream joined to another: redirections that write no file.
-const HARMLESS = /&?\d?>\s*\/dev\/null|\d?>&\d/g
+// Output thrown away, or one stream joined to another: redirections that write no file. Each ends
+// where its word does, so `>&1foo`, which writes a file named 1foo, is not one of them.
+const HARMLESS = /(?:&|\d)?>\s*\/dev\/null(?=$|[\s;&|])|\d?>&\d(?=$|[\s;&|])/g
 
 /**
- * A command's simple commands, each a list of its words with the quotes taken off. Strict, it gives
- * undefined for what it cannot follow safely: command or process substitution, and an output
- * redirection that writes a file. Loose, it reads those as text.
+ * A command's simple commands, each a list of its words with the quotes taken off.
+ *
+ * Strict, it gives undefined for any word the shell would change before the program sees it: an
+ * expansion (`$`, backquotes, `$'…'`), a brace list, a glob, a subshell, or an output redirection
+ * that writes a file. What it gives is then exactly what each program receives. Loose, it reads
+ * all of those as text.
  */
 export function simpleCommands(command: string, strict: boolean): string[][] | undefined {
   const source = strict ? command.replace(HARMLESS, ' ') : command
@@ -28,13 +32,12 @@ export function simpleCommands(command: string, strict: boolean): string[][] | u
   }
   for (let at = 0; at < source.length; at++) {
     const char = source[at] ?? ''
-    const after = source[at + 1] ?? ''
     if (quote === "'") {
       if (char === "'") quote = undefined
       else word += char
       continue
     }
-    if (strict && (char === '`' || (char === '$' && after === '('))) return undefined
+    if (strict && (char === '`' || char === '$')) return undefined
     if (quote === '"') {
       if (char === '"') quote = undefined
       else if (char === '\\' && at + 1 < source.length) word += source[++at]
@@ -47,7 +50,7 @@ export function simpleCommands(command: string, strict: boolean): string[][] | u
     } else if (char === '\\') {
       if (at + 1 < source.length) word += source[++at]
       hasWord = true
-    } else if (strict && (char === '>' || (char === '<' && after === '('))) {
+    } else if (strict && '>{}*?[()'.includes(char)) {
       return undefined
     } else if ('|;&\n()'.includes(char)) {
       endCommand()
@@ -99,10 +102,13 @@ const LOOKS: Record<string, (args: readonly string[]) => string | undefined> = {
     args.some(arg => ['-exec', '-execdir', '-ok', '-okdir', '-delete', '-fprint', '-fprint0', '-fprintf', '-fls'].includes(arg))
       ? 'find may only list: -exec, -ok, -delete and -fprint act on what it finds'
       : undefined,
-  sort: args => (args.some(arg => arg === '-o' || /^-[^-]*o/.test(arg) || arg.startsWith('--output')) ? 'sort -o writes a file' : undefined),
+  sort: args =>
+    args.some(arg => arg.startsWith('--compress-program'))
+      ? 'sort --compress-program runs another program'
+      : args.some(arg => /^-[^-]*o/.test(arg) || arg.startsWith('--output'))
+        ? 'sort -o writes a file'
+        : undefined,
   uniq: args => (args.filter(arg => !arg.startsWith('-')).length > 1 ? 'uniq writes its second file' : undefined),
-  tree: args => (args.includes('-o') ? 'tree -o writes a file' : undefined),
-  file: args => (args.some(arg => /^-[^-]*C/.test(arg) || arg === '--compile') ? 'file -C writes a file' : undefined),
   sed: sedRefusal,
 }
 
@@ -167,58 +173,145 @@ function sedRefusal(args: readonly string[]) {
 
 /**
  * Why a review agent may not run a command, or undefined when it only looks. The agents read the
- * repository under review; a command that could change it, or run something that could, is refused.
+ * repository under review, whose text may try to steer them; a command that could change it, or
+ * run something that could, is refused.
  */
 export function reviewerRefusal(command: string, inBackground: boolean) {
   const lead = 'review-gate: reviewers only read, so this command was refused'
   if (inBackground) return `${lead}: run it in the foreground.`
   const commands = simpleCommands(command, true)
   if (commands === undefined)
-    return `${lead}: it substitutes a command or writes a file. Run the command on its own, and read files with Read.`
+    return `${lead}: the shell would change some of its words first ($, backquotes, braces, globs or subshells), or it writes a file. Quote every pattern ('*.ts'), name files plainly, and read files with Read.`
   for (const words of commands) {
     const program = words[0] ?? ''
     if (ASSIGNMENT.test(program)) return `${lead}: it sets a variable first. Run the command without it.`
-    const name = program.split('/').pop() ?? ''
-    const check = Object.hasOwn(LOOKS, name) ? LOOKS[name] : undefined
+    if (program.includes('/')) return `${lead}: run programs by name, not by path.`
+    const check = Object.hasOwn(LOOKS, program) ? LOOKS[program] : undefined
     if (check === undefined)
-      return `${lead}: ${name} is not one of the programs a reviewer runs (git log, show, diff, blame and grep, rg, grep, find, ls, cat, head, tail, wc, sed -n).`
+      return `${lead}: ${program} is not one of the programs a reviewer runs (git log, show, diff, blame and grep, rg, grep, find, ls, cat, head, tail, wc, sed -n).`
     const why = check(words.slice(1))
     if (why !== undefined) return `${lead}: ${why}.`
   }
   return undefined
 }
 
-/** A pull request command the gate checks: which kind, and the branch or pull request it names. */
-export type PrCommand = { kind: 'create' | 'merge'; target?: string; head?: string; cd?: string }
+/**
+ * A pull request command the gate checks: which kind, what it names, and the folders every `cd`
+ * before it moved to, in order (`~` for a bare cd). `isOpaque` marks one whose arguments come from
+ * elsewhere, as through xargs, so the gate cannot tell what it acts on.
+ */
+export type PrCommand = { kind: 'create' | 'merge'; target?: string; head?: string; repo?: string; cd: string[]; isOpaque?: true }
 
-// gh pr merge's flags that take a value: the word after one is not the pull request.
-const MERGE_VALUES = new Set(['-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email', '--match-head-commit', '-R', '--repo'])
+// gh flags that take a value: the word after one is neither the verb nor the pull request.
+const VALUES = new Set([
+  '-R',
+  '--repo',
+  '-b',
+  '--body',
+  '-F',
+  '--body-file',
+  '-t',
+  '--title',
+  '--subject',
+  '-A',
+  '--author-email',
+  '--match-head-commit',
+  '-B',
+  '--base',
+  '-H',
+  '--head',
+  '-a',
+  '--assignee',
+  '-l',
+  '--label',
+  '-m',
+  '--milestone',
+  '-p',
+  '--project',
+  '-r',
+  '--reviewer',
+  '-T',
+  '--template',
+])
 
-/** The first `gh pr create` or `gh pr merge` in a command, with the folder a `cd` before it moved to. */
-export function prCommand(command: string): PrCommand | undefined {
-  let cd: string | undefined
+const VERBS: Record<string, PrCommand['kind']> = { create: 'create', new: 'create', merge: 'merge' }
+
+// The value a flag gives in `--flag value`, `--flag=value` or `-Fvalue` form.
+function flagValue(words: readonly string[], names: readonly string[]) {
+  for (let at = 0; at < words.length; at++) {
+    const word = words[at] ?? ''
+    for (const name of names) {
+      if (word === name) return words[at + 1]
+      if (name.startsWith('--') && word.startsWith(`${name}=`)) return word.slice(name.length + 1)
+      if (!name.startsWith('--') && word.startsWith(name) && word.length > name.length) return word.slice(name.length)
+    }
+  }
+  return undefined
+}
+
+// One `gh … pr … create|new|merge` in a list of words, wherever gh stands in it (after command,
+// env, xargs, sudo and the like), with gh's flags allowed before the verb.
+function prIn(words: readonly string[], cd: readonly string[]): PrCommand | undefined {
+  for (let at = 0; at < words.length; at++) {
+    if ((words[at] ?? '').split('/').pop() !== 'gh') continue
+    let next = at + 1
+    while ((words[next] ?? '').startsWith('-')) next += VALUES.has(words[next] ?? '') ? 2 : 1
+    if (words[next] !== 'pr') continue
+    next += 1
+    while ((words[next] ?? '').startsWith('-')) next += VALUES.has(words[next] ?? '') ? 2 : 1
+    const kind = VERBS[words[next] ?? '']
+    if (kind === undefined) continue
+    const rest = words.slice(next + 1)
+    const repo = flagValue(words.slice(at + 1), ['-R', '--repo'])
+    const isOpaque = words.slice(0, at).some(word => word.split('/').pop() === 'xargs')
+    const found: PrCommand = { kind, cd: [...cd], ...(repo === undefined ? {} : { repo }), ...(isOpaque ? { isOpaque } : {}) }
+    if (kind === 'create') {
+      const head = flagValue(rest, ['-H', '--head'])
+      return head === undefined ? found : { ...found, head }
+    }
+    for (let index = 0; index < rest.length; index++) {
+      const word = rest[index] ?? ''
+      if (VALUES.has(word)) index += 1
+      else if (!word.startsWith('-')) return { ...found, target: word }
+    }
+    return found
+  }
+  return undefined
+}
+
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh'])
+
+// The script a shell is handed with -c (or a cluster that ends in c, as -lc), or what eval runs.
+function scriptOf(words: readonly string[], at: number) {
+  const program = (words[at] ?? '').split('/').pop() ?? ''
+  if (program === 'eval') return words.slice(at + 1).join(' ')
+  if (!SHELLS.has(program)) return undefined
+  const flag = words.findIndex((word, index) => index > at && /^-[a-z]*c$/.test(word))
+  return flag < 0 ? undefined : words[flag + 1]
+}
+
+/**
+ * Every `gh pr create`, `gh pr new` and `gh pr merge` a command runs, in order, with the folders a
+ * `cd` before each moved to. The script a shell runs with -c, and what eval runs, are read too; a
+ * quoted body or title that only mentions such a command is not.
+ */
+export function prCommands(command: string, cd: readonly string[] = []): PrCommand[] {
+  const found: PrCommand[] = []
+  const moved = [...cd]
   for (const words of simpleCommands(command, false) ?? []) {
     const at = words.findIndex(word => !ASSIGNMENT.test(word))
     if (at < 0) continue
-    const program = (words[at] ?? '').split('/').pop()
-    if (program === 'cd') {
-      cd = words[at + 1]
+    if (words[at] === 'cd') {
+      moved.push(words[at + 1] ?? '~')
       continue
     }
-    const [noun, verb, ...rest] = words.slice(at + 1)
-    if (program !== 'gh' || noun !== 'pr' || (verb !== 'create' && verb !== 'merge')) continue
-    if (verb === 'create') {
-      const flag = rest.findIndex(word => word === '-H' || word === '--head' || word.startsWith('--head='))
-      const head = flag < 0 ? undefined : (rest[flag] ?? '').startsWith('--head=') ? (rest[flag] ?? '').slice('--head='.length) : rest[flag + 1]
-      return { kind: 'create', ...(head === undefined ? {} : { head }), ...(cd === undefined ? {} : { cd }) }
+    const script = scriptOf(words, at)
+    if (script !== undefined) {
+      found.push(...prCommands(script, moved))
+      continue
     }
-    let target: string | undefined
-    for (let index = 0; index < rest.length && target === undefined; index++) {
-      const word = rest[index] ?? ''
-      if (MERGE_VALUES.has(word)) index += 1
-      else if (!word.startsWith('-')) target = word
-    }
-    return { kind: 'merge', ...(target === undefined ? {} : { target }), ...(cd === undefined ? {} : { cd }) }
+    const pr = prIn(words, moved)
+    if (pr !== undefined) found.push(pr)
   }
-  return undefined
+  return found
 }

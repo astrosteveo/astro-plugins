@@ -91,7 +91,7 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
       <Text dimColor>
         {round.scope === 'full' ? 'whole branch' : `commits since ${short(round.from)}`} · {round.depth}: {plural(plan.focuses.length, 'reviewer')},{' '}
         {plural(plan.checkers, 'checker')} · risk {risk.tier}
-        {risk.why.length > 0 ? `: ${risk.why.join(', and ')}` : ''}
+        {risk.why.length > 0 ? `: ${risk.why.join('; ')}` : ''}
       </Text>
       {rows.map(finding => {
         const { glyph, color } = mark(finding)

@@ -193,15 +193,31 @@ export function rank(list: readonly Kept[], nitCap = NIT_CAP) {
 }
 
 /**
+ * A glob as REVIEW.md and .gitignore spell one, written out from the repository's root: a pattern
+ * with no slash matches a name at any depth, a leading slash anchors it, and a trailing slash takes
+ * a folder's contents.
+ */
+export function normalGlob(pattern: string) {
+  let glob = pattern.trim().replace(/^\.\//, '')
+  if (glob.startsWith('/')) glob = glob.slice(1)
+  else if (!glob.replace(/\/$/, '').includes('/')) glob = `**/${glob}`
+  return glob.endsWith('/') ? `${glob}**` : glob
+}
+
+/** Pathspecs that leave the globs' files out of a git diff, a folder's contents with the folder. */
+export const excludes = (globs: readonly string[]) =>
+  globs.flatMap(pattern => {
+    const glob = normalGlob(pattern)
+    return glob.endsWith('/**') ? [`:(exclude,glob)${glob}`] : [`:(exclude,glob)${glob}`, `:(exclude,glob)${glob}/**`]
+  })
+
+/**
  * A glob as REVIEW.md and .gitignore spell one: `*` stays within a folder, `**` crosses folders, a
  * pattern with no slash matches a name at any depth, and a pattern that names a folder matches
  * everything in it.
  */
 export function globTest(pattern: string): (path: string) => boolean {
-  let glob = pattern.trim().replace(/^\.\//, '')
-  if (glob.startsWith('/')) glob = glob.slice(1)
-  else if (!glob.replace(/\/$/, '').includes('/')) glob = `**/${glob}`
-  if (glob.endsWith('/')) glob = `${glob}**`
+  const glob = normalGlob(pattern)
   let source = ''
   for (let at = 0; at < glob.length; at++) {
     const char = glob[at]

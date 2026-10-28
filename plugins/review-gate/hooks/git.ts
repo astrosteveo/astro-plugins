@@ -19,6 +19,13 @@ export function gitIn($: EngineInterface, cwd: string): Git {
 
 export const short = (sha: string) => sha.slice(0, 7)
 
+// What a read gives, or a throw saying what git could not do: an empty answer from a failed run
+// would read as nothing to review.
+function must(ran: Ran, what: string) {
+  if (!ran.ok) throw new Error(`git could not ${what}: ${ran.err || 'it failed'}`)
+  return ran.out
+}
+
 /** Where a repository stands: what a review compares and where its record is kept. */
 export type Place = {
   root: string
@@ -91,8 +98,8 @@ export async function locate($: EngineInterface, cwd: string): Promise<Place | s
 
 /** Tracked files with changes no commit holds yet. */
 export async function uncommitted(git: Git) {
-  const ran = await git(['status', '--porcelain', '--untracked-files=no', '-z'])
-  return ran.out
+  const out = must(await git(['status', '--porcelain', '--untracked-files=no', '-z']), 'read the working tree')
+  return out
     .split('\0')
     .filter(entry => entry.length > 3)
     .map(entry => entry.slice(3))
@@ -100,8 +107,8 @@ export async function uncommitted(git: Git) {
 
 /** The files a diff from `from` to `to` touches, deleted ones included. */
 export async function changedFiles(git: Git, from: string, to: string) {
-  const ran = await git(['diff', '--name-only', '--no-renames', '-z', from, to])
-  return ran.out.split('\0').filter(path => path !== '')
+  const out = must(await git(['diff', '--name-only', '--no-renames', '--no-ext-diff', '-z', from, to]), 'list the changed files')
+  return out.split('\0').filter(path => path !== '')
 }
 
 /**
@@ -109,10 +116,10 @@ export async function changedFiles(git: Git, from: string, to: string) {
  * `+c,d` is lines c to c+d-1.
  */
 export async function changedLines(git: Git, from: string, to: string) {
-  const ran = await git(['diff', '-U0', '--no-renames', '--no-color', from, to])
+  const out = must(await git(['diff', '-U0', '--no-renames', '--no-color', '--no-ext-diff', from, to]), 'read the changed lines')
   const lines = new Map<string, [number, number][]>()
   let file = ''
-  for (const line of ran.out.split('\n')) {
+  for (const line of out.split('\n')) {
     if (line.startsWith('+++ ')) {
       file = line === '+++ /dev/null' ? '' : line.slice(4).replace(/\t$/, '').replace(/^b\//, '')
       continue
@@ -129,20 +136,23 @@ export async function changedLines(git: Git, from: string, to: string) {
 export const inRanges = (ranges: readonly [number, number][] | undefined, line: number) =>
   ranges?.some(([first, last]) => line >= first && line <= last) === true
 
-/** The diff of the files given, as a stat and as patches with some context. */
-export async function diffOf(git: Git, from: string, to: string, files: readonly string[]) {
-  if (files.length === 0) return { stat: '', body: '' }
+/**
+ * The diff from `from` to `to`, as a stat and as patches with some context, leaving out what the
+ * pathspecs `excludes` name. No file is named on the command line, so no change is too big for it.
+ */
+export async function diffOf(git: Git, from: string, to: string, excludes: readonly string[]) {
+  const paths = excludes.length === 0 ? [] : ['--', '.', ...excludes]
   const [stat, body] = await Promise.all([
-    git(['diff', '--stat=160', '--no-renames', from, to, '--', ...files]),
-    git(['diff', '--no-renames', '--no-color', '--unified=5', from, to, '--', ...files]),
+    git(['diff', '--stat=160', '--no-renames', '--no-ext-diff', from, to, ...paths]),
+    git(['diff', '--no-renames', '--no-color', '--no-ext-diff', '--unified=5', from, to, ...paths]),
   ])
-  return { stat: stat.out.trimEnd(), body: body.out }
+  return { stat: must(stat, 'read the diff').trimEnd(), body: must(body, 'read the diff') }
 }
 
 /** The branch's commits, oldest first: each one's short id, subject and body. */
 export async function commitLog(git: Git, from: string, to: string) {
-  const ran = await git(['log', '--reverse', '--no-merges', '--format=%h %s%n%b%x00', `${from}..${to}`])
-  return ran.out
+  const out = must(await git(['log', '--reverse', '--no-merges', '--format=%h %s%n%b%x00', `${from}..${to}`]), 'read the commits')
+  return out
     .split('\0')
     .map(entry => entry.trim())
     .filter(entry => entry !== '')
@@ -155,17 +165,24 @@ export async function isAncestor(git: Git, older: string, newer: string) {
 
 /**
  * The REVIEW.md files that speak for the files given: the root's, and one in any folder above a
- * changed file, as they are at `head`.
+ * changed file, as they are at `at`. A round reads them at the branch's base, so a branch cannot
+ * loosen its own review.
  */
-export async function guideFiles(git: Git, head: string, files: readonly string[]) {
+export async function guideFiles(git: Git, at: string, files: readonly string[]) {
   const folders = new Set([''])
   for (const file of files) {
     const parts = file.split('/').slice(0, -1)
     for (let depth = 1; depth <= parts.length; depth++) folders.add(parts.slice(0, depth).join('/'))
   }
   const paths = [...folders].map(folder => (folder === '' ? 'REVIEW.md' : `${folder}/REVIEW.md`))
-  const listed = await git(['ls-tree', '--name-only', '-z', head, '--', ...paths])
-  const found = listed.out.split('\0').filter(path => path !== '')
-  const read = await Promise.all(found.map(async path => ({ path, text: (await git(['show', `${head}:${path}`])).out })))
+  const listed = must(await git(['ls-tree', '--name-only', '-z', at, '--', ...paths]), 'list the REVIEW.md files')
+  const found = listed.split('\0').filter(path => path !== '')
+  const read = await Promise.all(found.map(async path => ({ path, text: must(await git(['show', `${at}:${path}`]), `read ${path}`) })))
   return read.filter(file => file.text.trim() !== '')
+}
+
+/** The repository's local branches, by name. */
+export async function branches(git: Git) {
+  const out = must(await git(['for-each-ref', '--format=%(refname:short)', 'refs/heads']), 'list the branches')
+  return new Set(out.split('\n').filter(name => name !== ''))
 }

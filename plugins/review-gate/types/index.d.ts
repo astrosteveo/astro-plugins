@@ -62,9 +62,17 @@ export type Ledger = {
   findings: Finding[]
   /** The commit the last round reviewed. */
   reviewed?: string
+  /**
+   * The commit the branch forked from when its first round ran. A record whose base is not in the
+   * branch's history belongs to an earlier branch of the same name.
+   */
+  base?: string
   /** The round the count toward the cap starts after: the person's `/review-gate more` moves it. */
   streakFrom: number
-  /** The person's approval of a high-risk change, good for one commit. */
+  /**
+   * The person's approval of a high-risk change, good for one commit. It is kept in the plugin's
+   * own store, not in the record's file, and joins the record when it is read.
+   */
   approved?: { sha: string; at: number }
 }
 
