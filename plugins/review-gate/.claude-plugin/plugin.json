@@ -1,0 +1,26 @@
+{
+  "name": "review-gate",
+  "version": "0.1.0",
+  "description": "Reviews a branch before its pull request with parallel reviewer agents and checkers that vote, keeps every finding until it is fixed or dismissed with a reason, and refuses gh pr create and merge until the review passes.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT",
+  "userConfig": {
+    "depth": {
+      "type": "string",
+      "title": "Review depth",
+      "description": "How many reviewers and checkers a round runs. auto picks by the change's risk: quick for docs, standard for most code, deep for paths that need a person.",
+      "default": "auto",
+      "options": ["auto", "quick", "standard", "deep"]
+    },
+    "model": {
+      "type": "string",
+      "title": "Reviewer model",
+      "description": "The model the reviewer and checker agents run on. inherit uses the session's model.",
+      "default": "inherit",
+      "options": ["inherit", "opus", "sonnet", "haiku"]
+    }
+  }
+}

@@ -26,6 +26,11 @@
       "name": "plain-english",
       "source": "./plugins/plain-english",
       "description": "An output style for plain English, given to every subagent and fork too, and a skill that scans prose for Claudisms."
+    },
+    {
+      "name": "review-gate",
+      "source": "./plugins/review-gate",
+      "description": "Reviews a branch before its pull request with parallel reviewer agents and checkers that vote, and refuses gh pr create and merge until every finding is fixed or dismissed with a reason."
     }
   ]
 }
