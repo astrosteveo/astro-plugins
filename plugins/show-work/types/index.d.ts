@@ -3,6 +3,17 @@ export type Step = { text: string; status: StepStatus }
 /** `startedAt`, when this goal was first posted, opens the current task. */
 export type Plan = { goal: string; steps: Step[]; startedAt?: number }
 
+/** A choice Claude made and went on with, and the options it weighed. */
+export type Decision = {
+  id: string
+  decision: string
+  options: { label: string; detail?: string }[]
+  /** The option it went with, by place. */
+  chose: number
+  why?: string
+  at: number
+}
+
 /** One call of the plan tool, as its card in the chat draws it. */
 export type PlanPost = {
   id: string
@@ -146,6 +157,12 @@ export type Diagram = {
 declare module 'claude-code' {
   interface McpToolInputs {
     'mcp__show-work__plan': { goal: string; steps: Step[] }
+    'mcp__show-work__decide': {
+      decision: string
+      options: { label: string; detail?: string }[]
+      chose: string
+      why?: string
+    }
     'mcp__show-work__show': {
       caption: string
       d2?: string
@@ -172,6 +189,7 @@ declare module 'claude-code' {
       lanes: Shaped<Lane[]>
       turns: Shaped<Turn[]>
       planPosts: Shaped<PlanPost[]>
+      decisions: Shaped<Decision[]>
       tests: Shaped<TestRun[]>
       touches: Shaped<Touch[]>
       tree: Shaped<string[]>

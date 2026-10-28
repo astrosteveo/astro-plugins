@@ -9,6 +9,7 @@ import type {
 import type {
   Act,
   ActKind,
+  Decision,
   Diagram,
   GitState,
   Preview,
@@ -96,6 +97,10 @@ const lanes = atom({ plugin: 'show-work', key: 'lanes' } as const, [], {
 })
 const turns = atom({ plugin: 'show-work', key: 'turns' } as const, [], {
   shape: 'turns-1',
+})
+// The choices Claude made and went on with, the newest PLAN_POSTS.
+const decisions = atom({ plugin: 'show-work', key: 'decisions' } as const, [], {
+  shape: 'decisions-1',
 })
 // Each plan post its card in the chat draws, the newest PLAN_POSTS.
 const planPosts = atom({ plugin: 'show-work', key: 'planPosts' } as const, [], {
@@ -186,6 +191,7 @@ The person follows your work in the band above the prompt and in cards in the ch
 - Give each Bash call a description that says why you run it, not only what it does: the pane shows it as the reason above the command.
 - Once the goal is clear, keep working until it is met; stop only for a question that blocks the work or a snag that needs their direction.
 - To show the person a design, call mcp__show-work__show and describe its structure; the tool lays it out. Use d2 for architecture, mermaid for flows, sequences and states, and html with the wireframe classes for a screen, menu or HUD; svg only for a freeform drawing. Show a design before you build it, so they can veto it. The result hands you the picture: fix overlaps and cut or crowded text, and show it again before you go on. Images you Read land in the pane by themselves.
+- When you make a choice the person may care about and can go on without them (a library, a data format, a name, an approach), call mcp__show-work__decide with the options you weighed and the one you took, then carry on. When you cannot go on without their answer, ask with AskUserQuestion; when the options are pictures, show them with images and ask "pick".
 - To show the person an image, call mcp__show-work__show with a path, a url for one on the web (reference art, an asset, a screenshot in docs), or images to set several side by side: to compare (before and after, states, variants) or, with ask "pick", for them to choose one. Add marks to point at what matters in it: a bug in a screenshot, what changed in a mockup.`
 
 const PLAN_TOOL = {
@@ -213,6 +219,38 @@ const PLAN_TOOL = {
       },
     },
     required: ['goal', 'steps'],
+  },
+} as const
+
+// The most options a decision weighs.
+const OPTIONS_MOST = 6
+
+const DECIDE_TOOL = {
+  name: 'decide',
+  description:
+    'Tell the person about a choice you made and went on with, and the options you weighed, so they can redirect you without being asked. It does not wait for them: carry on with your choice. The chat shows a card with your choice and a button per alternative, which starts their reply to switch.',
+  isDeferred: false,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      decision: { type: 'string', description: 'What was decided, a few words: "Session storage".' },
+      options: {
+        type: 'array',
+        description: `2 to ${OPTIONS_MOST} options you weighed, in the order you would rank them; they are lettered A, B, C…`,
+        maxItems: OPTIONS_MOST,
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string', description: 'The option, a few words.' },
+            detail: { type: 'string', description: 'What it means or costs, one short clause.' },
+          },
+          required: ['label'],
+        },
+      },
+      chose: { type: 'string', description: 'The letter of the option you went with: A, B…' },
+      why: { type: 'string', description: 'Why that one, a short sentence.' },
+    },
+    required: ['decision', 'options', 'chose'],
   },
 } as const
 
@@ -299,6 +337,38 @@ const ACT_MARK: Record<ActStatus, { mark: string; color: Color }> = {
   runs: { mark: '…', color: 'warning' },
   ok: { mark: '✓', color: 'success' },
   failed: { mark: '✗', color: 'error' },
+}
+
+// What pressing a decision's alternative starts the prompt with.
+export function switchText(decided: Pick<Decision, 'decision' | 'options'>, n: number) {
+  return `Switch "${decided.decision}" to ${letterOf(n)} (${decided.options[n]?.label ?? ''}): `
+}
+
+// A decide call's input read: its options, the one chosen by letter or
+// label, or why it can't be taken.
+export function readDecision(e: Record<string, unknown>): Omit<Decision, 'id' | 'at'> | string {
+  const decision = asText(e.decision)
+  const options = (Array.isArray(e.options) ? e.options : []).flatMap(item => {
+    const label = asText(item?.label)
+    const detail = asText(item?.detail)
+
+    return label === '' ? [] : [{ label, ...(detail === '' ? {} : { detail }) }]
+  })
+  if (decision === '') {
+    return 'Say what was decided, in a few words.'
+  }
+  if (options.length < 2 || options.length > OPTIONS_MOST) {
+    return `Give 2 to ${OPTIONS_MOST} options, each with a label.`
+  }
+  const said = asText(e.chose)
+  const byLetter = /^[A-Za-z]$/.test(said) ? said.toUpperCase().charCodeAt(0) - 65 : -1
+  const chose = byLetter >= 0 && byLetter < options.length ? byLetter : options.findIndex(one => one.label === said)
+  if (chose < 0) {
+    return `chose names no option: give its letter, A to ${letterOf(options.length - 1)}.`
+  }
+  const why = asText(e.why)
+
+  return { decision, options, chose, ...(why === '' ? {} : { why }) }
 }
 
 // The steps a plan post changed: each whose status moved, and each new one.
@@ -428,6 +498,16 @@ export function briefPlan(input: unknown) {
   const now = asText(doing?.text)
 
   return { goal: given.goal, steps: now === '' ? progress : `${progress}, doing: ${now}` }
+}
+
+// A decide call's input as its row prints it: the decision and the choice.
+export function briefDecide(input: unknown) {
+  const given = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
+  const read = readDecision(given)
+
+  return typeof read === 'string'
+    ? { decision: given.decision }
+    : { decision: read.decision, chose: `${letterOf(read.chose)} ${read.options[read.chose]?.label ?? ''}` }
 }
 
 // Rows a picture takes at a width, a terminal cell being `tall` times as
@@ -1381,6 +1461,7 @@ export const register: Register = on => {
     cwd = e.cwd
     await $.tool.register(PLAN_TOOL)
     await $.tool.register(SHOW_TOOL)
+    await $.tool.register(DECIDE_TOOL)
     await $.command.register({
       name: 'work',
       description: "Show Claude's plan and activity in a pane",
@@ -1439,6 +1520,7 @@ export const register: Register = on => {
     if (asText(e.args) === 'clear') {
       await update($, plan, () => null)
       await update($, planPosts, () => [])
+      await update($, decisions, () => [])
       await update($, activity, () => [])
       await update($, pictures, () => [])
       await update($, picked, () => null)
@@ -1955,11 +2037,66 @@ export const register: Register = on => {
   for (const [tool, brief] of [
     ['mcp__show-work__show', briefShow],
     ['mcp__show-work__plan', briefPlan],
+    ['mcp__show-work__decide', briefDecide],
   ] as const) {
     on('ui.render', { component: 'ToolUse', props: { tool } }, async (_, e, next) =>
       e.props.isExpanded === true ? next(e) : next({ ...e, props: { ...e.props, input: brief(e.props.input) } }),
     )
   }
+
+  on('tool.call', { tool: 'mcp__show-work__decide' }, async ($, e) => {
+    const read = readDecision(e)
+    if (typeof read === 'string') {
+      return { deny: read }
+    }
+    const decided: Decision = { id: e.tool_use_id ?? crypto.randomUUID(), ...read, at: await $.clock.now() }
+    await update($, decisions, list => [...list, decided].slice(-PLAN_POSTS))
+    const chosen = read.options[read.chose]?.label ?? ''
+
+    return {
+      result: `Shown: ${read.decision}: ${letterOf(read.chose)} (${chosen}). Carry on with it; the person can press an alternative to redirect you.`,
+    }
+  })
+
+  // A decision draws in the chat as the choice made, with a button per
+  // alternative that starts the person's reply to switch.
+  on('ui.render', { component: 'ToolResult', props: { tool: 'mcp__show-work__decide' } }, async ($, e, next) => {
+    const decided = (await read($, decisions)).find(one => one.id === e.props.tool_use_id)
+    if (decided === undefined || e.props.isErrored || e.props.isExpanded === true) {
+      return next(e)
+    }
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const chosen = decided.options[decided.chose]
+    const reason = decided.why ?? chosen?.detail
+
+    return (
+      <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1} alignSelf="flex-start">
+        <Text weight="bold">{decided.decision}</Text>
+        <Text>
+          <Text color="success">✓</Text>{' '}
+          <Text weight="bold">
+            {letterOf(decided.chose)} {chosen?.label}
+          </Text>
+          {reason === undefined ? '' : <Text dimColor> · {reason}</Text>}
+        </Text>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+          <Text dimColor>Instead:</Text>
+          {decided.options.flatMap((option, n) =>
+            n === decided.chose
+              ? []
+              : [
+                  <Button
+                    key={`alt-${decided.id}-${letterOf(n)}`}
+                    onPress={() => $.prompt.fill({ text: switchText(decided, n), mode: 'insert' })}
+                  >
+                    <Text weight="bold">{letterOf(n)}</Text> {option.label}
+                  </Button>,
+                ],
+          )}
+        </Box>
+      </Box>
+    )
+  })
 
   // A plan post draws in the chat as what it changed: the whole checklist
   // for a new goal, one line of the steps that moved after that, and the
@@ -2180,6 +2317,7 @@ export const register: Register = on => {
     const allLanes = await read($, lanes)
     const allTurns = await read($, turns)
     const runs = await read($, tests)
+    const choices = await read($, decisions)
     const touched = await read($, touches)
     const projectFiles = await read($, tree)
     const codes = await read($, gitStatus)
@@ -2196,7 +2334,7 @@ export const register: Register = on => {
     // The views draw a Raster only where the surface has one.
     const kit = { Box, Text, Button, ...(Raster === undefined ? {} : { Raster }) }
 
-    const isEmpty = shown === null && [acts, pics, allTurns, runs].every(list => list.length === 0)
+    const isEmpty = shown === null && [acts, pics, allTurns, runs, choices].every(list => list.length === 0)
 
     const since = shown?.startedAt
     const edited = touched.filter(touch => touch.edits > 0).sort((a, b) => b.at - a.at)
@@ -2554,7 +2692,8 @@ export const register: Register = on => {
       body = <Text dimColor>Nothing yet: f finds files and text, g is git.</Text>
     } else {
       // What needs the person comes first: a failing run of this task, then
-      // the plan, the agents, and the latest picture.
+      // the plan, the agents, the choices Claude made, and the latest picture.
+      const decided = choices.filter(one => since === undefined || one.at >= since).slice(-3)
       const failing = isFailing && lastRun !== undefined && (since === undefined || lastRun.at >= since) ? lastRun : undefined
       const latest = pics.at(-1)
       body = (
@@ -2584,6 +2723,17 @@ export const register: Register = on => {
                 </Text>
               </Text>
               {currentLanes.slice(-6).map(laneRow)}
+            </Box>
+          )}
+          {decided.length > 0 && (
+            <Box flexDirection="column">
+              <Text weight="bold">Decided</Text>
+              {decided.map(one => (
+                <Text key={`decided-${one.id}`} wrap="truncate-end">
+                  <Text color="success">✓</Text> {one.decision}: <Text weight="bold">{one.options[one.chose]?.label}</Text>
+                  <Text dimColor> · {one.options.length - 1} other{one.options.length === 2 ? '' : 's'}</Text>
+                </Text>
+              ))}
             </Box>
           )}
           {latest !== undefined && (
