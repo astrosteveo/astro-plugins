@@ -117,8 +117,10 @@ export type Picture = {
   height: number
   caption: string
   origin: 'shown' | 'read'
-  /** A sheet's labels, one per tile in order, for the person to pick from. */
+  /** A sheet's labels, one per tile in order. */
   tiles?: string[]
+  /** The sheet asks the person to choose a tile, not to look at them side by side. */
+  pick?: boolean
   /** The marks drawn on it, in its own pixels, in their numbered order. */
   marks?: { x: number; y: number; w?: number; h?: number; note: string; detail?: string }[]
 }
@@ -147,6 +149,7 @@ declare module 'claude-code' {
       path?: string
       url?: string
       images?: { src: string; label?: string }[]
+      ask?: 'compare' | 'pick'
       marks?: { x: number; y: number; w?: number; h?: number; note: string; detail?: string }[]
     }
   }

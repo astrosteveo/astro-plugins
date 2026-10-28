@@ -4,7 +4,7 @@ import type { TestBody } from 'claude-code/testing'
 
 import { across, blowUp, errorLines, fromHex, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { briefPlan, briefShow, cardWidth, fit, markScope, markText, pickText, readMarks } from '../hooks/register'
+import { briefPlan, briefShow, cardWidth, fit, markScope, markText, readMarks, tileText } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -625,15 +625,42 @@ test('pressing a tile of a sheet starts the prompt with the pick',async ($, on) 
     tool_use_id: 'toolu_p',
     caption: 'Hero styles',
     images: [{ src: '/proj/a.png', label: 'Painted' }, { src: '/proj/pixel.png' }],
+    ask: 'pick',
   })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'tab-pictures' })
+  expect(await ui.find({ type: 'Text', text: 'Pick one:' })).toBeDefined()
   const tile = await ui.find({ type: 'Button', key: 'tile-B' })
   expect(tile?.text).toBe('B pixel.png')
   expect(tile?.props).toMatchObject({ hotkey: 'b' })
   await ui.press({ key: 'tile-B' })
   expect(filled).toEqual(['I pick B (pixel.png) from "Hero styles". '])
   await ui.unmount()
+})
+
+test('a sheet asks for no choice unless Claude asks for one: its tiles start a reply about them', async ($, on) => {
+  const filled = engine(on)
+  host(on, { answer: argv => (argv[0] === 'od' ? { stdout: PNG_HEAD } : undefined) })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'mcp__show-work__show',
+    tool_use_id: 'toolu_cmp',
+    caption: 'Login fix',
+    images: [{ src: '/proj/before.png', label: 'Before' }, { src: '/proj/after.png', label: 'After' }],
+  })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'tab-pictures' })
+  expect(await ui.find({ type: 'Text', text: 'About:' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Pick one:' })).toBeUndefined()
+  await ui.press({ key: 'tile-B' })
+  await ui.unmount()
+
+  const chat = await $.ui.mount({ ...RESULT('toolu_cmp'), surface: 'terminal' })
+  expect(await chat.find({ type: 'Text', text: 'About:' })).toBeDefined()
+  await chat.press({ key: 'tile-toolu_cmp-A' })
+  await chat.unmount()
+
+  expect(filled).toEqual(['About B (After) in "Login fix": ', 'About A (Before) in "Login fix": '])
 })
 
 test("a card under the chat's picture picks a tile or answers a mark, on any surface", async ($, on) => {
@@ -645,6 +672,7 @@ test("a card under the chat's picture picks a tile or answers a mark, on any sur
     tool_use_id: 'toolu_c1',
     caption: 'Hero styles',
     images: [{ src: '/proj/a.png', label: 'Painted' }, { src: '/proj/b.png', label: 'Pixel' }],
+    ask: 'pick',
   })
   await $.tool.call({
     tool: 'mcp__show-work__show',
@@ -655,8 +683,8 @@ test("a card under the chat's picture picks a tile or answers a mark, on any sur
   })
 
   const sheet = await $.ui.mount({ ...RESULT('toolu_c1'), surface: 'terminal' })
-  expect((await sheet.find({ type: 'Button', key: 'pick-toolu_c1-B' }))?.text).toBe('B Pixel')
-  await sheet.press({ key: 'pick-toolu_c1-B' })
+  expect((await sheet.find({ type: 'Button', key: 'tile-toolu_c1-B' }))?.text).toBe('B Pixel')
+  await sheet.press({ key: 'tile-toolu_c1-B' })
   await sheet.unmount()
 
   const marked = await $.ui.mount({ ...RESULT('toolu_c2'), surface: 'desktop' })
@@ -734,7 +762,8 @@ test("a card is as wide as its longest line, so a revealed detail never widens i
   const picture = { marks: [{ x: 0, y: 0, note: 'Short', detail: 'A detail that runs longer than the note.' }] }
   expect(cardWidth(picture, 100)).toBe('A detail that runs longer than the note.'.length + 4)
   expect(cardWidth(picture, 30)).toBe(30)
-  expect(cardWidth({ tiles: ['Logo', 'Bug page'] }, 100)).toBe('Pick: [ A Logo ] [ B Bug page ]'.length + 4)
+  expect(cardWidth({ tiles: ['Logo', 'Bug page'] }, 100)).toBe('About: [ A Logo ] [ B Bug page ]'.length + 4)
+  expect(cardWidth({ tiles: ['Logo', 'Bug page'], pick: true }, 100)).toBe('Pick one: [ A Logo ] [ B Bug page ]'.length + 4)
 })
 
 test('overlapping marks are found, and details wrap to the card', () => {
@@ -830,7 +859,8 @@ test('marks read plainly, and badges stay inside the picture', () => {
     height: 2,
   })
   expect(briefShow({ caption: 'x', path: 'a.png', marks: [{}, {}] })).toEqual({ caption: 'x', path: 'a.png', marks: '2 marks' })
-  expect(pickText({ caption: 'Heroes', tiles: ['Painted'] }, 0)).toBe('I pick A (Painted) from "Heroes". ')
+  expect(tileText({ caption: 'Heroes', tiles: ['Painted'], pick: true }, 0)).toBe('I pick A (Painted) from "Heroes". ')
+  expect(tileText({ caption: 'Heroes', tiles: ['Painted'] }, 0)).toBe('About A (Painted) in "Heroes": ')
 })
 
 test('the image helpers name formats, files and layouts plainly', () => {
