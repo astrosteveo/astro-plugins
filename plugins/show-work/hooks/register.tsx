@@ -19,9 +19,11 @@ import type {
   Diff,
   Lane,
   Picture,
+  Plan,
   Step,
   StepStatus,
   Tab,
+  Turn,
 } from '../types'
 import { GREEN, RED, parseTests, patchCounts, pulse, shareBar } from './charts'
 import {
@@ -458,6 +460,51 @@ export function addAct(list: Act[], act: Act): Act[] {
   }
 
   return [...list.filter(one => one !== same), { ...act, count: (same.count ?? 1) + 1 }]
+}
+
+// A call in flight as the band words it: a Bash call by its reason, the
+// rest by a verb and what it works on. An agent is counted, not named.
+export function doingText(act: Pick<Act, 'kind' | 'label' | 'count'>) {
+  const more = (act.count ?? 1) > 1 ? ` ×${act.count}` : ''
+  switch (act.kind) {
+    case 'read':
+      return `reading ${act.label}${more}`
+    case 'edit':
+      return `editing ${act.label}${more}`
+    case 'search':
+      return `searching ${act.label}`
+    case 'web':
+      return `on the web: ${act.label}`
+    case 'agent':
+      return undefined
+    default:
+      return act.label
+  }
+}
+
+// What the band says, each part left out when it has nothing: the step and
+// how far the plan has come, the call in flight, the agents running, and a
+// test run of this turn, never an older one.
+export function bandBits(
+  shownPlan: Plan | null,
+  acts: Act[],
+  running: number,
+  runs: TestRun[],
+  turn: Turn | undefined,
+) {
+  const step = shownPlan?.steps.find(one => one.status === 'doing')?.text
+  const done = shownPlan?.steps.filter(one => one.status === 'done').length ?? 0
+  const call = acts.findLast(act => act.status === 'runs' && !act.isSubagent)
+  const doing = call === undefined ? undefined : doingText(call)
+  const last = runs.at(-1)
+  const fresh = last !== undefined && turn !== undefined && last.at >= turn.start ? last : undefined
+
+  return [
+    ...(step === undefined ? [] : [`▸ ${step} ${done}/${shownPlan?.steps.length ?? 0}`]),
+    ...(doing === undefined ? [] : [doing]),
+    ...(running === 0 ? [] : [`${running} agent${running === 1 ? '' : 's'}`]),
+    ...(fresh === undefined ? [] : [fresh.failed === 0 && !fresh.isError ? `✓ ${fresh.passed} pass` : `✗ ${fresh.failed} failing`]),
+  ]
 }
 
 export function describe(
@@ -1847,6 +1894,7 @@ export const register: Register = on => {
     const shownPlan = await read($, plan)
     const allLanes = await read($, lanes)
     const runs = await read($, tests)
+    const allTurns = await read($, turns)
     const running = allLanes.filter(lane => lane.status === 'runs').length
     forget(e.requestId)
     if (e.props.hasSurvey || (!e.props.isWorking && running === 0)) {
@@ -1855,13 +1903,7 @@ export const register: Register = on => {
 
     const { Box, Text } = $.ui.resolve(e)
     const now = await $.clock.now()
-    const step = shownPlan?.steps.find(one => one.status === 'doing')?.text
-    const last = runs.at(-1)
-    const bits = [
-      ...(step === undefined ? [] : [`▸ ${step}`]),
-      ...(running === 0 ? [] : [`${running} agent${running === 1 ? '' : 's'}`]),
-      ...(last === undefined ? [] : [last.failed === 0 && !last.isError ? `✓ ${last.passed}` : `✗ ${last.failed} failing`]),
-    ]
+    const bits = bandBits(shownPlan, acts, running, runs, allTurns.at(-1))
     if (e.surface !== 'terminal') {
       return <Text dimColor>{bits.join(' · ')}</Text>
     }
