@@ -54,6 +54,15 @@ export type Turn = {
   reason?: 'answer' | 'aborted' | 'refusal' | 'error'
   calls: number
   failed: number
+  /** How long the engine says it took, set at its end; its recap row is matched by it. */
+  durationMs?: number
+  /** The files it edited, and the lines added and removed. */
+  edited?: string[]
+  added?: number
+  removed?: number
+  /** The plan's goal and its steps done as it started, and the steps it finished. */
+  planAtStart?: { goal: string; done: number }
+  stepsDone?: number
 }
 
 /** One test run read from a test command's output. */

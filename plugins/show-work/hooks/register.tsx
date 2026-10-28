@@ -371,6 +371,22 @@ export function readDecision(e: Record<string, unknown>): Omit<Decision, 'id' | 
   return { decision, options, chose, ...(why === '' ? {} : { why }) }
 }
 
+// What a turn did, as its recap row says it: the files it edited, its last
+// test run, and the plan steps it finished; nothing for a turn that only
+// read or talked.
+export function recapBits(turn: Turn, runs: TestRun[]) {
+  const files = turn.edited?.length ?? 0
+  const run = runs.findLast(one => one.at >= turn.start && (turn.end === undefined || one.at <= turn.end))
+  const steps = turn.stepsDone ?? 0
+
+  return {
+    edits: files === 0 ? undefined : `${files} file${files === 1 ? '' : 's'} +${turn.added ?? 0} −${turn.removed ?? 0}`,
+    tests: run === undefined ? undefined : run.failed === 0 && !run.isError ? `tests ✓ ${run.passed}` : `tests ✗ ${run.failed} failing`,
+    isFailing: run !== undefined && (run.failed > 0 || run.isError),
+    steps: steps === 0 ? undefined : `${steps} step${steps === 1 ? '' : 's'} done`,
+  }
+}
+
 // The steps a plan post changed: each whose status moved, and each new one.
 export function planChanges(prev: Step[], steps: Step[]) {
   return steps.filter(step => prev.find(old => old.text === step.text)?.status !== step.status)
@@ -1662,10 +1678,13 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) {
       const start = await $.clock.now()
+      const shownPlan = await read($, plan)
+      const planAtStart =
+        shownPlan === null ? {} : { planAtStart: { goal: shownPlan.goal, done: shownPlan.steps.filter(step => step.status === 'done').length } }
       await update($, turns, list =>
         [
           ...list,
-          { id: e.turnId, n: (list.at(-1)?.n ?? 0) + 1, start, calls: 0, failed: 0 },
+          { id: e.turnId, n: (list.at(-1)?.n ?? 0) + 1, start, calls: 0, failed: 0, ...planAtStart },
         ].slice(-KEPT_TURNS),
       )
     }
@@ -1677,16 +1696,19 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const end = await $.clock.now()
     const done = await next(e)
+    const shownPlan = await read($, plan)
+    const nowDone = shownPlan?.steps.filter(step => step.status === 'done').length ?? 0
     await update($, turns, list =>
-      list.map(one =>
-        one.id === e.turnId
-          ? {
-              ...one,
-              end,
-              reason: e.reason,
-            }
-          : one,
-      ),
+      list.map(one => {
+        if (one.id !== e.turnId) {
+          return one
+        }
+        // Steps finished in the turn: from where the plan stood as it
+        // started, or all of a plan it posted.
+        const before = one.planAtStart !== undefined && one.planAtStart.goal === shownPlan?.goal ? one.planAtStart.done : 0
+
+        return { ...one, end, reason: e.reason, durationMs: e.durationMs, stepsDone: Math.max(0, nowDone - before) }
+      }),
     )
 
     return done
@@ -1777,6 +1799,21 @@ export const register: Register = on => {
         list.map(one =>
           one.id === turn.id
             ? { ...one, calls: one.calls + 1, failed: one.failed + (status === 'failed' ? 1 : 0) }
+            : one,
+        ),
+      )
+    }
+    if (turn !== undefined && e.agentId === undefined && what.kind === 'edit' && status === 'ok') {
+      const patch = patchCounts(ran.result)
+      await update($, turns, list =>
+        list.map(one =>
+          one.id === turn.id
+            ? {
+                ...one,
+                edited: [...new Set([...(one.edited ?? []), what.label])],
+                added: (one.added ?? 0) + patch.added,
+                removed: (one.removed ?? 0) + patch.removed,
+              }
             : one,
         ),
       )
@@ -2056,6 +2093,48 @@ export const register: Register = on => {
     return {
       result: `Shown: ${read.decision}: ${letterOf(read.chose)} (${chosen}). Carry on with it; the person can press an alternative to redirect you.`,
     }
+  })
+
+  // Under a turn's "Worked for" line, a row of what it did, with buttons
+  // that open the pane on its diff and its tests. The row has no turn id, so
+  // it is matched to the turn that took exactly as long.
+  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
+    const own = await next(e)
+    if (e.props.isExpanded === true || e.props.waitingFor !== undefined) {
+      return own
+    }
+    const turn = (await read($, turns)).findLast(one => one.end !== undefined && one.durationMs === e.props.durationMs)
+    if (turn === undefined) {
+      return own
+    }
+    const bits = recapBits(turn, await read($, tests))
+    if (bits.edits === undefined && bits.tests === undefined && bits.steps === undefined) {
+      return own
+    }
+    const { Box, Button, Text } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="column">
+        {own}
+        <Box flexDirection="row" columnGap={1} paddingLeft={2}>
+          {[
+            bits.edits === undefined ? null : (
+              <Button key={`recap-diff-${turn.id}`} plain dimColor onPress={() => openPane($, 'changes')}>
+                {bits.edits}
+              </Button>
+            ),
+            bits.tests === undefined ? null : (
+              <Button key={`recap-tests-${turn.id}`} plain onPress={() => openPane($, 'tests')}>
+                <Text color={bits.isFailing ? 'error' : 'success'}>{bits.tests}</Text>
+              </Button>
+            ),
+            bits.steps === undefined ? null : <Text key={`recap-steps-${turn.id}`} dimColor>{bits.steps}</Text>,
+          ]
+            .filter(part => part !== null)
+            .flatMap((part, n) => (n === 0 ? [part] : [<Text key={`recap-dot-${n}`} dimColor>·</Text>, part]))}
+        </Box>
+      </Box>
+    )
   })
 
   // A decision draws in the chat as the choice made, with a button per

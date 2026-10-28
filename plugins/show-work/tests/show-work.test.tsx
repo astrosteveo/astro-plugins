@@ -5,7 +5,7 @@ import type { Act } from '../types'
 
 import { across, blowUp, errorLines, fromHex, literal, markArgs, markCells, measured, overlaps, wrap, nameOf, page, sheetArgs, sniff, svgSize } from '../hooks/design'
 import { hashOf, splitMermaid } from '../hooks/mermaid'
-import { bandBits, briefDecide, briefPlan, briefShow, cardWidth, doingText, fit, markScope, markText, readDecision, readMarks, switchText, tileText } from '../hooks/register'
+import { bandBits, briefDecide, briefPlan, briefShow, cardWidth, doingText, fit, markScope, markText, readDecision, readMarks, recapBits, switchText, tileText } from '../hooks/register'
 
 const PANE = {
   plugin: 'show-work',
@@ -1429,6 +1429,79 @@ test('the band says the step and progress, the call in flight, the agents, and o
   expect(doingText({ kind: 'read', label: 'a.ts', count: 3 })).toBe('reading a.ts ×3')
   expect(doingText({ kind: 'edit', label: 'b.ts' })).toBe('editing b.ts')
   expect(doingText({ kind: 'agent', label: 'Explore' })).toBeUndefined()
+})
+
+const DURATION = (durationMs: number, isExpanded = false) =>
+  ({
+    plugin: 'show-work',
+    component: 'TurnDuration',
+    requestId: `turn-${durationMs}`,
+    props: { word: 'Baked', durationMs, isExpanded },
+  }) as const
+
+test('a turn that changed things gets a recap row under its duration line, with buttons to the pane', async ($, on) => {
+  engine(on, { bash: command => (command.startsWith('bun test') ? { text: BUN_OUT(true) } : undefined) })
+  on('ui.render', ENGINE_ROW)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'mcp__show-work__plan',
+    goal: 'Ship it',
+    steps: [
+      { text: 'Build', status: 'doing' },
+      { text: 'Test', status: 'todo' },
+    ],
+  })
+  await $.turn.start({ text: 'go', turnId: 't1' } as never)
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/a.ts', old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/a.ts', old_string: 'b', new_string: 'c' })
+  await $.tool.call({ tool: 'Bash', command: 'bun test', description: 'Run the suite' })
+  await $.tool.call({
+    tool: 'mcp__show-work__plan',
+    goal: 'Ship it',
+    steps: [
+      { text: 'Build', status: 'done' },
+      { text: 'Test', status: 'doing' },
+    ],
+  })
+  await $.turn.complete({ turnId: 't1', durationMs: 4200, answer: 'ok', isAborted: false, reason: 'answer' } as never)
+  await $.turn.start({ text: 'look', turnId: 't2' } as never)
+  await $.tool.call({ tool: 'Read', file_path: '/proj/a.ts' })
+  await $.turn.complete({ turnId: 't2', durationMs: 900, answer: 'ok', isAborted: false, reason: 'answer' } as never)
+
+  const ui = await $.ui.mount({ ...DURATION(4200), surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: 'engine row' })).toBeDefined()
+  expect((await ui.find({ type: 'Button', key: 'recap-diff-t1' }))?.text).toBe('1 file +0 −0')
+  expect((await ui.find({ type: 'Button', key: 'recap-tests-t1' }))?.text).toBe('tests ✓ 2')
+  expect(await ui.find({ type: 'Text', text: '1 step done' })).toBeDefined()
+  OPENED.length = 0
+  await ui.press({ key: 'recap-tests-t1' })
+  expect(OPENED).toEqual(['show-work'])
+  await ui.unmount()
+  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Button', key: 'tests-fix' })).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: /2 pass/ })).toBeDefined()
+  await pane.unmount()
+
+  // A turn that only read, an expanded view, and a duration no turn took: the engine's row alone.
+  for (const target of [DURATION(900), DURATION(4200, true), DURATION(1234)]) {
+    const row = await $.ui.mount({ ...target, surface: 'terminal' })
+    expect(await row.find({ type: 'Button' })).toBeUndefined()
+    await row.unmount()
+  }
+})
+
+test('a recap counts only the test run inside its turn', () => {
+  const turn = { id: 't', n: 1, start: 10, end: 20, calls: 3, failed: 0, edited: ['a.ts', 'b.ts'], added: 5, removed: 2 }
+  const run = (at: number, failed: number) => ({ id: `r${at}`, at, command: 'bun test', passed: 4, failed, isError: failed > 0, names: [] })
+  expect(recapBits(turn, [run(15, 1), run(25, 0)])).toEqual({
+    edits: '2 files +5 −2',
+    tests: 'tests ✗ 1 failing',
+    isFailing: true,
+    steps: undefined,
+  })
+  expect(recapBits({ ...turn, edited: [] }, [run(5, 0)])).toEqual({ edits: undefined, tests: undefined, isFailing: false, steps: undefined })
 })
 
 import { matches, parseStatus, treeRows } from '../hooks/explorer'
