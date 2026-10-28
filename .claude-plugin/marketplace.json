@@ -23,11 +23,6 @@
       "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session."
     },
     {
-      "name": "worktrees",
-      "source": "./plugins/worktrees",
-      "description": "Toggle on and each task Claude takes on goes into a git worktree named for it, removed once the work is merged or the session ends and nothing in it would be lost."
-    },
-    {
       "name": "plain-english",
       "source": "./plugins/plain-english",
       "description": "An output style for plain English, given to every subagent and fork too, and a skill that scans prose for Claudisms."

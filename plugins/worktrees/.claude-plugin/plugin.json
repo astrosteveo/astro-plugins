@@ -1,9 +1,0 @@
-{
-  "name": "worktrees",
-  "version": "0.1.0",
-  "description": "Toggle on and each task Claude takes on goes into a git worktree named for it, cleaned up once the work is merged.",
-  "author": {
-    "name": "astrosteveo"
-  },
-  "license": "MIT"
-}
