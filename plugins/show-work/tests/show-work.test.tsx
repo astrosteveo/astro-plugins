@@ -143,6 +143,62 @@ test('the plan tool draws the goal and steps', async ($, on) => {
   }
 })
 
+test('a plan post draws in the chat as the checklist, then as what moved, then ticked off', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const post = (id: string, steps: { text: string; status: string }[], goal = 'Add a pause menu') =>
+    $.tool.call({ tool: 'mcp__show-work__plan', tool_use_id: id, goal, steps })
+  const card = async (id: string, surface: (typeof SURFACES)[number] = 'terminal') => {
+    const ui = await $.ui.mount({
+      plugin: 'show-work',
+      component: 'ToolResult',
+      requestId: id,
+      props: { tool_use_id: id, tool: 'mcp__show-work__plan', output: '', isErrored: false },
+      surface,
+    } as never)
+    const texts = (await ui.findAll({ type: 'Text' })).map(one => one.text)
+
+    return { ui, texts }
+  }
+  await post('p1', [
+    { text: 'Build the menu', status: 'doing' },
+    { text: 'Wire Esc', status: 'todo' },
+  ])
+  await post('p2', [
+    { text: 'Build the menu', status: 'done' },
+    { text: 'Wire Esc', status: 'doing' },
+  ])
+  await post('p3', [
+    { text: 'Build the menu', status: 'done' },
+    { text: 'Wire Esc', status: 'done' },
+  ])
+  await post('p4', [{ text: 'Write it', status: 'doing' }], 'Another goal')
+
+  for (const surface of SURFACES) {
+    const first = await card('p1', surface)
+    expect(first.texts).toContain('Add a pause menu')
+    expect(first.texts).toContain('▸ Build the menu')
+    expect(first.texts).toContain('· Wire Esc')
+    await first.ui.unmount()
+  }
+  OPENED.length = 0
+  const first = await card('p1')
+  await first.ui.press({ key: 'plan-pane-p1' })
+  expect(OPENED).toEqual(['show-work'])
+  await first.ui.unmount()
+
+  const moved = await card('p2')
+  expect(moved.texts[0]).toBe('✓ Build the menu  ▸ Wire Esc  1/2')
+  await moved.ui.unmount()
+  const over = await card('p3')
+  expect(over.texts[0]).toBe('✓ Add a pause menu · 2/2 done')
+  await over.ui.unmount()
+  // A new goal starts a new checklist.
+  const fresh = await card('p4')
+  expect(fresh.texts).toContain('Another goal')
+  await fresh.ui.unmount()
+})
+
 test('changes list the edited files and nothing else', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })

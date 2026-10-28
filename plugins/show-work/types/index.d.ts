@@ -3,6 +3,15 @@ export type Step = { text: string; status: StepStatus }
 /** `startedAt`, when this goal was first posted, opens the current task. */
 export type Plan = { goal: string; steps: Step[]; startedAt?: number }
 
+/** One call of the plan tool, as its card in the chat draws it. */
+export type PlanPost = {
+  id: string
+  goal: string
+  steps: Step[]
+  /** The steps before this post, when it carried on the same goal. */
+  prev?: Step[]
+}
+
 /** `find` is not a tab of the bar: the search box brings it up. */
 export type Tab = 'now' | 'pictures' | 'changes' | 'tests' | 'git' | 'find'
 
@@ -162,6 +171,7 @@ declare module 'claude-code' {
       diff: Shaped<Diff | null>
       lanes: Shaped<Lane[]>
       turns: Shaped<Turn[]>
+      planPosts: Shaped<PlanPost[]>
       tests: Shaped<TestRun[]>
       touches: Shaped<Touch[]>
       tree: Shaped<string[]>
