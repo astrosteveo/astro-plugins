@@ -24,6 +24,8 @@ const SURFACES = ['terminal', 'desktop', 'vscode', 'mobile'] as const
 
 // What reached the engine as sent prompts, in order.
 const SENT: string[] = []
+// The panes opened, by id.
+const OPENED: string[] = []
 
 // Nothing sits beneath the plugin: each hook here stands for the engine.
 function engine(
@@ -40,7 +42,11 @@ function engine(
   }
   on('tool.register', (_, e) => ({ value: { tool: `mcp__show-work__${e.name}` } }))
   on('command.register', () => ({ value: { command: 'work' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', (_, e) => {
+    OPENED.push(e.id)
+
+    return { value: { isPlaced: true } }
+  })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('prompt.fill', (_, e) => {
     filled.push(e.text)
@@ -68,17 +74,45 @@ function engine(
   return filled
 }
 
-test('an empty pane says what will show there', async ($, on) => {
+test('the pane opens only when asked, and says what it holds while empty', async ($, on) => {
   engine(on)
+  OPENED.length = 0
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  expect(OPENED).toEqual([])
+  await $.command.run({ command: 'work', args: '' } as never)
+  expect(OPENED).toEqual(['show-work'])
 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect((await ui.find({ type: 'Text', text: /Nothing yet/ }))?.text).toMatch(
-      /posts its plan here/,
-    )
+    expect((await ui.find({ type: 'Text', text: /Nothing yet/ }))?.text).toBe('Nothing yet: f finds files and text, g is git.')
     await ui.unmount()
   }
+})
+
+test('a tab shows once it holds something, with a count, and Now leads with a failing run', async ($, on) => {
+  engine(on, {
+    bash: command => (command.startsWith('bun test') ? { text: BUN_OUT(false), isError: true } : undefined),
+  })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  const tabs = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const found = (await ui.findAll({ type: 'Button' }))
+      .filter(one => /^tab-(?!find)/.test(String(one.key)))
+      .map(one => one.text)
+    await ui.unmount()
+
+    return found
+  }
+  expect(await tabs()).toEqual(['Now', 'Git'])
+  await $.tool.call({ tool: 'Edit', file_path: '/proj/a.ts', old_string: 'a', new_string: 'b' })
+  await $.tool.call({ tool: 'Bash', command: 'bun test', description: 'Run the suite' })
+  expect(await tabs()).toEqual(['Now', 'Changes 1', 'Tests ✗1', 'Git'])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ type: 'Button', key: 'now-failing' }))?.text).toBe('✗ 1 failing · jump')
+  await ui.press({ key: 'now-failing' })
+  expect(await ui.find({ type: 'Button', key: 'tests-fix' })).toBeDefined()
+  await ui.unmount()
 })
 
 test('the plan tool draws the goal and steps', async ($, on) => {
@@ -926,7 +960,7 @@ test('a screenshot Claude reads lands in the pane, and the list picks one', asyn
   ])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Button', key: 'tab-pictures' }))?.text).toBe('Pictures')
+  expect((await ui.find({ type: 'Button', key: 'tab-pictures' }))?.text).toBe('Pictures 2')
   await ui.press({ key: 'tab-pictures' })
   expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({
     source: { file: '/home/u/.cache/show-work/toolu_r2.png' },
@@ -1644,7 +1678,7 @@ test('search hits list by file, and a drag over them quotes the hits with their 
   expect(hitsQuote('jump', items, 0, 0)).toBeUndefined()
 })
 
-test('the tabs are Now, Pictures, Changes, Tests and Git; the search box brings up Find when focused', async ($, on) => {
+test('an empty pane has Now and Git; the search box brings up Find when focused', async ($, on) => {
   engine(on)
   on('process.run', (_, e) => ({
     value: { exitCode: 0, stdout: e.argv.includes('ls-files') ? 'a.ts\n' : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -1653,7 +1687,7 @@ test('the tabs are Now, Pictures, Changes, Tests and Git; the search box brings 
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const tabs = (await ui.findAll({ type: 'Button', text: /^(Now|Pictures|Changes|Tests|Git|Find)$/ })).map(one => one.text)
-  expect(tabs).toEqual(['Now', 'Pictures', 'Changes', 'Tests', 'Git'])
+  expect(tabs).toEqual(['Now', 'Git'])
   // Nothing of Find shows until the search box is used.
   expect(await ui.find({ type: 'Text', text: /^\d+ files/ })).toBeUndefined()
   await $.ui.focus({ component: 'Pane', requestId: 'show-work', element: 'ex-filter', origin: { kind: 'person' } } as never)
