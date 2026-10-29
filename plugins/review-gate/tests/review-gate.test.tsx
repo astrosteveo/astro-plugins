@@ -632,18 +632,21 @@ test("a dismissal and the person's leave for more rounds, given while a round ru
   expect((await $.command.run({ command: 'review-gate', args: 'more', ...person })).text).toBe('feat/app may run 3 more rounds.')
   for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
   await until($, 'three checkers', () => spawned.length === 3)
+  // The checkers, who read the record as the round began, find both fixed; the dismissed one keeps its reason.
   const earlier = [
     { id: 'R1-1', fixed: true, why: 'the bound is pages now' },
-    { id: 'R1-2', fixed: false, why: 'the pages still meet' },
+    { id: 'R1-2', fixed: true, why: 'the pages no longer meet' },
   ]
   for (const agent of spawned.slice(0, 2)) await reply($, agent.id, json({ verdicts: [], earlier }))
-  expect(String((await call).result)).toContain('Nothing is open. feat/app at 2222222 is ready for a pull request.')
+  const text = String((await call).result)
+  expect(text).toContain('Found fixed this round: R1-1 (The last page is skipped).')
+  expect(text).toContain('Nothing is open. feat/app at 2222222 is ready for a pull request.')
   const ledger = ledgerOf(store)
-  expect(ledger.findings.map(one => [one.id, one.status, one.answer])).toEqual([
-    ['R1-1', 'fixed', 'fixed at 2222222'],
-    ['R1-2', 'dismissed', 'Each page starts where the last one ended.'],
+  expect(ledger.findings.map(one => [one.id, one.status, one.answer, one.closedRound])).toEqual([
+    ['R1-1', 'fixed', 'fixed at 2222222', 2],
+    ['R1-2', 'dismissed', 'Each page starts where the last one ended.', undefined],
   ])
-  expect([ledger.rounds.length, ledger.rounds[1]?.open, ledger.streakFrom, ledger.reviewed]).toEqual([2, 0, 1, TWO])
+  expect([ledger.rounds.length, ledger.rounds[1]?.fixed, ledger.rounds[1]?.open, ledger.streakFrom, ledger.reviewed]).toEqual([2, 1, 0, 1, TWO])
 })
 
 test('a round whose record the person resets while it runs records nothing, so the record stays forgotten', async ($, on) => {

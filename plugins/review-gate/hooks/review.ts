@@ -474,9 +474,11 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   const saved = await ask.edit(current => {
     if (current.rounds.length !== ledger.rounds.length)
       return `${place.branch}'s review record was reset, or another session recorded a round on it, while this round ran, so this round was not recorded. Review again.`
+    // Only a finding still open is closed as fixed: one dismissed meanwhile keeps its reason.
+    const closing = current.findings.filter(finding => finding.status === 'open' && fixed.includes(finding.id)).map(finding => finding.id)
     const findings: Finding[] = [
       ...current.findings.map(finding =>
-        fixed.includes(finding.id) ? { ...finding, status: 'fixed' as const, answer: `fixed at ${short(place.head)}`, closedRound: n } : finding,
+        closing.includes(finding.id) ? { ...finding, status: 'fixed' as const, answer: `fixed at ${short(place.head)}`, closedRound: n } : finding,
       ),
       ...added,
     ]
@@ -489,7 +491,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       risk: riskWith(judged, findings),
       raised: candidates.length,
       kept: added.length,
-      fixed: fixed.length,
+      fixed: closing.length,
       open: findings.filter(finding => finding.status === 'open').length,
       unread: unreadReviewers + unreadCheckers,
       at,
