@@ -16,7 +16,7 @@ Every finding needs an answer. Claude fixes it and commits, and the next round c
 
 Before each round a classifier reads the branch's whole diff, files REVIEW.md skips included, and judges its risk from the code, not from a list of paths. Low is a change where nothing that runs can break, such as docs or tests alone. Medium is an ordinary change to behaviour. High is code where a missed defect could do lasting harm: code that decides what may run or who may act, runs commands or reads outside input, handles secrets, deletes or migrates data, or changes how the project is built, released or installed. The classifier gives its reasons, and a security finding that is not fixed also makes a change high risk. If it gives no verdict after two tries, the change counts as high. A commit judged once keeps its verdict.
 
-Risk picks the level: `medium` for low, `high` for medium, and `xhigh` for high. A round over new commits alone runs at most at `high`.
+Risk picks the level: `medium` for low, `high` for medium, and `xhigh` for high. A round over new commits alone runs at most at `high`, unless the `review` call or `/review-gate` names its level.
 
 ## Pull requests
 
@@ -69,7 +69,7 @@ Each branch's record of rounds, findings, answers and your approval is kept in t
 
 In `/config`:
 
-- **Review level** is `auto` by default, which picks by risk, or always `low`, `medium`, `high`, `xhigh` or `max`.
+- **Review level** is `auto` by default, which picks by risk, or one of `low`, `medium`, `high`, `xhigh` or `max`. A round over new commits alone still runs at most at `high`.
 - **Risk model** is `haiku` by default; `inherit` uses the session's model.
 
 ## Limits

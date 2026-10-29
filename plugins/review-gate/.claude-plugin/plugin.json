@@ -11,7 +11,7 @@
     "level": {
       "type": "string",
       "title": "Review level",
-      "description": "The /code-review level each round runs at. auto picks by the risk a classifier reads from the change: medium for low, high for medium, xhigh for high. A round over new commits alone runs at most at high, unless you pick its level.",
+      "description": "The /code-review level each round runs at. auto picks by the risk a classifier reads from the change: medium for low, high for medium, xhigh for high. A round over new commits alone runs at most at high, whatever this option says, unless the review call or /review-gate names its level.",
       "default": "auto",
       "options": [
         "auto",

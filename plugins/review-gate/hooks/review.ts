@@ -2,7 +2,7 @@ import type { EngineInterface, ModelUsage } from 'claude-code'
 import type { Finding, Ledger, Level, Risk, Round, Run, Tokens } from '../types'
 import { changedFiles, commitLog, diffOf, firstCommit, guideFiles, isAncestor, short, uncommitted } from './git'
 import type { Place } from './git'
-import { LEVELS, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, isCapped, levelFor, newFindings, openFindings, parseGuide, riskNow, riskWith, spent, streak } from './ledger'
+import { LEVELS, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, isCapped, levelFor, openFindings, parseGuide, riskNow, riskWith, spent, streak } from './ledger'
 import type { Recheck, Reported } from './ledger'
 import { RISK, readRisk, riskPrompt } from './prompts'
 import type { Context, Plan } from './prompts'
@@ -89,8 +89,8 @@ export type Pending = {
   agentId?: string
   /** The review's tool calls so far. */
   calls: number
-  /** What the review recorded through the record tool. */
-  record?: { findings: Reported[]; rechecked: Recheck[] }
+  /** What the review recorded through the record tool, and the findings it adds, with the ids the review was told. */
+  record?: { findings: Reported[]; rechecked: Recheck[]; added: Finding[] }
 }
 
 /** What a round needs besides the repository: the caller's wishes and the session's plumbing. */
@@ -163,7 +163,7 @@ function failureOf(called: unknown): string | undefined {
 }
 
 /** What the Skill tool hands back for a skill it ran in an agent of its own. */
-type Forked = { status: 'forked'; agentId: string; result: string; background?: boolean }
+type Forked = { status: 'forked'; agentId: string; result: string; background?: boolean; success?: boolean }
 
 function forked(value: unknown): Forked | undefined {
   if (typeof value !== 'object' || value === null) return undefined
@@ -185,9 +185,16 @@ async function waitFor<T>($: EngineInterface, promise: Promise<T>, signal: Abort
   })
   const since = await $.clock.now()
   while (!isSettled && !signal.aborted && (await $.clock.now()) - since < limitMs) {
-    await Promise.race([promise, $.process.run(['sleep', '1']).catch(() => undefined)])
+    await Promise.race([promise, pause($, signal)])
   }
   return value
+}
+
+// A second with a call in flight. Where sleep cannot run, the hook's own sleep waits instead, so the
+// wait never spins.
+async function pause($: EngineInterface, signal: AbortSignal) {
+  const ran = await $.process.run(['sleep', '1']).catch(() => undefined)
+  if (ran === undefined || ran.exitCode !== 0) await $.clock.sleep(1_000, { signal }).catch(() => undefined)
 }
 
 // Ends a review the round no longer waits for, so it spends nothing more. Best effort: one that has
@@ -294,11 +301,15 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     skip,
     earlier: ledger.findings,
   }
-  let record: Pending['record'] = { findings: [], rechecked: [] }
+  let record: Pending['record'] = { findings: [], rechecked: [], added: [] }
   let cap: number | undefined
   let calls: number | undefined
   let fixes = ''
   let isUnfinished = false
+  // Why a review that ran in the foreground says it did not succeed, its words or a stand-in.
+  let failed: string | undefined
+  // Tracked files the review left changed: its fixes with --fix, and changes it was asked not to make without.
+  let touched: string[] = []
   // Commits that change only files REVIEW.md skips leave the review nothing to read.
   if (roundFiles.length > 0) {
     const pending: Pending = { plan, changed: new Set(files), isBriefed: false, calls: 0 }
@@ -328,17 +339,22 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       fixes = (reply?.answer ?? (run.background === true ? '' : run.result)).trim()
       calls = pending.calls
       isUnfinished = reply === undefined && run.background === true
+      // A review in the background says only whether it started; one in the foreground, whether it succeeded.
+      if (run.background !== true && run.success === false) failed = run.result.trim() || 'it gave no reason'
     }
     if (ask.signal.aborted) return refuse(STOPPED)
     if (pending.record === undefined)
       return refuse(
-        `/code-review ended without recording its findings${run === undefined ? ', and it ran in no agent of its own' : ''}, so the round has nothing to stand on. Nothing was recorded; review again.`,
+        `/code-review ended without recording its findings${
+          run === undefined ? ', and it ran in no agent of its own' : failed === undefined ? '' : `, and it failed: ${failed}`
+        }, so the round has nothing to stand on. Nothing was recorded; review again.`,
       )
     record = pending.record
     cap = pending.cap
+    touched = await uncommitted(git).catch(() => [])
   }
 
-  const added = newFindings(record.findings, n, ledger.findings)
+  const added = record.added
   const fixedIds = record.rechecked.filter(one => one.fixed).map(one => one.id)
   const at = await $.clock.now()
   const first = ledger.first ?? (await firstCommit(git, place.base, place.head))
@@ -388,10 +404,17 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   const notes: string[] = []
   if (isUnfinished)
     notes.push(`The review had not finished after ${REVIEW_LIMIT_MS / 60_000} minutes, so it was stopped; it had recorded its findings before that.`)
-  if (ask.fix && fixes !== '')
+  if (failed !== undefined) notes.push(`The review recorded its findings, then failed: ${failed}`)
+  const report = fixes === '' ? '' : ` Its report:\n\n${fixes}`
+  // A round whose files are all skipped ran no review, so it has no fixes to speak of.
+  if (ask.fix && roundFiles.length > 0)
     notes.push(
-      `The review then changed the working tree, as --fix asks. Its report:\n\n${fixes}\n\nCommit the fixes you keep and review again: the next round confirms each fix. Dismiss, with a reason, any finding it skipped that you will not fix.`,
+      touched.length === 0
+        ? `The review changed no file, though --fix let it.${report}`
+        : `The review then changed ${listed(touched)}, as --fix asks.${report}\n\nCommit the fixes you keep and review again: the next round confirms each fix. Dismiss, with a reason, any finding it skipped that you will not fix.`,
     )
+  else if (touched.length > 0)
+    notes.push(`The review changed ${listed(touched)}, though it was asked to change no file. Look at those changes before you commit them, or undo them.`)
   return { ok: true, ledger: saved, round: n, text: [summary(saved, n), ...notes].join('\n\n') }
 }
 

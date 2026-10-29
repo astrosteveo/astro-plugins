@@ -173,15 +173,22 @@ test("a finding's grade is read from the review's whole word for it, not a word 
     const one = reported({ category })
     return [category, kindOf(one), severityOf(one)]
   }
-  expect(['memory-leak', 'resource-leak', 'dependency-injection', 'authoring', 'deadlock', 'dockerfile', 'duplicate-charge'].map(graded)).toEqual([
+  expect(
+    ['memory-leak', 'resource-leak', 'dependency-injection', 'fault-injection', 'authoring', 'deadlock', 'deadline-exceeded', 'dockerfile', 'duplicate-charge'].map(graded),
+  ).toEqual([
     ['memory-leak', 'bug', 'important'],
     ['resource-leak', 'bug', 'important'],
     ['dependency-injection', 'bug', 'important'],
+    ['fault-injection', 'bug', 'important'],
     ['authoring', 'bug', 'important'],
     ['deadlock', 'bug', 'important'],
+    ['deadline-exceeded', 'bug', 'important'],
     ['dockerfile', 'bug', 'important'],
     ['duplicate-charge', 'bug', 'important'],
   ])
+  expect(['access-control', 'privilege-escalation', 'authorisation', 'information-disclosure', 'sandbox-escape', 'rce'].map(graded).map(([, kind]) => kind)).toEqual(
+    Array(6).fill('security'),
+  )
   expect(['secret-leak', 'data-leak', 'sql-injection', 'auth', 'broken-authorization', 'oauth-state', 'path-traversal'].map(graded)).toEqual([
     ['secret-leak', 'security', 'important'],
     ['data-leak', 'security', 'important'],

@@ -97,13 +97,17 @@ export type Reported = {
 /** What the review said of an open finding it looked at again. */
 export type Recheck = { id: string; fixed: boolean; why: string }
 
-// The review's own words for findings that cost upkeep rather than break behaviour. A deadlock, a
-// Dockerfile or a duplicated side effect is not cleanup, though its word starts like one.
-const CLEANUP = /^(reuse|simplif|efficien|altitude|style|naming|readab|maintain|test|doc(?!ker)|dead(?!lock)|duplicat(?:ion|ed?-code))/
+// The review's own words for findings that cost upkeep rather than break behaviour, as the first
+// whole word of its category. A deadlock, a deadline, a Dockerfile or a duplicated side effect is not
+// cleanup, though its word starts like one.
+const CLEANUP =
+  /^(?:reuse|simplif(?:y|ication)|efficien(?:cy|t)|altitude|style|naming|readab(?:ility|le)|maintainab(?:ility|le)|tests?|testing|docs?|documentation|dead[-_ ]code|duplication|duplicated?[-_ ]code|cleanup)(?:$|[-_ ])/
 
-// The review's words for a security hole. A memory or resource leak, dependency injection and an
-// author are not one; a leak of data, a secret or a token is.
-const SECURITY = /secur|(?<!dependency-)inject|(?:^|-)o?auth(?:n|z|entication|orization)?(?:-|$)|secret|credential|(?:data|info|information|pii|token|key|password)s?-leak|xss|ssrf|csrf|traversal/
+// The review's words for a security hole. A memory or resource leak, dependency or fault injection
+// and an author are not one; a leak or disclosure of data, a secret or a token is, and so is a hole
+// in access control, privileges, permissions or a sandbox.
+const SECURITY =
+  /secur|(?<!(?:dependency|fault)[-_ ])inject|(?:^|[-_ ])o?auth(?:n|z|entication|ori[sz]ation)?(?:[-_ ]|$)|secret|credential|privilege|permission|access[-_ ]control|sandbox|(?:^|[-_ ])rce(?:[-_ ]|$)|code[-_ ]execution|(?:data|info|information|pii|token|key|password)s?[-_ ](?:leak|disclosure|exposure)|xss|ssrf|csrf|traversal/
 
 export function kindOf(reported: Reported): FindingKind {
   if (reported.security || SECURITY.test(reported.category)) return 'security'

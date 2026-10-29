@@ -488,16 +488,50 @@ test("a level the call or the person names wins, max is the person's alone, and 
 })
 
 test("with --fix, the round hands back the review's report of its fixes, and leaves each finding open for the next round", async ($, on) => {
-  const { store, reviews } = engine(on, world())
+  const repo = world()
+  const { store, reviews } = engine(on, repo)
   await start($)
   const call = $.tool.call({ tool: REVIEW, fix: true })
+  await until($, 'the review', () => reviews.length === 1)
+  // The review's fix, once it has recorded its findings.
+  repo.dirty = ['src/app.ts']
   const { one } = await act($, reviews, 0, { findings: [SKIPPED_PAGE], answer: 'Fixed R1-1: the loop now runs to pages.' })
   expect(one.args).toBe(`high ${BASE}..${ONE} --fix`)
   const text = String((await call).result)
   expect(text).toContain(
-    'The review then changed the working tree, as --fix asks. Its report:\n\nFixed R1-1: the loop now runs to pages.\n\nCommit the fixes you keep and review again: the next round confirms each fix.',
+    'The review then changed src/app.ts, as --fix asks. Its report:\n\nFixed R1-1: the loop now runs to pages.\n\nCommit the fixes you keep and review again: the next round confirms each fix.',
   )
   expect(ledgerOf(store).findings.map(one => [one.id, one.status])).toEqual([['R1-1', 'open']])
+})
+
+test('a review that changes no file with --fix, or changes one without it, is reported as it is', async ($, on) => {
+  const repo = world()
+  const { reviews } = engine(on, repo)
+  await start($)
+  const fixing = $.tool.call({ tool: REVIEW, fix: true })
+  await act($, reviews, 0, { answer: '[]' })
+  expect(String((await fixing).result)).toContain('The review changed no file, though --fix let it. Its report:\n\n[]')
+  const reviewing = $.command.run({ command: 'review-gate', args: '', ...person })
+  await until($, 'the review', () => reviews.length === 2)
+  repo.dirty = ['src/app.ts']
+  await act($, reviews, 1)
+  expect((await reviewing).text).toContain('The review changed src/app.ts, though it was asked to change no file.')
+})
+
+test('while a round runs, no agent answers a finding or opens a pull request', async ($, on) => {
+  const { store, reviews } = engine(on, world())
+  seed(store, { rounds: [round(1, BASE, 1)], findings: [finding({})], reviewed: BASE })
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const agentId = (reviews[0] as Review).id
+  expect(String((await $.tool.call({ tool: DISMISS, agentId, ids: ['R1-1'], reason: 'The review thinks it is fine as it is.' })).deny)).toContain(
+    'findings are answered from the main conversation',
+  )
+  expect(String((await $.tool.call({ tool: PULL_REQUEST, agentId, action: 'open', title: 'App' })).deny)).toContain('pull requests are opened and merged from the main conversation')
+  await act($, reviews, 0)
+  await call
+  expect(ledgerOf(store).findings.map(one => one.status)).toEqual(['open'])
 })
 
 test('a review the Skill tool starts in the background is waited for, and the band follows it from its start', async ($, on) => {

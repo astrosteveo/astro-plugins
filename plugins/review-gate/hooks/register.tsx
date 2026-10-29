@@ -387,6 +387,10 @@ async function isTheReview($: EngineInterface, agentId: string) {
   return true
 }
 
+// While a round runs, an agent, the review above all, answers nothing at the gate: a finding's answer
+// and a pull request are the session's main conversation's to give.
+const isRoundAgent = (agentId: string | undefined) => agentId !== undefined && desk.pending !== undefined
+
 // The review's tool call as a few words for the band.
 function describeCall(e: { tool: string } & Record<string, unknown>) {
   const root = activeRoot === undefined ? '' : `${activeRoot}/`
@@ -473,7 +477,7 @@ export const register: Register = (on, options) => {
 
   // The round's review is /code-review with a section of the round's added: its scope, what the
   // branch has had, the findings to look at again, and how to hand back what it found.
-  on('skill.prompt', { skill: SKILL }, async ($, e, next) => {
+  on('skill.prompt', { skill: SKILL }, async (_, e, next) => {
     const computed = await next(e)
     const pending = desk.pending
     if (pending === undefined || pending.isBriefed) return computed
@@ -508,25 +512,34 @@ export const register: Register = (on, options) => {
 
   // The review hands back its findings here: only the round's own review, naming the round, once.
   // Once the review's agent is known, another agent that has the round's name, such as one the
-  // review started, or another /code-review briefed by mistake, records nothing.
+  // review started, or another /code-review briefed by mistake, records nothing. Before it is known,
+  // an agent another agent's model started, such as one the review handed part of its work to, is
+  // not the review either.
   on('tool.call', { tool: RECORD }, async ($, e) => {
     const pending = desk.pending
+    const refusal = "record takes the findings of review-gate's own review round, from its review, with the round its instructions name."
     if (
       pending === undefined ||
       e.agentId === undefined ||
       asText(e.round).trim() !== pending.plan.token ||
       (pending.agentId !== undefined && pending.agentId !== e.agentId)
     )
-      return { deny: "record takes the findings of review-gate's own review round, from its review, with the round its instructions name." }
+      return { deny: refusal }
+    if (pending.agentId === undefined) {
+      const agent = (await $.agent.list()).find(one => one.id === e.agentId)
+      if (agent?.parentId !== undefined && agent.spawnedBy !== PLUGIN) return { deny: refusal }
+    }
     if (pending.record !== undefined) return { deny: `Round ${pending.plan.n}'s findings are recorded already: finish as your instructions say.` }
-    const record = readRecord(e, pending.changed, pending.plan.root)
-    if (typeof record === 'string') return { deny: record }
+    const read = readRecord(e, pending.changed, pending.plan.root)
+    if (typeof read === 'string') return { deny: read }
+    // The ids the review is told here are the ones the round saves.
+    const added = newFindings(read.findings, pending.plan.n, pending.plan.earlier)
+    const record = { ...read, added }
     pending.record = record
     if (pending.agentId === undefined) {
       pending.agentId = e.agentId
       await update($, run, current => (current === null ? current : { ...current, agentId: e.agentId }))
     }
-    const added = newFindings(record.findings, pending.plan.n, pending.plan.earlier)
     const again = record.findings.length - added.length
     return {
       result: `Recorded round ${pending.plan.n}: ${
@@ -536,6 +549,8 @@ export const register: Register = (on, options) => {
   }).catch(() => ({ deny: 'review-gate: the findings could not be recorded.' }))
 
   on('tool.call', { tool: PULL_REQUEST }, async ($, e) => {
+    if (isRoundAgent(e.agentId))
+      return { deny: 'review-gate: while a review round runs, pull requests are opened and merged from the main conversation, not by an agent.' }
     const place = await locate($, await cwdOf($, e.path))
     if (typeof place === 'string') return { deny: place }
     if (e.action === 'open') return openPullRequest($, place, e)
@@ -558,9 +573,13 @@ export const register: Register = (on, options) => {
       signal: next.signal,
     })
     return outcome.ok ? { result: outcome.text } : { deny: outcome.text }
-  }).catch((_, e, next) => ({ deny: `review-gate: the review failed${next.error?.message ? `: ${next.error.message}` : ''}. Nothing was recorded.` }))
+  }).catch((_, _e, next) => ({ deny: `review-gate: the review failed${next.error?.message ? `: ${next.error.message}` : ''}. Nothing was recorded.` }))
 
   on('tool.call', { tool: DISMISS }, async ($, e) => {
+    if (isRoundAgent(e.agentId))
+      return {
+        deny: 'review-gate: while a review round runs, findings are answered from the main conversation, not by an agent. A review hands back what it found with record.',
+      }
     const ids = (Array.isArray(e.ids) ? e.ids : [e.ids]).map(id => asText(id).trim().toUpperCase()).filter(id => id !== '')
     const reason = asText(e.reason).trim()
     if (ids.length === 0) return { deny: 'Name the findings to dismiss, such as ["R2-1"].' }
@@ -617,7 +636,7 @@ export const register: Register = (on, options) => {
     if (typeof wishes === 'string') return { text: wishes }
     const outcome = await round($, place, settings, { intent: '', ...wishes, force: isPerson, signal: next.signal })
     return { text: outcome.text }
-  }).catch((_, e, next) => ({ text: `review-gate: the command failed${next.error?.message ? `: ${next.error.message}` : ''}.` }))
+  }).catch((_, _e, next) => ({ text: `review-gate: the command failed${next.error?.message ? `: ${next.error.message}` : ''}.` }))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
