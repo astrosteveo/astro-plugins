@@ -3,7 +3,7 @@ import type { EngineInterface, Register, RenderInput } from 'claude-code'
 import type { Activity, Depth, Ledger } from '../types'
 import { branches, firstCommit, locate, short } from './git'
 import type { Place } from './git'
-import { RAW_PR, gitArgsRefusal, gitArgv, gitGrepArgv, rgArgv } from './guard'
+import { gitArgsRefusal, gitArgv, gitGrepArgv, opensOrMerges, rgArgv } from './guard'
 import type { Search } from './guard'
 import { ROUND_CAP, emptyLedger, openFindings, recordKey, recordPrefix, riskNow, toLedger } from './ledger'
 import { CHECKER, REVIEWER } from './prompts'
@@ -72,7 +72,7 @@ const DISMISS_TOOL = {
 const PULL_REQUEST_TOOL = {
   name: 'pull_request',
   description:
-    "Open or merge a pull request: the only way to, as gh pr create and gh pr merge are refused in Bash. open pushes the current branch to origin and opens its pull request. merge merges a pull request, and only while its head is still the commit that was reviewed. Both are refused until that commit has been reviewed and every finding answered, and a high-risk change also waits for the user's approval in a dialog. Ask the user before you open or merge one.",
+    "Open or merge a pull request: the only way to, as gh pr create, gh pr merge and gh api calls that do either are refused in Bash. open pushes the current branch to origin and opens its pull request. merge merges a pull request, and only while its head is still the commit that was reviewed. Both are refused until that commit has been reviewed and every finding answered, and a high-risk change also waits for the user's approval in a dialog. Ask the user before you open or merge one.",
   isDeferred: false,
   inputSchema: {
     type: 'object',
@@ -431,9 +431,9 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // A pull request is opened and merged by the gate's own tool. The match is on the line's text, so
-  // however the command is wrapped, it is caught.
-  on('tool.call', { tool: 'Bash' }, (_, e, next) => (RAW_PR.test(e.command) ? { deny: RAW_PR_REFUSAL } : next(e))).catch((_, e, next) =>
+  // A pull request is opened and merged by the gate's own tool: a shell command that does either is
+  // refused, by a match on its text.
+  on('tool.call', { tool: 'Bash' }, (_, e, next) => (opensOrMerges(e.command) ? { deny: RAW_PR_REFUSAL } : next(e))).catch((_, e, next) =>
     next.called ? next(e) : { deny: RAW_PR_REFUSAL },
   )
 

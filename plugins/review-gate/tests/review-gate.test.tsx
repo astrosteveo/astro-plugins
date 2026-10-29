@@ -564,15 +564,25 @@ test('a high-risk change waits for the person, and their approval holds for that
   expect(asked.length).toBe(2)
 })
 
-test('a shell line that opens or merges a pull request is sent to the tool, however it is wrapped', async ($, on) => {
+test('a shell command that opens or merges a pull request is sent to the tool', async ($, on) => {
   engine(on, world())
   await start($)
   const refusal =
     "review-gate: open and merge pull requests with mcp__review-gate__pull_request, which checks the branch's review, then pushes and runs gh. If the command only mentions this in text, such as a commit message, put that text in a file and pass the file (git commit -F FILE)."
-  for (const command of ['gh pr create --fill', "bash -c 'gh pr merge 3'", 'echo 3 | xargs gh pr merge', 'cd ~/x && gh pr new']) {
+  const commands = [
+    'gh pr create --fill',
+    "bash -c 'gh pr merge 3'",
+    'echo 3 | xargs gh pr merge',
+    'cd ~/x && gh pr new',
+    'gh pr \\\nmerge 3',
+    'gh api -X PUT repos/o/r/pulls/3/merge',
+  ]
+  for (const command of commands) {
     expect({ command, deny: (await $.tool.call({ tool: 'Bash', command })).deny }).toEqual({ command, deny: refusal })
   }
-  expect((await $.tool.call({ tool: 'Bash', command: 'gh pr view 3' })).deny).toBe(undefined)
+  for (const command of ['gh pr view 3', 'gh api repos/o/r/pulls/3/comments']) {
+    expect({ command, deny: (await $.tool.call({ tool: 'Bash', command })).deny }).toEqual({ command, deny: undefined })
+  }
 })
 
 test("the review's agents read through their own tools, and have no shell", async ($, on) => {

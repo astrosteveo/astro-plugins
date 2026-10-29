@@ -24,7 +24,7 @@ Claude opens and merges pull requests through the `pull_request` tool. `open` pu
 
 For a high-risk change, the tool asks you in Claude Code's question dialog to approve that commit before its pull request is opened or merged. Claude cannot answer the dialog, and the approval holds for that commit alone.
 
-A shell line that runs `gh pr create`, `gh pr new` or `gh pr merge`, however it is wrapped, is refused and sent to the tool. The match is on the line's text, so a commit message that only mentions those words is passed from a file (`git commit -F FILE`).
+A shell command that runs `gh pr create`, `gh pr new` or `gh pr merge` is refused and sent to the tool, and so is a `gh api` call that opens or merges a pull request: a POST to `pulls`, a call to a pull request's `merge`, or a GraphQL mutation that creates, merges or queues one. The match reads the command's text with continued lines joined, so `env`, `bash -c`, `eval`, `xargs` and a variable holding `gh` do not hide the call. A commit message that only mentions those words is passed from a file (`git commit -F FILE`).
 
 ## Cost and time
 
@@ -82,7 +82,7 @@ In `/config`:
 - A round runs one agent per reviewer and per checker, 3, 7 or 8 of them, and one completion for the risk.
 - The gate sees pull requests that a Claude Code session opens or merges. One opened on github.com, or from another shell, does not pass through it.
 - The record belongs to one machine; another clone or machine starts with none.
-- It guards a workflow and is not a sandbox: a model that sets out to forge the plugin's store, or to hide a gh command from a text match, can.
+- It guards a workflow and is not a sandbox. The match does not read a script file run by name, and a model that sets out to hide a gh command from it, or to forge the plugin's store, can.
 - It needs git, gh, and the `sleep` command; ripgrep is used when installed, and git grep when not. Windows is not supported.
 
 The article's other layers, a merge queue, feature flags, staged releases and an eval built from past incidents, belong to CI and release tooling, so this mod leaves them out.
