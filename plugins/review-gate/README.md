@@ -10,7 +10,7 @@ Each finding the review reports becomes `R<round>-<n>` in the branch's record, g
 
 The first round reads the whole branch. Later rounds read only the commits since the last one, and the review looks again at every open finding, since a fix may sit in another file. Those it finds fixed are closed. A review that reports as many findings as its level allows may have left some out, so the next round reads the whole branch again. After three rounds in a row end with findings open, the tool refuses a fourth and tells Claude to step back and talk to you.
 
-Every finding needs an answer. Claude fixes it and commits, and the next round confirms the fix; or it dismisses the finding with a reason through the `dismiss` tool, and the reason shows in the card. Called with `fix`, the review also fixes what it found in the working tree once it has recorded it. Claude commits the fixes it keeps, and the next round confirms each one.
+Every finding needs an answer. Claude fixes it and commits, and the next round confirms the fix; or it dismisses the finding with a reason through the `dismiss` tool, and the reason shows in the card. Called with `fix`, the review also fixes what it found in the working tree once it has recorded it, then tells the gate which findings it fixed and why it left the rest. The round, its card and the band show those fixes as fixed but not committed, apart from the findings that still need an answer. The fixes stay uncommitted: Claude commits the ones it keeps, and the next round confirms each one and closes it.
 
 ## Risk
 
@@ -43,7 +43,7 @@ review · round 2 · /code-review high · 3m 10s
 
 The second line is the review's agent: its tool calls so far, and what it is doing now. `watch` opens its transcript.
 
-Between rounds the band says where the branch stands: findings open, commits not reviewed yet, or a commit ready for its pull request, with a note when it waits for your approval. A review's row in the chat draws as a card that lists each finding with its grade, place and the review's category for it; fixed ones are ticked, and dismissed ones show their reason. ctrl+o shows the text Claude read.
+Between rounds the band says where the branch stands: fixes waiting for a commit, findings open, commits not reviewed yet, or a commit ready for its pull request, with a note when it waits for your approval. A review's row in the chat draws as a card that lists each finding with its grade, place and the review's category for it; fixed ones are ticked, fixes not yet committed are marked as such, and dismissed ones show their reason. ctrl+o shows the text Claude read. When the review ran in the background, the engine's notice of its end is kept out of the conversation, since the round's result already holds its findings.
 
 - `/review-gate` runs a round now. `/review-gate low`, `medium`, `high`, `xhigh` or `max` picks its level. Add `--fix` to let the review fix what it finds, and `--max-findings <n|all|default>` to pass `/code-review` its limit, which it keeps for later runs. Your run goes past the cap and reviews a commit again.
 - A pull request's number is not a target: the gate reviews the branch checked out, so run `gh pr checkout <n>` first. `--comment` is not passed, since the review runs before the pull request exists.

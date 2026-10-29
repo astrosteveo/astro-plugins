@@ -31,6 +31,9 @@ export function toLedger(value: unknown, branch: string): Ledger {
 
 export const openFindings = (ledger: Ledger) => ledger.findings.filter(finding => finding.status === 'open')
 
+/** Whether a review run with --fix fixed an open finding in the working tree, not committed yet. */
+export const isApplied = (finding: Finding) => finding.status === 'open' && finding.fix?.applied === true
+
 /** Rounds in a row, counted back from the last, that ended with findings open: what the cap reads. */
 export function streak(ledger: Ledger) {
   let count = 0

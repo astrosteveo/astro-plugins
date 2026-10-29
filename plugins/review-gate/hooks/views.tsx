@@ -1,7 +1,7 @@
 import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import type { Activity, Finding, Ledger, Repo, Run } from '../types'
 import { short } from './git'
-import { ROUND_CAP, aboutOf, duration, isCapped, openFindings, riskNow, spent, streak } from './ledger'
+import { ROUND_CAP, aboutOf, duration, isApplied, isCapped, openFindings, riskNow, spent, streak } from './ledger'
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
@@ -63,18 +63,27 @@ export function band(
     )
   }
   const open = openFindings(ledger)
+  // Fixes the review left in the working tree wait for a commit; the rest wait for an answer.
+  const applied = open.filter(isApplied)
+  const waiting = open.filter(finding => !isApplied(finding))
   const isCurrent = ledger.reviewed === repo.head
   const risk = riskNow(ledger)
   const needsYou = isCurrent && open.length === 0 && risk?.tier === 'high' && ledger.approved?.sha !== repo.head
   return (
     <Box flexDirection="row" flexWrap="wrap">
       {label}
-      {open.length > 0 && (
-        <Text color="error">
-          ✗ {open.length} open: {open.map(finding => finding.id).join(' ')}
+      {applied.length > 0 && (
+        <Text color="suggestion">
+          ◐ {applied.length} fixed, not committed: {applied.map(finding => finding.id).join(' ')}
         </Text>
       )}
-      {open.length > 0 && <Text dimColor> · fix and commit, or dismiss with a reason</Text>}
+      {applied.length > 0 && <Text dimColor> · commit, then review again</Text>}
+      {waiting.length > 0 && (
+        <Text color="error">
+          {applied.length > 0 ? ' · ' : ''}✗ {waiting.length} open: {waiting.map(finding => finding.id).join(' ')}
+        </Text>
+      )}
+      {waiting.length > 0 && <Text dimColor> · fix and commit, or dismiss with a reason</Text>}
       {open.length > 0 && streak(ledger) >= ROUND_CAP && <Text color="warning"> · {ROUND_CAP} rounds without converging: step back</Text>}
       {!isCurrent && <Text color="warning">{open.length > 0 ? ' · ' : ''}○ new commits since {short(ledger.reviewed ?? '')}</Text>}
       {isCurrent && open.length === 0 && <Text color="success">✓ {short(repo.head)} reviewed, ready for a pull request</Text>}
@@ -84,13 +93,15 @@ export function band(
 }
 
 function mark(finding: Finding) {
+  if (isApplied(finding)) return { glyph: '◐', color: 'suggestion' as const }
   if (finding.status === 'fixed') return { glyph: '✓', color: 'success' as const }
   if (finding.status === 'dismissed') return { glyph: '–', color: 'inactive' as const }
   if (finding.severity === 'nit') return { glyph: '✗', color: 'warning' as const }
   return { glyph: '✗', color: finding.severity === 'pre-existing' ? ('warning' as const) : ('error' as const) }
 }
 
-const ORDER: Record<Finding['status'], number> = { open: 0, dismissed: 1, fixed: 2 }
+// Findings that need an answer first, then fixes waiting for a commit, then the answered.
+const order = (finding: Finding) => (isApplied(finding) ? 1 : { open: 0, dismissed: 2, fixed: 3 }[finding.status])
 
 /**
  * A round as a card in the chat: what it covered, each finding it raised or looked at again with
@@ -103,8 +114,10 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
   const isLast = ledger.rounds[ledger.rounds.length - 1]?.n === n
   const rows = ledger.findings
     .filter(finding => finding.round === n || finding.closedRound === n || (isLast && finding.round < n && finding.status === 'open'))
-    .sort((a, b) => ORDER[a.status] - ORDER[b.status])
+    .sort((a, b) => order(a) - order(b))
   const open = openFindings(ledger)
+  const applied = open.filter(isApplied)
+  const waiting = open.length - applied.length
   const risk = riskNow(ledger) ?? round.risk
   const moved = isLast && repo !== null && repo.branch === ledger.branch && repo.head !== round.head
   const cost = [spent(round), round.calls === undefined ? '' : plural(round.calls, 'call')].filter(part => part !== '').join(' · ')
@@ -142,15 +155,22 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
               <Text dimColor={finding.status !== 'open'}>{finding.title}</Text>
               {finding.status === 'dismissed' && <Text dimColor>dismissed: {finding.answer ?? ''}</Text>}
               {finding.status === 'fixed' && <Text dimColor>{finding.answer ?? 'fixed'}</Text>}
+              {isApplied(finding) && <Text color="suggestion">fixed in the working tree, not committed{finding.fix?.why ? `: ${finding.fix.why}` : ''}</Text>}
+              {finding.status === 'open' && finding.fix?.applied === false && finding.fix.why !== '' && <Text dimColor>the review left it: {finding.fix.why}</Text>}
             </Box>
           </Box>
         )
       })}
       <Box marginTop={1} flexDirection="column">
         {rows.length === 0 && <Text color="success">No findings.</Text>}
-        {open.length > 0 && (
+        {applied.length > 0 && (
           <Text>
-            <Text color="error">{plural(open.length, 'finding')} open.</Text> Fix and commit, then review again; or dismiss each with a reason.
+            <Text color="suggestion">{applied.length === 1 ? '1 fix' : `${applied.length} fixes`} in the working tree.</Text> Commit the ones you keep, then review again to close them.
+          </Text>
+        )}
+        {waiting > 0 && (
+          <Text>
+            <Text color="error">{plural(waiting, 'finding')} open.</Text> Fix and commit, then review again; or dismiss each with a reason.
           </Text>
         )}
         {open.length === 0 && !moved && <Text color="success">Nothing open: ready for a pull request.</Text>}

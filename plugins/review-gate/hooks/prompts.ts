@@ -128,9 +128,30 @@ export function reviewSection(plan: Plan) {
     '- findings: every finding of your final list, with its file, line, summary, short_summary, failure_scenario and category as the steps above describe them, and two more fields. security is true when the defect lets someone do what they should not: read or change data that is not theirs, get past a check, run code, or learn a secret. introduced is false when the defect was there before this branch.',
     `- rechecked: ${open.length === 0 ? 'an empty list.' : 'one entry for each open finding listed above: its id, fixed (true or false), and why, in one line.'}`,
     '',
-    'Its reply gives each finding its id. Then finish as the steps above say.',
+    'Its reply gives each finding its id.',
   )
+  if (plan.fix)
+    lines.push(
+      '',
+      `Then fix the findings as the steps above say. When you have changed every file you will change, call ${RECORD} a second time, with:`,
+      `- round: "${plan.token}"`,
+      `- fixes: one entry for each finding its first reply named${open.length === 0 ? '' : ' and each open finding listed above'}: its id, applied (true when you fixed it in the working tree), and why, in one line: what you changed, or why you left it.`,
+      '',
+      'Leave every change uncommitted. Then end with an answer of two or three sentences: review-gate shows the findings and your fixes itself, so do not list them again.',
+    )
+  else lines.push('Then finish as the steps above say.')
   return lines.join('\n')
+}
+
+/** What a review run with --fix did about one finding. */
+export type Fix = { id: string; applied: boolean; why: string }
+
+/** The fixes a second record call carries, or undefined when it carries none. */
+export function readFixes(input: Record<string, unknown>): Fix[] | undefined {
+  if (!Array.isArray(input.fixes)) return undefined
+  return input.fixes.flatMap((item): Fix[] =>
+    isRecord(item) && typeof item.id === 'string' ? [{ id: item.id.trim().toUpperCase(), applied: item.applied === true, why: text(item.why, 300) }] : [],
+  )
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)

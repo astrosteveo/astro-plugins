@@ -5,7 +5,7 @@ import { branches, firstCommit, locate, short } from './git'
 import type { Place } from './git'
 import { opensOrMerges } from './guard'
 import { LEVELS, ROUND_CAP, emptyLedger, newFindings, openFindings, recordKey, recordPrefix, riskNow, toLedger } from './ledger'
-import { RECORD, capOf, readRecord, reviewSection } from './prompts'
+import { RECORD, capOf, readFixes, readRecord, reviewSection } from './prompts'
 import { SKILL, isLevel, mailbox, runRound, summary } from './review'
 import type { Pending, RoundAsk } from './review'
 import { band, card } from './views'
@@ -94,8 +94,21 @@ const RECORD_TOOL = {
           required: ['id', 'fixed'],
         },
       },
+      fixes: {
+        type: 'array',
+        description: 'With --fix, in a second call once you have changed every file you will: one entry for each finding, saying whether you fixed it in the working tree.',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            applied: { type: 'boolean', description: 'True when you fixed it in the working tree.' },
+            why: { type: 'string', description: 'In one line: what you changed, or why you left it.' },
+          },
+          required: ['id', 'applied'],
+        },
+      },
     },
-    required: ['round', 'findings'],
+    required: ['round'],
   },
 }
 
@@ -330,6 +343,8 @@ async function mergePullRequest($: EngineInterface, place: Place, input: Input):
 const mail = mailbox()
 const desk: { pending?: Pending } = {}
 const others = new Set<string>()
+// The review agents rounds have run: their task notifications repeat what the round reported.
+const reviews = new Set<string>()
 let activeRoot: string | undefined
 let busy = false
 
@@ -361,6 +376,8 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
   } finally {
     busy = false
     activeRoot = undefined
+    const reviewed = (await read($, run))?.agentId
+    if (reviewed !== undefined) reviews.add(reviewed)
     await update($, run, () => null)
     await refresh($).catch(() => undefined)
   }
@@ -468,6 +485,16 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // A review's outcome reaches the conversation as the round's result. The notification the engine
+  // also sends for a review run in the background would hand the model /code-review's raw report a
+  // second time, findings the round left out included, so it is dropped.
+  on('prompt.submit', async (_, e, next) => {
+    if (e.origin.kind !== 'task-notification') return next(e)
+    const id = [...reviews, desk.pending?.agentId].find(one => one !== undefined && e.text.includes(`<task-id>${one}</task-id>`))
+    if (id === undefined) return next(e)
+    return { drop: "review-gate: the review finished; the round's result has its findings." }
+  }).catch((_, e, next) => next(e))
+
   // A subagent's reply is its turn's end; the main thread's end is a moment to look at git again.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) mail.settle(e.agentId, e.answer, e.usage)
@@ -529,7 +556,19 @@ export const register: Register = (on, options) => {
       const agent = (await $.agent.list()).find(one => one.id === e.agentId)
       if (agent?.parentId !== undefined && agent.spawnedBy !== PLUGIN) return { deny: refusal }
     }
-    if (pending.record !== undefined) return { deny: `Round ${pending.plan.n}'s findings are recorded already: finish as your instructions say.` }
+    // With --fix, a second call says what the review fixed.
+    const fixes = readFixes(e)
+    if (pending.record !== undefined) {
+      if (!pending.plan.fix || fixes === undefined || pending.fixes !== undefined)
+        return { deny: `Round ${pending.plan.n}'s findings are recorded already: finish as your instructions say.` }
+      const known = new Set([...pending.record.added.map(one => one.id), ...pending.plan.earlier.filter(one => one.status === 'open').map(one => one.id)])
+      const unknown = fixes.filter(one => !known.has(one.id)).map(one => one.id)
+      if (unknown.length > 0) return { deny: `Round ${pending.plan.n} has no open finding ${unknown.join(', ')}: give the ids its first reply named.` }
+      pending.fixes = fixes
+      const applied = fixes.filter(one => one.applied).length
+      return { result: `Recorded ${applied} fix${applied === 1 ? '' : 'es'} in the working tree. End with two or three sentences: review-gate shows the findings and fixes itself.` }
+    }
+    if (fixes !== undefined && !Array.isArray(e.findings)) return { deny: 'Record the findings first, then the fixes in a second call.' }
     const read = readRecord(e, pending.changed, pending.plan.root)
     if (typeof read === 'string') return { deny: read }
     // The ids the review is told here are the ones the round saves.
@@ -544,7 +583,9 @@ export const register: Register = (on, options) => {
     return {
       result: `Recorded round ${pending.plan.n}: ${
         added.length === 0 ? 'no new findings' : added.map(finding => `${finding.id} ${finding.file}:${finding.line} ${finding.title}`).join('; ')
-      }.${again > 0 ? ` ${again} the branch had already ${again === 1 ? 'was' : 'were'} left out.` : ''} Finish as your instructions say.`,
+      }.${again > 0 ? ` ${again} the branch had already ${again === 1 ? 'was' : 'were'} left out.` : ''} ${
+        pending.plan.fix ? 'Now fix them, then record the fixes as your instructions say.' : 'Finish as your instructions say.'
+      }`,
     }
   }).catch(() => ({ deny: 'review-gate: the findings could not be recorded.' }))
 

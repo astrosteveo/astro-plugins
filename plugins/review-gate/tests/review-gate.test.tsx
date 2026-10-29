@@ -149,6 +149,7 @@ function engine(on: On, repo: World) {
   // A skill's prompt as the engine computes it, before any plugin adds to it.
   on('skill.prompt', (_, e) => ({ text: e.text }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('model.complete', (_, e) => {
     judged.push({ model: e.model, prompt: e.prompt, cached: e.promptBlocks?.some(block => block.cache === true) === true })
@@ -487,7 +488,7 @@ test("a level the call or the person names wins, max is the person's alone, and 
   expect(reviews.length).toBe(3)
 })
 
-test("with --fix, the round hands back the review's report of its fixes, and leaves each finding open for the next round", async ($, on) => {
+test("with --fix, a review that does not say what it fixed has its report quoted, and each finding stays open for the next round", async ($, on) => {
   const repo = world()
   const { store, reviews } = engine(on, repo)
   await start($)
@@ -499,9 +500,77 @@ test("with --fix, the round hands back the review's report of its fixes, and lea
   expect(one.args).toBe(`high ${BASE}..${ONE} --fix`)
   const text = String((await call).result)
   expect(text).toContain(
-    'The review then changed src/app.ts, as --fix asks. Its report:\n\nFixed R1-1: the loop now runs to pages.\n\nCommit the fixes you keep and review again: the next round confirms each fix.',
+    'The review then changed src/app.ts, as --fix asks, but did not say which findings it fixed. Its report:\n\nFixed R1-1: the loop now runs to pages.\n\nCommit the fixes you keep and review again: the next round confirms each fix.',
   )
-  expect(ledgerOf(store).findings.map(one => [one.id, one.status])).toEqual([['R1-1', 'open']])
+  expect(ledgerOf(store).findings.map(one => [one.id, one.status, one.fix])).toEqual([['R1-1', 'open', undefined]])
+})
+
+test('with --fix, the review records what it fixed, and the round shows those fixes apart from the findings left to answer', async ($, on) => {
+  const repo = world()
+  const { store, reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW, fix: true })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  expect(one.prompt).toContain(`call ${RECORD} a second time`)
+  // Fixes come after the findings, in a second call, once.
+  expect(String((await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, fixes: [] })).deny)).toBe('Record the findings first, then the fixes in a second call.')
+  const first = await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE, OVERLAP] })
+  expect(String(first.result)).toContain('Now fix them, then record the fixes as your instructions say.')
+  repo.dirty = ['src/app.ts']
+  expect(String((await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, fixes: [{ id: 'R9-9', applied: true }] })).deny)).toContain('has no open finding R9-9')
+  const second = await $.tool.call({
+    tool: RECORD,
+    agentId: one.id,
+    round: one.token,
+    fixes: [
+      { id: 'r1-1', applied: true, why: 'the loop runs to pages' },
+      { id: 'R1-2', applied: false, why: 'the overlap is what the API returns' },
+    ],
+  })
+  expect(String(second.result)).toBe('Recorded 1 fix in the working tree. End with two or three sentences: review-gate shows the findings and fixes itself.')
+  expect(String((await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, fixes: [] })).deny)).toContain('recorded already')
+  const report = 'Fixed one, left one. ```json\n[{"file": "src/app.ts"}]\n```'
+  await reply($, one.id, report)
+  one.finish(report)
+  const text = String((await call).result)
+  expect(text).toContain(
+    'The review fixed 1 of the 2 open findings in the working tree. Look over the fixes and commit the ones you keep, then review again: that round checks each fix and closes it.\n\nR1-1 · src/app.ts:12\n  The last page is skipped\n  Fixed: the loop runs to pages',
+  )
+  expect(text).toContain('The other 1 needs your answer.')
+  expect(text).toContain('  The review left it: the overlap is what the API returns')
+  expect(text).toContain("The review's changes, in the working tree and not committed: src/app.ts.")
+  // The raw report is the review's own, and the round has said all it holds.
+  expect(text.includes('```json')).toBe(false)
+  expect(ledgerOf(store).findings.map(one => [one.id, one.status, one.fix?.applied])).toEqual([
+    ['R1-1', 'open', true],
+    ['R1-2', 'open', false],
+  ])
+
+  // The next round looks again: what it finds fixed closes, and the word of round 1's --fix goes.
+  repo.dirty = []
+  repo.history = [BASE, ONE, TWO]
+  repo.changes[TWO] = ['src/app.ts']
+  repo.head = TWO
+  const again = $.tool.call({ tool: REVIEW })
+  await act($, reviews, 1, { rechecked: [{ id: 'R1-1', fixed: true, why: 'fixed' }, { id: 'R1-2', fixed: false, why: 'still there' }] })
+  await again
+  expect(ledgerOf(store).findings.map(one => [one.id, one.status, one.fix])).toEqual([
+    ['R1-1', 'fixed', undefined],
+    ['R1-2', 'open', undefined],
+  ])
+})
+
+test("a review's task notification is kept out of the conversation, and others pass", async ($, on) => {
+  const { reviews } = engine(on, world({ background: true }))
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  const { one } = await act($, reviews, 0)
+  await call
+  const notice = (id: string) => $.prompt.submit({ text: `<task-notification><task-id>${id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
+  expect(await notice(one.id)).toEqual({ drop: "review-gate: the review finished; the round's result has its findings." })
+  expect((await notice('other-agent')).text).toContain('<task-id>other-agent</task-id>')
+  expect((await $.prompt.submit({ text: `about ${one.id}`, wait: false, origin: { kind: 'composer' } })).text).toBe(`about ${one.id}`)
 })
 
 test('a review that changes no file with --fix, or changes one without it, is reported as it is', async ($, on) => {

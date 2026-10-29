@@ -34,6 +34,11 @@ export type Finding = {
   answer?: string
   /** The round that found it fixed. */
   closedRound?: number
+  /**
+   * What a review run with --fix did about it while it was open: fixed it in the working tree, not
+   * committed yet, or left it, and why. The next round's own check replaces it.
+   */
+  fix?: { round: number; applied: boolean; why: string }
 }
 
 /** One review round: what it covered and what came of it. */

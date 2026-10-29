@@ -2,10 +2,10 @@ import type { EngineInterface, ModelUsage } from 'claude-code'
 import type { Finding, Ledger, Level, Risk, Round, Run, Tokens } from '../types'
 import { changedFiles, commitLog, diffOf, firstCommit, guideFiles, isAncestor, short, uncommitted } from './git'
 import type { Place } from './git'
-import { LEVELS, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, isCapped, levelFor, openFindings, parseGuide, riskNow, riskWith, spent, streak } from './ledger'
+import { LEVELS, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, isApplied, isCapped, levelFor, openFindings, parseGuide, riskNow, riskWith, spent, streak } from './ledger'
 import type { Recheck, Reported } from './ledger'
 import { RISK, readRisk, riskPrompt } from './prompts'
-import type { Context, Plan } from './prompts'
+import type { Context, Fix, Plan } from './prompts'
 
 /** The skill a round runs: Claude Code's own code review. */
 export const SKILL = 'code-review'
@@ -91,6 +91,8 @@ export type Pending = {
   calls: number
   /** What the review recorded through the record tool, and the findings it adds, with the ids the review was told. */
   record?: { findings: Reported[]; rechecked: Recheck[]; added: Finding[] }
+  /** With --fix, what the review did about each finding, from its second record call. */
+  fixes?: Fix[]
 }
 
 /** What a round needs besides the repository: the caller's wishes and the session's plumbing. */
@@ -304,12 +306,13 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   let record: Pending['record'] = { findings: [], rechecked: [], added: [] }
   let cap: number | undefined
   let calls: number | undefined
-  let fixes = ''
+  let report = ''
   let isUnfinished = false
   // Why a review that ran in the foreground says it did not succeed, its words or a stand-in.
   let failed: string | undefined
   // Tracked files the review left changed: its fixes with --fix, and changes it was asked not to make without.
   let touched: string[] = []
+  let fixes: Fix[] | undefined
   // Commits that change only files REVIEW.md skips leave the review nothing to read.
   if (roundFiles.length > 0) {
     const pending: Pending = { plan, changed: new Set(files), isBriefed: false, calls: 0 }
@@ -336,7 +339,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       const reply = await replyOf($, ask, run)
       tokens = plus(tokens, reply?.usage)
       // A review in the background hands back word of its start, not its result.
-      fixes = (reply?.answer ?? (run.background === true ? '' : run.result)).trim()
+      report = (reply?.answer ?? (run.background === true ? '' : run.result)).trim()
       calls = pending.calls
       isUnfinished = reply === undefined && run.background === true
       // A review in the background says only whether it started; one in the foreground, whether it succeeded.
@@ -352,6 +355,8 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     record = pending.record
     cap = pending.cap
     touched = await uncommitted(git).catch(() => [])
+    // A fix is in the working tree or nowhere: a review that left the tree clean applied none.
+    fixes = ask.fix ? pending.fixes?.map(one => (touched.length === 0 ? { ...one, applied: false } : one)) : undefined
   }
 
   const added = record.added
@@ -366,12 +371,19 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       return `${place.branch}'s review record was reset, or another session recorded a round on it, while this round ran, so this round was not recorded. Review again.`
     // Only a finding still open is closed as fixed: one dismissed meanwhile keeps its reason.
     const closing = current.findings.filter(finding => finding.status === 'open' && fixedIds.includes(finding.id)).map(finding => finding.id)
+    // What an earlier --fix did is replaced by this round's word on each open finding.
+    const withFix = (finding: Finding): Finding => {
+      const { fix: _, ...rest } = finding
+      if (finding.status !== 'open') return rest
+      const done = fixes?.find(one => one.id === finding.id)
+      return done === undefined ? rest : { ...rest, fix: { round: n, applied: done.applied, why: done.why } }
+    }
     const findings: Finding[] = [
       ...current.findings.map(finding =>
         closing.includes(finding.id) ? { ...finding, status: 'fixed' as const, answer: `fixed at ${short(place.head)}`, closedRound: n } : finding,
       ),
       ...added,
-    ]
+    ].map(withFix)
     const round: Round = {
       n,
       head: place.head,
@@ -405,15 +417,17 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   if (isUnfinished)
     notes.push(`The review had not finished after ${REVIEW_LIMIT_MS / 60_000} minutes, so it was stopped; it had recorded its findings before that.`)
   if (failed !== undefined) notes.push(`The review recorded its findings, then failed: ${failed}`)
-  const report = fixes === '' ? '' : ` Its report:\n\n${fixes}`
+  // A review that said what it fixed is shown by the summary; one that did not is quoted.
+  const quoted = report === '' ? '' : ` Its report:\n\n${report}`
   // A round whose files are all skipped ran no review, so it has no fixes to speak of.
-  if (ask.fix && roundFiles.length > 0)
-    notes.push(
-      touched.length === 0
-        ? `The review changed no file, though --fix let it.${report}`
-        : `The review then changed ${listed(touched)}, as --fix asks.${report}\n\nCommit the fixes you keep and review again: the next round confirms each fix. Dismiss, with a reason, any finding it skipped that you will not fix.`,
-    )
-  else if (touched.length > 0)
+  if (ask.fix && roundFiles.length > 0) {
+    if (touched.length === 0) notes.push(`The review changed no file, though --fix let it.${fixes === undefined ? quoted : ''}`)
+    else if (fixes !== undefined) notes.push(`The review's changes, in the working tree and not committed: ${listed(touched, 10)}.`)
+    else
+      notes.push(
+        `The review then changed ${listed(touched)}, as --fix asks, but did not say which findings it fixed.${quoted}\n\nCommit the fixes you keep and review again: the next round confirms each fix.`,
+      )
+  } else if (touched.length > 0)
     notes.push(`The review changed ${listed(touched)}, though it was asked to change no file. Look at those changes before you commit them, or undo them.`)
   return { ok: true, ledger: saved, round: n, text: [summary(saved, n), ...notes].join('\n\n') }
 }
@@ -428,15 +442,17 @@ export function stepBack(ledger: Ledger) {
     .join('; ')}) and whether the approach should change, and ask how to go on. They can allow more rounds with /review-gate more.`
 }
 
+const whereOf = (finding: Finding) => (finding.line > 0 ? `${finding.file}:${finding.line}` : finding.file)
+
 function findingText(finding: Finding) {
   const kind = finding.kind === 'bug' ? '' : ` ${finding.kind}`
-  const where = finding.line > 0 ? `${finding.file}:${finding.line}` : finding.file
   const about = aboutOf(finding)
   return [
-    `${finding.id} · ${finding.severity}${kind} · ${where}${about === '' ? '' : ` · ${about}`}`,
+    `${finding.id} · ${finding.severity}${kind} · ${whereOf(finding)}${about === '' ? '' : ` · ${about}`}`,
     `  ${finding.title}`,
     ...(finding.detail === '' ? [] : [`  ${finding.detail.replace(/\n/g, '\n  ')}`]),
     ...(finding.scenario === '' ? [] : [`  When: ${finding.scenario.replace(/\n/g, '\n  ')}`]),
+    ...(finding.fix !== undefined && !finding.fix.applied && finding.fix.why !== '' ? [`  The review left it: ${finding.fix.why}`] : []),
   ].join('\n')
 }
 
@@ -457,12 +473,18 @@ export function summary(ledger: Ledger, n: number) {
     }, /code-review ${round.level}, risk ${risk.tier}${risk.why.length > 0 ? ` (${risk.why.join('; ')})` : ''}.`,
   ]
   const open = openFindings(ledger)
-  if (open.length > 0) {
+  const applied = open.filter(isApplied)
+  const waiting = open.filter(finding => !isApplied(finding))
+  if (applied.length > 0)
     lines.push(
-      `${open.length} finding${open.length === 1 ? '' : 's'} open. Answer each one: fix it and commit, then review again (the next round checks the fix); or dismiss it with the reason it can stay.`,
-      ...open.map(findingText),
+      `The review fixed ${applied.length === open.length ? (open.length === 1 ? 'the open finding' : `all ${open.length} open findings`) : `${applied.length} of the ${open.length} open findings`} in the working tree. Look over the fixes and commit the ones you keep, then review again: that round checks each fix and closes it.`,
+      applied.map(finding => `${finding.id} · ${whereOf(finding)}\n  ${finding.title}${finding.fix?.why ? `\n  Fixed: ${finding.fix.why}` : ''}`).join('\n\n'),
     )
-  }
+  if (waiting.length > 0)
+    lines.push(
+      `${applied.length > 0 ? `The other ${waiting.length} need${waiting.length === 1 ? 's' : ''} your answer` : `${waiting.length} finding${waiting.length === 1 ? '' : 's'} open`}. Answer each one: fix it and commit, then review again (the next round checks the fix); or dismiss it with the reason it can stay.`,
+      ...waiting.map(findingText),
+    )
   const closed = ledger.findings.filter(finding => finding.closedRound === n)
   if (closed.length > 0) lines.push(`Found fixed this round: ${closed.map(finding => `${finding.id} (${finding.title})`).join('; ')}.`)
   if (round.raised > round.kept) {
