@@ -117,11 +117,13 @@ function engine(on: On, repo: World) {
     }
     if (sub === 'merge-base') return ran(0, `${BASE}\n`)
     if (sub === 'rev-list') return ran(0, `${repo.history.indexOf(repo.head)}\n`)
-    if (sub === 'status') return ran(0, repo.dirty.map(path => ` M ${path}\0`).join(''))
+    if (sub === 'status') {
+      const fresh = rest.includes('--untracked-files=no') ? [] : (repo.untracked ?? [])
+      return ran(0, [...repo.dirty.map(path => ` M ${path}\0`), ...fresh.map(path => `?? ${path}\0`)].join(''))
+    }
     if (sub === 'log') return rest.includes('--format=%aI %ae') ? ran(0, `${FIRST}\n`) : ran(0, '1111111 Add the app\n\nIt pages through results.\n\0')
     if (sub === 'for-each-ref') return ran(0, (repo.branches ?? ['main', 'feat/app']).map(name => `${name}\n`).join(''))
     if (sub === 'push') return ran(0)
-    if (sub === 'ls-files') return ran(0, (repo.untracked ?? []).map(path => `${path}\0`).join(''))
     const guided = repo.guide !== undefined && (rest.includes(repo.guideAt ?? BASE) || rest[0] === `${repo.guideAt ?? BASE}:REVIEW.md`)
     if (sub === 'ls-tree') return ran(0, guided ? 'REVIEW.md\0src/app.ts\0' : 'src/app.ts\0')
     if (sub === 'show') return guided ? ran(0, repo.guide ?? '') : ran(128)
@@ -548,7 +550,7 @@ test('with --fix, the review records what it fixed, and the round shows those fi
   one.finish(report)
   const text = String((await call).result)
   expect(text).toContain(
-    'The review fixed 1 of the 2 open findings in the working tree. Look over the fixes and commit the ones you keep, then review again: that round checks each fix and closes it.\n\nR1-1 · src/app.ts:12\n  The last page is skipped\n  Fixed: the loop runs to pages',
+    'The review fixed 1 of the 2 open findings. Each stays open until a round confirms its fix: commit the fixes you keep, then review again.\n\nR1-1 · src/app.ts:12\n  The last page is skipped\n  Fixed: the loop runs to pages',
   )
   expect(text).toContain('The other 1 needs your answer.')
   expect(text).toContain('  The review left it: the overlap is what the API returns')
@@ -920,7 +922,7 @@ test('a review is refused on the default branch, with no commits past it, and wi
   repo.branch = 'feat/app'
   repo.dirty = ['src/app.ts']
   expect((await $.tool.call({ tool: REVIEW })).deny).toBe(
-    'Commit first: a review covers one commit, and these files have changes it would not see: src/app.ts.',
+    'Commit first: a review covers one commit, and these files, new ones included, are not in it: src/app.ts. Commit them, or remove or ignore the ones that are not part of the change.',
   )
   repo.dirty = []
   repo.head = BASE
@@ -1074,28 +1076,38 @@ async function bandText($: Engine) {
   return said
 }
 
-test("a review's fix shows as uncommitted while it is in the working tree, committed once a commit holds it, and open again once undone", async ($, on) => {
+test("a review's fix shows as fixed by the review and not yet confirmed, whatever git says since, until a round confirms it", async ($, on) => {
   const repo = world({ dirty: ['src/app.ts'] })
   const { store } = engine(on, repo)
   seed(store, { rounds: [round(1, ONE, 1)], findings: [finding({ fix: { round: 1, applied: true, why: 'the loop runs to pages' } })], reviewed: ONE })
   await start($)
-  expect(await bandText($)).toContain('◐ 1 fixed, not committed: R1-1')
+  expect(await bandText($)).toContain('◐ 1 fixed by the review, not yet confirmed: R1-1 · commit, then review again')
   const status = async () => String((await $.command.run({ command: 'review-gate', args: 'status', ...person })).text)
-  expect(await status()).toContain('The review fixed the open finding in the working tree.')
+  const said = await status()
+  expect(said).toContain('The review fixed the open finding. Each stays open until a round confirms its fix: commit the fixes you keep, then review again.')
+  expect(said).toContain('R1-1 · src/app.ts:12\n  The last page is skipped\n  Fixed: the loop runs to pages')
 
+  // Committed since: the mark says the same, and the band adds the commits not reviewed yet.
   repo.dirty = []
   repo.history = [BASE, ONE, TWO]
   repo.changes[TWO] = ['src/app.ts']
   repo.head = TWO
-  expect(await status()).toContain("The review's fixes for the open finding are committed since round 1. Review again")
-  expect(await bandText($)).toContain('◐ 1 fixed and committed: R1-1')
+  expect(await status()).toContain('The review fixed the open finding.')
+  const band = await bandText($)
+  expect(band).toContain('◐ 1 fixed by the review, not yet confirmed: R1-1')
+  expect(band).toContain('○ new commits since 1111111')
 
-  repo.history = [BASE, ONE]
-  repo.head = ONE
-  const undone = await status()
-  expect(undone).toContain('1 finding open.')
-  expect(undone).toContain("The review's fix for it is no longer in the working tree.")
-  expect(await bandText($)).toContain('✗ 1 open: R1-1')
+  const row = await $.ui.mount({
+    plugin: 'review-gate',
+    surface: 'terminal',
+    component: 'ToolResult',
+    requestId: 'toolu_9',
+    props: { tool_use_id: 'toolu_9', tool: REVIEW, output: 'Review round 1 of feat/app at 1111111: the whole branch.', isErrored: false },
+  })
+  const drawn = (await row.findAll({ type: 'Text' })).map(text => text.text).join('\n')
+  expect(drawn).toContain('fixed by the review in round 1, not yet confirmed: the loop runs to pages')
+  expect(drawn).toContain('1 fixed by the review, not yet confirmed.')
+  await row.unmount()
 })
 
 test("only Claude Code's own /code-review is the gate's review: another skill of its name is told to stop, and the round refuses it", async ($, on) => {
@@ -1128,42 +1140,64 @@ test('a review of an earlier round still running is not this round’s review, a
   expect(String((await call).result)).toContain('R1-1')
 })
 
-test('with --fix, a file the review creates counts as a fix, and a review that commits its fixes is said to have moved the branch', async ($, on) => {
-  const repo = world({ untracked: ['notes.txt'] })
+test('with --fix, a file the review creates counts as a fix', async ($, on) => {
+  const repo = world()
   const { store, reviews } = engine(on, repo)
   await start($)
   const call = $.tool.call({ tool: REVIEW, fix: true })
   await until($, 'the review', () => reviews.length === 1)
   const one = reviews[0] as Review
   await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
-  // The fix is a new test file, and notes.txt was there before the round.
-  repo.untracked = ['notes.txt', 'src/app.test.ts']
+  // The fix is a new test file alone.
+  repo.untracked = ['src/app.test.ts']
   await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, fixes: [{ id: 'R1-1', applied: true, why: 'a test pins the last page' }] })
   await reply($, one.id, 'Done.')
   one.finish('Done.')
-  const text = String((await call).result)
-  expect(text).toContain("The review's changes, in the working tree and not committed: src/app.test.ts.")
+  expect(String((await call).result)).toContain("The review's changes, in the working tree and not committed: src/app.test.ts.")
   expect(ledgerOf(store).findings[0]?.fix?.applied).toBe(true)
+})
 
-  // The next review commits its fix.
-  repo.untracked = []
+test('a new file the commit does not hold stops a round, as a changed one does', async ($, on) => {
+  const { reviews } = engine(on, world({ untracked: ['src/util.ts'] }))
+  await start($)
+  expect(String((await $.tool.call({ tool: REVIEW })).deny)).toBe(
+    'Commit first: a review covers one commit, and these files, new ones included, are not in it: src/util.ts. Commit them, or remove or ignore the ones that are not part of the change.',
+  )
+  expect(reviews.length).toBe(0)
+})
+
+test('a review that moves HEAD, by a commit, a checkout or a reset, leaves the round with nothing recorded', async ($, on) => {
+  const repo = world()
+  const { store, reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW, fix: true })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  expect(one.prompt).toContain('Leave HEAD where it is: read other commits with git show or git diff, and do not commit, check out or reset, or the round records nothing.')
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
+  // The review commits its fix.
   repo.history = [BASE, ONE, TWO]
   repo.changes[TWO] = ['src/app.ts']
   repo.head = TWO
-  const again = $.command.run({ command: 'review-gate', args: '--fix', ...person })
-  await until($, 'the review', () => reviews.length === 2)
+  await reply($, one.id, 'Done.')
+  one.finish('Done.')
+  expect(String((await call).deny)).toBe(
+    'The review moved HEAD while it ran: the round began on feat/app at 1111111, and HEAD is now feat/app at 2222222. Nothing was recorded. Put HEAD where you want the review to read, then review again.',
+  )
+  expect(store.has(KEY)).toBe(false)
+
+  // A checkout of the same commit that detaches HEAD moves it too.
+  repo.head = ONE
+  repo.history = [BASE, ONE]
+  const again = $.command.run({ command: 'review-gate', args: '', ...person })
+  await until($, 'the second review', () => reviews.length === 2)
   const two = reviews[1] as Review
-  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [OVERLAP] })
-  repo.history.push('3'.repeat(40))
-  repo.changes['3'.repeat(40)] = ['src/app.ts']
-  repo.head = '3'.repeat(40)
-  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, fixes: [{ id: 'R2-1', applied: true, why: 'pages no longer meet' }] })
+  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [] })
+  repo.branch = ''
   await reply($, two.id, 'Done.')
   two.finish('Done.')
-  const said = String((await again).text)
-  expect(said).toContain('The review moved feat/app from 2222222 to 3333333. This round covers 2222222; review again to cover the review\'s commits.')
-  expect(said).toContain("The review's changes: src/app.ts.")
-  expect(ledgerOf(store).reviewed).toBe(TWO)
+  expect(String((await again).text)).toContain('HEAD is now a detached HEAD at 1111111. Nothing was recorded.')
+  expect(store.has(KEY)).toBe(false)
 })
 
 test('a review that recorded, then failed, keeps its record; one that failed to start is not waited for', async ($, on) => {
@@ -1199,16 +1233,20 @@ test('where sleep cannot run, the round stops waiting for a background review at
   expect(stops).toEqual([one.id])
 })
 
-test("a delivery that carries a review's notice and another task's keeps the other", async ($, on) => {
+test("a delivery keeps other tasks' notices, and drops the review's whole when the hook cannot cut it out", async ($, on) => {
   const { reviews } = engine(on, world({ background: true }))
   await start($)
   const call = $.tool.call({ tool: REVIEW })
   const { one } = await act($, reviews, 0)
   await call
+  const submit = (text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'task-notification' } })
   const other = '<task-notification><task-id>build-7</task-id><status>completed</status></task-notification>'
-  const mine = `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`
-  const passed = await $.prompt.submit({ text: `${mine}\n${other}`, wait: false, origin: { kind: 'task-notification' } })
-  expect(passed.text?.trim()).toBe(other)
+  const mine = `<task-notification id="n1"><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`
+  expect((await submit(`${mine}\n${other}`)).text?.trim()).toBe(other)
+  // Framing with no other notice left, and the id in a form the hook does not read, are dropped.
+  const dropped = { drop: "review-gate: the review finished; the round's result has its findings." }
+  expect(await submit(`A background task finished:\n${mine}`)).toEqual(dropped)
+  expect(await submit(`<notice><task-id>${one.id}</task-id>[raw]</notice>\n${other}`)).toEqual(dropped)
 })
 
 test('open findings are looked at again when the new commits change only skipped files, and findings in skipped files are left out', async ($, on) => {

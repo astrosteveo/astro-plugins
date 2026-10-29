@@ -102,19 +102,22 @@ export async function locate($: EngineInterface, cwd: string): Promise<Place | s
   }
 }
 
-/** Tracked files with changes no commit holds yet. */
+/**
+ * Files with changes no commit holds: changed tracked files, and new files git does not ignore. A
+ * rename reads as its two paths, each with its own status, so every entry is one path.
+ */
 export async function uncommitted(git: Git) {
-  const out = must(await git(['status', '--porcelain', '--untracked-files=no', '-z']), 'read the working tree')
+  const out = must(await git(['status', '--porcelain', '--untracked-files=all', '--no-renames', '-z']), 'read the working tree')
   return out
     .split('\0')
     .filter(entry => entry.length > 3)
     .map(entry => entry.slice(3))
 }
 
-/** Files git does not track and does not ignore, such as one just made. */
-export async function untracked(git: Git) {
-  const out = must(await git(['ls-files', '--others', '--exclude-standard', '-z']), 'list the untracked files')
-  return out.split('\0').filter(path => path !== '')
+/** Where HEAD is now: its commit, and its branch, empty when detached. */
+export async function headNow(git: Git) {
+  const [head, branch] = await Promise.all([git(['rev-parse', '--verify', 'HEAD']), git(['symbolic-ref', '--quiet', '--short', 'HEAD'])])
+  return { head: must(head, 'read HEAD').trim(), branch: branch.ok ? branch.out.trim() : '' }
 }
 
 /** The files a diff from `from` to `to` touches, deleted ones included. */

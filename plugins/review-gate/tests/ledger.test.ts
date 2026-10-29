@@ -190,14 +190,9 @@ test("a finding's grade is read from the review's whole word for it, not a word 
     Array(6).fill('security'),
   )
   // A word that names a thing as well as a hole counts only with the hole named.
-  expect(['tree-traversal', 'graph-traversal', 'permission-prompt', 'sandbox-setup', 'permissions', 'permission-bypass'].map(graded).map(([, kind]) => kind)).toEqual([
-    'bug',
-    'bug',
-    'bug',
-    'bug',
-    'security',
-    'security',
-  ])
+  expect(
+    ['tree-traversal', 'graph-traversal', 'permission-prompt', 'sandbox-setup', 'permissions', 'permission-bypass', 'sandbox', 'sandboxing', 'traversal'].map(graded).map(([, kind]) => kind),
+  ).toEqual(['bug', 'bug', 'bug', 'bug', 'security', 'security', 'security', 'security', 'security'])
   expect(['secret-leak', 'data-leak', 'sql-injection', 'auth', 'broken-authorization', 'oauth-state', 'path-traversal'].map(graded)).toEqual([
     ['secret-leak', 'security', 'important'],
     ['data-leak', 'security', 'important'],

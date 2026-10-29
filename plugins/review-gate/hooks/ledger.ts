@@ -31,24 +31,9 @@ export function toLedger(value: unknown, branch: string): Ledger {
 
 export const openFindings = (ledger: Ledger) => ledger.findings.filter(finding => finding.status === 'open')
 
-/** Whether a review run with --fix fixed an open finding in the working tree, not committed yet. */
+/** Whether a review run with --fix says it fixed an open finding, which a later round has yet to confirm. */
 export const isApplied = (finding: Finding) => finding.status === 'open' && finding.fix?.applied === true
 
-/** Where the repository stands now: its commit, and whether tracked files have changes. */
-export type Tree = { head: string; isDirty?: boolean }
-
-/**
- * Where a fix a --fix review made stands: still in the working tree, committed since its round, or
- * gone, its changes undone. Undefined for a finding with no fix. With no tree to look at, as when the
- * round has just ended, the fix is in the working tree.
- */
-export function fixState(ledger: Ledger, finding: Finding, tree?: Tree): 'uncommitted' | 'committed' | 'gone' | undefined {
-  if (!isApplied(finding)) return undefined
-  if (tree === undefined) return 'uncommitted'
-  const head = ledger.rounds.find(round => round.n === finding.fix?.round)?.head
-  if (head !== undefined && tree.head !== head) return 'committed'
-  return tree.isDirty === false ? 'gone' : 'uncommitted'
-}
 
 /** Rounds in a row, counted back from the last, that ended with findings open: what the cap reads. */
 export function streak(ledger: Ledger) {
@@ -124,11 +109,11 @@ const CLEANUP =
 
 // The review's words for a security hole. A memory or resource leak, dependency or fault injection
 // and an author are not one; a leak or disclosure of data, a secret or a token is, and so is a hole
-// in access control, privileges, permissions or a sandbox. A word that names a thing as well as a
-// hole, such as a permission prompt, a sandbox's setup or a tree's traversal, counts only with the
-// hole named: a permission bypass, a sandbox escape, a path traversal.
+// in access control, privileges, permissions or a sandbox. A word that also names a thing counts
+// alone or with the hole named (sandbox, a sandbox escape; traversal, a path traversal), not as part
+// of another thing's name, such as a permission prompt, a sandbox's setup or a tree's traversal.
 const SECURITY =
-  /secur|(?<!(?:dependency|fault)[-_ ])inject|(?:^|[-_ ])o?auth(?:n|z|entication|ori[sz]ation)?(?:[-_ ]|$)|secret|credential|privilege|^permissions?$|permissions?[-_ ](?:bypass|check|escalation)|access[-_ ]control|sandbox[-_ ](?:escape|bypass)|(?:^|[-_ ])rce(?:[-_ ]|$)|code[-_ ]execution|(?:data|info|information|pii|token|key|password)s?[-_ ](?:leak|disclosure|exposure)|xss|ssrf|csrf|(?:path|directory|file)[-_ ]traversal/
+  /secur|(?<!(?:dependency|fault)[-_ ])inject|(?:^|[-_ ])o?auth(?:n|z|entication|ori[sz]ation)?(?:[-_ ]|$)|secret|credential|privilege|^permissions?$|permissions?[-_ ](?:bypass|check|escalation)|access[-_ ]control|^sandbox(?:ing)?$|sandbox[-_ ](?:escape|bypass)|(?:^|[-_ ])rce(?:[-_ ]|$)|code[-_ ]execution|(?:data|info|information|pii|token|key|password)s?[-_ ](?:leak|disclosure|exposure)|xss|ssrf|csrf|^traversal$|(?:path|directory|file)[-_ ]traversal/
 
 export function kindOf(reported: Reported): FindingKind {
   if (reported.security || SECURITY.test(reported.category)) return 'security'

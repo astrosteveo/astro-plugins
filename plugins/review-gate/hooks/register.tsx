@@ -1,7 +1,7 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput } from 'claude-code'
 import type { Ledger, Level } from '../types'
-import { branches, firstCommit, locate, short, uncommitted } from './git'
+import { branches, firstCommit, locate, short } from './git'
 import type { Place } from './git'
 import { opensOrMerges } from './guard'
 import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, openFindings, recordKey, recordPrefix, riskNow, sortOut, toLedger, whereOf } from './ledger'
@@ -244,8 +244,7 @@ async function show($: EngineInterface, place: Place | string) {
   }
   await prune($, place).catch(() => undefined)
   const isDefault = place.branch === place.main
-  const isDirty = (await uncommitted(place.git).catch(() => [])).length > 0
-  await update($, repo, () => ({ branch: place.branch, head: place.head, main: place.main, isDefault, ahead: place.ahead, isDirty }))
+  await update($, repo, () => ({ branch: place.branch, head: place.head, main: place.main, isDefault, ahead: place.ahead }))
   const record = isDefault ? null : await load($, place)
   await update($, ledgerState, () => record)
 }
@@ -508,10 +507,14 @@ export const register: Register = (on, options) => {
     if (e.origin.kind !== 'task-notification') return next(e)
     const ids = [...reviews, desk.pending?.agentId].filter((one): one is string => one !== undefined && e.text.includes(`<task-id>${one}</task-id>`))
     if (ids.length === 0) return next(e)
-    // A delivery may carry other tasks' notices beside the review's: only the review's go.
-    const text = e.text.replace(/<task-notification>[\s\S]*?<\/task-notification>/g, notice => (ids.some(id => notice.includes(`<task-id>${id}</task-id>`)) ? '' : notice))
-    if (text.includes('<task-id>') && ids.some(id => text.includes(`<task-id>${id}</task-id>`))) return next(e)
-    if (text.trim() !== '') return next({ ...e, text })
+    // A delivery may carry other tasks' notices beside the review's: only the review's go, and the
+    // rest passes on. A review's id left outside any notice the hook can read, or a delivery with no
+    // other notice left, is dropped whole, so the review's raw report never reaches the model.
+    const text = e.text.replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g, notice =>
+      ids.some(id => notice.includes(`<task-id>${id}</task-id>`)) ? '' : notice,
+    )
+    const isClean = !ids.some(id => text.includes(id))
+    if (isClean && /<task-notification\b/.test(text)) return next({ ...e, text })
     return { drop: "review-gate: the review finished; the round's result has its findings." }
   }).catch((_, e, next) => next(e))
 
@@ -692,8 +695,7 @@ export const register: Register = (on, options) => {
     if (verb === 'status') {
       if (place.branch === '' || place.branch === place.main) return { text: `${place.branch || 'HEAD'} is not a branch to review.` }
       if (last === undefined) return { text: `${place.branch} has not been reviewed: ${place.ahead} commit${place.ahead === 1 ? '' : 's'} past ${place.main}.` }
-      const isDirty = (await uncommitted(place.git).catch(() => undefined))?.length
-      return { text: summary(ledger, last.n, { head: place.head, ...(isDirty === undefined ? {} : { isDirty: isDirty > 0 }) }) }
+      return { text: summary(ledger, last.n) }
     }
     if (verb === 'more' || verb === 'reset') {
       if (!isPerson) return { text: `Only the person at the keyboard can run /review-gate ${verb}.` }

@@ -109,7 +109,7 @@ export function reviewSection(plan: Plan) {
     "review-gate keeps this branch's review record, and opens its pull request only once every finding is answered. This section adds to the steps above, and where the two differ, it holds.",
     '',
     `- Review ${scope}`,
-    `- The repository is at \`${plan.root}\`, its working tree at ${short(plan.head)}: run git and read files there.${plan.fix ? '' : ' Change no file.'}`,
+    `- The repository is at \`${plan.root}\`, its working tree at ${short(plan.head)}: run git and read files there.${plan.fix ? '' : ' Change no file.'} Leave HEAD where it is: read other commits with git show or git diff, and do not commit, check out or reset, or the round records nothing.`,
     `- What the author says the change is for: ${intentLine(plan.intent)}`,
   ]
   if (plan.skip.length > 0) lines.push(`- Leave out the files these globs match, as the repository's REVIEW.md asks: ${plan.skip.map(glob => `\`${glob}\``).join(', ')}.`)

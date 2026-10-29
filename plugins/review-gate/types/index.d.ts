@@ -35,8 +35,8 @@ export type Finding = {
   /** The round that found it fixed. */
   closedRound?: number
   /**
-   * What a review run with --fix did about it while it was open: fixed it in the working tree, not
-   * committed yet, or left it, and why. The next round's own check replaces it.
+   * What a review run with --fix said it did about it while it was open: fixed it, or left it, and
+   * why. The finding stays open until a round confirms the fix, and the next round's word replaces it.
    */
   fix?: { round: number; applied: boolean; why: string }
 }
@@ -115,15 +115,7 @@ export type Run = {
 export type Activity = { calls: number; doing: string }
 
 /** Where the session's repository stands, for the band. */
-export type Repo = {
-  branch: string
-  head: string
-  main: string
-  isDefault: boolean
-  ahead: number
-  /** Whether tracked files have changes no commit holds; left out, not known. */
-  isDirty?: boolean
-}
+export type Repo = { branch: string; head: string; main: string; isDefault: boolean; ahead: number }
 
 declare module 'claude-code' {
   interface PluginState {
