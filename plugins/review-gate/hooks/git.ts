@@ -117,12 +117,16 @@ export async function changedFiles(git: Git, from: string, to: string) {
   return out.split('\0').filter(path => path !== '')
 }
 
+// A diff's paths begin a/ and b/ whatever the person's git config says (diff.noprefix,
+// diff.srcPrefix), so the b/ cut from them is always the prefix and never a folder.
+const PREFIXES = ['--src-prefix=a/', '--dst-prefix=b/']
+
 /**
  * The lines of each file at `to` that the diff from `from` added or changed, as ranges: a hunk's
  * `+c,d` is lines c to c+d-1.
  */
 export async function changedLines(git: Git, from: string, to: string) {
-  const out = must(await git(['diff', '-U0', '--no-renames', '--no-color', '--no-ext-diff', from, to]), 'read the changed lines')
+  const out = must(await git(['diff', '-U0', '--no-renames', '--no-color', '--no-ext-diff', ...PREFIXES, from, to]), 'read the changed lines')
   const lines = new Map<string, [number, number][]>()
   let file = ''
   for (const line of out.split('\n')) {
@@ -150,7 +154,7 @@ export async function diffOf(git: Git, from: string, to: string, excludes: reado
   const paths = excludes.length === 0 ? [] : ['--', '.', ...excludes]
   const [stat, body] = await Promise.all([
     git(['diff', '--stat=160', '--no-renames', '--no-ext-diff', from, to, ...paths]),
-    git(['diff', '--no-renames', '--no-color', '--no-ext-diff', '--unified=5', from, to, ...paths]),
+    git(['diff', '--no-renames', '--no-color', '--no-ext-diff', '--unified=5', ...PREFIXES, from, to, ...paths]),
   ])
   return { stat: must(stat, 'read the diff').trimEnd(), body: must(body, 'read the diff') }
 }

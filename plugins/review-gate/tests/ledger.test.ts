@@ -212,11 +212,23 @@ test("a reviewer's findings are normalised and a reply with no list reads as unr
   "junk"
 ]}
 \`\`\``
-  expect(readFindings(reply, 'security')).toEqual([
+  const changed = new Set(['src/app.ts', 'src/auth.ts'])
+  expect(readFindings(reply, 'security', changed)).toEqual([
     candidate({ file: 'src/app.ts', line: 12, title: 'Off by one', detail: 'The last page is skipped.', evidence: 'i < n - 1', focus: 'security' }),
     candidate({ file: 'src/auth.ts', line: 0, title: 'Token in the log', kind: 'security', focus: 'security' }),
   ])
-  expect(readFindings('I could not finish.', 'logic')).toBe(undefined)
+  expect(readFindings('I could not finish.', 'logic', changed)).toBe(undefined)
+})
+
+test("a finding's path keeps a real folder named a or b, and loses a diff's prefix only when that names a changed file", () => {
+  const findings = [
+    { file: 'b/util.ts', title: 'In a folder named b' },
+    { file: 'a/src/app.ts', title: 'Copied from the diff' },
+    { file: 'b/lib/other.ts', title: 'No changed file either way' },
+  ]
+  const reply = `\`\`\`json\n${JSON.stringify({ findings })}\n\`\`\``
+  const files = readFindings(reply, 'logic', new Set(['b/util.ts', 'src/app.ts']))?.map(one => one.file)
+  expect(files).toEqual(['b/util.ts', 'src/app.ts', 'b/lib/other.ts'])
 })
 
 test("a checker's votes are read, and a reply with neither list reads as unread", () => {

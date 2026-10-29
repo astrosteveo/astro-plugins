@@ -322,6 +322,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   const n = (last?.n ?? 0) + 1
   await ask.progress(() => ({ round: n, phase: 'judging', startedAt, agents: [], raised: [] }))
   const files = await changedFiles(git, place.base, place.head)
+  const changed = new Set(files)
   const guides = (await guideFiles(git, place.base, files)).map(file => parseGuide(file.path, file.text))
   const skipped = guides.flatMap(guide => guide.skip)
   const skip = skipped.map(globTest)
@@ -382,7 +383,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     {
       // What a reviewer raised shows in the band as soon as it answers, before any vote.
       onReply: async (job, agentId, answer) => {
-        const found = readFindings(answer, job.focus ?? 'logic') ?? []
+        const found = readFindings(answer, job.focus ?? 'logic', changed) ?? []
         await ask.progress(run =>
           run === null
             ? run
@@ -397,7 +398,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   )
   tokens = sum(tokens, reviewers.tokens)
   if (ask.signal.aborted) return refuse('The review was stopped before it finished, so nothing was recorded.')
-  const read = reviewers.replies.map((reply, index) => (reply === undefined ? undefined : readFindings(reply, focuses[index] ?? 'logic')))
+  const read = reviewers.replies.map((reply, index) => (reply === undefined ? undefined : readFindings(reply, focuses[index] ?? 'logic', changed)))
   const unreadReviewers = read.filter(list => list === undefined).length
   if (focuses.length > 0 && unreadReviewers === focuses.length)
     return refuse(`None of the ${focuses.length} reviewers gave a reply that could be read, so the round has nothing it can stand behind. Nothing was recorded; review again.`)

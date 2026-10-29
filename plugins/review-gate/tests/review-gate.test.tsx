@@ -702,6 +702,9 @@ test('REVIEW.md is read where the branch forked, its Skip files kept from the ag
   await until($, 'four reviewers', () => spawned.length === 4)
   expect(argvs.some(argv => argv.includes('ls-tree') && argv.includes(BASE))).toBe(true)
   expect(argvs.filter(argv => argv[0] === 'git' && argv.includes('diff')).every(argv => argv.includes('--no-ext-diff'))).toBe(true)
+  // A diff the plugin parses, or the agents copy paths from, begins its paths a/ and b/ whatever git's config says.
+  const patches = argvs.filter(argv => argv.includes('-U0') || argv.includes('--unified=5'))
+  expect([patches.length > 0, patches.every(argv => argv.includes('--src-prefix=a/') && argv.includes('--dst-prefix=b/'))]).toEqual([true, true])
   expect(judged[0]?.prompt).toContain('diff --git a/src/app.ts b/src/app.ts')
   expect(spawned[0]?.prompt).toContain('--- REVIEW.md')
   expect(spawned[0]?.prompt).toContain('diff --git a/README.md b/README.md')
@@ -719,6 +722,21 @@ test('a REVIEW.md the branch adds does not apply to its own review', async ($, o
   expect(spawned[0]?.prompt).toContain('diff --git a/src/app.ts b/src/app.ts')
   for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
   await call
+})
+
+test('a finding in a folder named b keeps its path, so its checkers see it on a line the branch changes', async ($, on) => {
+  const { store, spawned } = engine(on, world({ changes: { [ONE]: ['b/util.ts'] } }))
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'four reviewers', () => spawned.length === 4)
+  for (const agent of spawned.splice(0)) {
+    await reply($, agent.id, json({ findings: agent.description === 'review: correctness' ? [{ ...SKIPPED_PAGE, file: 'b/util.ts' }] : [] }))
+  }
+  await until($, 'three checkers', () => spawned.length === 3)
+  expect(spawned[0]?.prompt).toContain('C1. b/util.ts:12 (a line this branch changes;')
+  for (const agent of spawned.slice(0, 2)) await reply($, agent.id, json({ verdicts: [vote('C1', true)], earlier: [] }))
+  await call
+  expect(ledgerOf(store).findings.map(one => one.file)).toEqual(['b/util.ts'])
 })
 
 test("a review's row draws as a card of its findings and their cost, and the band says what is open", async ($, on) => {

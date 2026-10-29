@@ -247,14 +247,20 @@ export function lastJson(reply: string): unknown {
   return undefined
 }
 
-/** A reviewer's findings, or undefined when its reply holds no list to read. */
-export function readFindings(reply: string, focus: string): Candidate[] | undefined {
+/**
+ * A reviewer's findings, or undefined when its reply holds no list to read. A path copied from the
+ * diff, such as b/src/app.ts, loses its prefix when that leaves a file the branch changes; one that
+ * is itself a changed file, in a folder named a or b, is kept as it is.
+ */
+export function readFindings(reply: string, focus: string, changed: ReadonlySet<string>): Candidate[] | undefined {
   const value = lastJson(reply)
   if (!isRecord(value) || !Array.isArray(value.findings)) return undefined
   const fallback = FOCUS[focus]?.kind ?? 'bug'
   return value.findings.flatMap(item => {
     if (!isRecord(item)) return []
-    const file = text(item.file, 400).replace(/^(\.\/|[ab]\/)/, '')
+    const given = text(item.file, 400).replace(/^\.\//, '')
+    const bare = given.replace(/^[ab]\//, '')
+    const file = changed.has(given) || !changed.has(bare) ? given : bare
     const title = text(item.title, 200)
     if (file === '' || title === '') return []
     const line = typeof item.line === 'number' && Number.isInteger(item.line) && item.line > 0 ? item.line : 0
