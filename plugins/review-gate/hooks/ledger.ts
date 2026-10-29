@@ -97,11 +97,16 @@ export type Reported = {
 /** What the review said of an open finding it looked at again. */
 export type Recheck = { id: string; fixed: boolean; why: string }
 
-// The review's own words for findings that cost upkeep rather than break behaviour.
-const CLEANUP = /^(reuse|simplif|efficien|altitude|style|naming|readab|maintain|test|doc|dead|duplicat)/
+// The review's own words for findings that cost upkeep rather than break behaviour. A deadlock, a
+// Dockerfile or a duplicated side effect is not cleanup, though its word starts like one.
+const CLEANUP = /^(reuse|simplif|efficien|altitude|style|naming|readab|maintain|test|doc(?!ker)|dead(?!lock)|duplicat(?:ion|ed?-code))/
+
+// The review's words for a security hole. A memory or resource leak, dependency injection and an
+// author are not one; a leak of data, a secret or a token is.
+const SECURITY = /secur|(?<!dependency-)inject|(?:^|-)o?auth(?:n|z|entication|orization)?(?:-|$)|secret|credential|(?:data|info|information|pii|token|key|password)s?-leak|xss|ssrf|csrf|traversal/
 
 export function kindOf(reported: Reported): FindingKind {
-  if (reported.security || /secur|inject|auth|secret|leak|xss|ssrf|traversal/.test(reported.category)) return 'security'
+  if (reported.security || SECURITY.test(reported.category)) return 'security'
   return /convention|claude/.test(reported.category) ? 'convention' : 'bug'
 }
 
@@ -133,6 +138,9 @@ export function sameDefect(a: Located, b: Located) {
   const alike = overlap(`${a.title} ${a.detail}`, `${b.title} ${b.detail}`)
   return (Math.abs(a.line - b.line) <= 3 && alike >= 0.15) || alike >= 0.45
 }
+
+/** What the review called a finding, as `correctness, confirmed`; empty when it said nothing. */
+export const aboutOf = (finding: Finding) => [finding.category, finding.verdict].filter(word => word !== undefined && word !== '').join(', ')
 
 const RANK: Record<Severity, number> = { important: 0, 'pre-existing': 1, nit: 2 }
 

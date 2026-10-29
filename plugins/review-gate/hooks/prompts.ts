@@ -138,15 +138,22 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 const text = (value: unknown, most: number) => (typeof value === 'string' ? value.trim().slice(0, most) : '')
 
 /**
- * The findings and rechecks a record call carries, or why it carries none to read. A path copied
- * from a diff, such as b/src/app.ts, loses its prefix when that leaves a file the branch changes;
- * one that is itself a changed file, in a folder named a or b, is kept as it is.
+ * The findings and rechecks a record call carries, or why it carries none to read. A path under the
+ * repository's `root`, as the review may give one it read there, is made relative to it. A path
+ * copied from a diff, such as b/src/app.ts, loses its prefix when that leaves a file the branch
+ * changes; one that is itself a changed file, in a folder named a or b, is kept as it is.
  */
-export function readRecord(input: Record<string, unknown>, changed: ReadonlySet<string>): { findings: Reported[]; rechecked: Recheck[] } | string {
+export function readRecord(
+  input: Record<string, unknown>,
+  changed: ReadonlySet<string>,
+  root?: string,
+): { findings: Reported[]; rechecked: Recheck[] } | string {
   if (!Array.isArray(input.findings)) return 'Give findings as a list, empty when the review found nothing.'
+  const under = root === undefined || root === '' ? undefined : `${root.replace(/\/+$/, '')}/`
   const findings = input.findings.flatMap((item): Reported[] => {
     if (!isRecord(item)) return []
-    const given = text(item.file, 400).replace(/^\.\//, '')
+    const named = text(item.file, 4_000)
+    const given = (under !== undefined && named.startsWith(under) ? named.slice(under.length) : named).replace(/^\.\//, '').slice(0, 400)
     const bare = given.replace(/^[ab]\//, '')
     const file = changed.has(given) || !changed.has(bare) ? given : bare
     const summary = text(item.summary, 2_000)

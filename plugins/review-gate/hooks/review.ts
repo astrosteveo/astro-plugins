@@ -2,7 +2,7 @@ import type { EngineInterface, ModelUsage } from 'claude-code'
 import type { Finding, Ledger, Level, Risk, Round, Run, Tokens } from '../types'
 import { changedFiles, commitLog, diffOf, firstCommit, guideFiles, isAncestor, short, uncommitted } from './git'
 import type { Place } from './git'
-import { LEVELS, ROUND_CAP, UNJUDGED, atMost, globTest, isCapped, levelFor, newFindings, openFindings, parseGuide, riskNow, riskWith, spent, streak } from './ledger'
+import { LEVELS, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, isCapped, levelFor, newFindings, openFindings, parseGuide, riskNow, riskWith, spent, streak } from './ledger'
 import type { Recheck, Reported } from './ledger'
 import { RISK, readRisk, riskPrompt } from './prompts'
 import type { Context, Plan } from './prompts'
@@ -260,15 +260,16 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     reviewed !== undefined && reviewed !== place.head && last !== undefined && !isCapped(last) && (await isAncestor(git, reviewed, place.head))
   const from = isDelta && reviewed !== undefined ? reviewed : place.base
   const roundFiles = kept(isDelta ? await changedFiles(git, from, place.head) : files)
-  const [whole, commits] = await Promise.all([diffOf(git, place.base, place.head, []), commitLog(git, place.base, place.head)])
-  const context: Context = { branch: place.branch, head: place.head, intent: ask.intent, commits, stat: whole.stat, guides }
 
   // The change's risk picks the round's level, unless the call or the options name one. A commit
-  // judged before keeps its verdict, and a round over new commits alone runs at most at high.
+  // judged before keeps its verdict, and a round over new commits alone runs at most at high. Only
+  // the classifier reads the branch's whole diff, so it is read only when the classifier runs.
   let tokens = NONE
   let judged = ledger.riskFor?.sha === place.head ? ledger.riskFor.risk : undefined
   let isUnjudged = false
   if (judged === undefined) {
+    const [whole, commits] = await Promise.all([diffOf(git, place.base, place.head), commitLog(git, place.base, place.head)])
+    const context: Context = { branch: place.branch, head: place.head, intent: ask.intent, commits, stat: whole.stat, guides }
     const verdict = await judge($, ask, context, whole.body)
     judged = verdict.risk
     isUnjudged = verdict.risk === UNJUDGED
@@ -305,10 +306,16 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     await ask.progress(run => (run === null ? run : { ...run, phase: 'reviewing', level }))
     const args = [level, `${from}..${place.head}`, ...(ask.fix ? ['--fix'] : []), ...(ask.maxFindings === undefined ? [] : ['--max-findings', ask.maxFindings])]
     const called = await $.tool.call({ tool: 'Skill', skill: SKILL, args: args.join(' ') }).catch((error: unknown) => error)
-    if (ask.signal.aborted) return refuse(STOPPED)
+    const run = forked(typeof called === 'object' && called !== null ? (called as { result?: unknown }).result : undefined)
+    if (ask.signal.aborted) {
+      // A review the round started runs on once the round stops: stopped, it spends nothing more and
+      // changes no file after the person has said stop.
+      const orphan = run?.agentId ?? pending.agentId
+      if (orphan !== undefined) await stop($, orphan)
+      return refuse(STOPPED)
+    }
     const failure = failureOf(called)
     if (failure !== undefined) return refuse(`/code-review could not run: ${failure}. Nothing was recorded.`)
-    const run = forked((called as { result?: unknown }).result)
     if (run !== undefined) {
       // A review the Skill tool started in the background is known from here, and the band follows it.
       if (pending.agentId === undefined) {
@@ -401,7 +408,7 @@ export function stepBack(ledger: Ledger) {
 function findingText(finding: Finding) {
   const kind = finding.kind === 'bug' ? '' : ` ${finding.kind}`
   const where = finding.line > 0 ? `${finding.file}:${finding.line}` : finding.file
-  const about = [finding.category, finding.verdict].filter(word => word !== undefined && word !== '').join(', ')
+  const about = aboutOf(finding)
   return [
     `${finding.id} · ${finding.severity}${kind} · ${where}${about === '' ? '' : ` · ${about}`}`,
     `  ${finding.title}`,

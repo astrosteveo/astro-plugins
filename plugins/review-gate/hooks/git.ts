@@ -122,14 +122,13 @@ export async function changedFiles(git: Git, from: string, to: string) {
 const PREFIXES = ['--src-prefix=a/', '--dst-prefix=b/']
 
 /**
- * The diff from `from` to `to`, as a stat and as patches with some context, leaving out what the
- * pathspecs `excludes` name. No file is named on the command line, so no change is too big for it.
+ * The diff from `from` to `to`, as a stat and as patches with some context. No file is named on the
+ * command line, so no change is too big for it.
  */
-export async function diffOf(git: Git, from: string, to: string, excludes: readonly string[]) {
-  const paths = excludes.length === 0 ? [] : ['--', '.', ...excludes]
+export async function diffOf(git: Git, from: string, to: string) {
   const [stat, body] = await Promise.all([
-    git(['diff', '--stat=160', '--no-renames', '--no-ext-diff', from, to, ...paths]),
-    git(['diff', '--no-renames', '--no-color', '--no-ext-diff', '--unified=5', ...PREFIXES, from, to, ...paths]),
+    git(['diff', '--stat=160', '--no-renames', '--no-ext-diff', from, to]),
+    git(['diff', '--no-renames', '--no-color', '--no-ext-diff', '--unified=5', ...PREFIXES, from, to]),
   ])
   return { stat: must(stat, 'read the diff').trimEnd(), body: must(body, 'read the diff') }
 }

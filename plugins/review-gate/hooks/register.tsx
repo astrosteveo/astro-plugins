@@ -507,12 +507,19 @@ export const register: Register = (on, options) => {
   }).catch((_, e, next) => next(e))
 
   // The review hands back its findings here: only the round's own review, naming the round, once.
+  // Once the review's agent is known, another agent that has the round's name, such as one the
+  // review started, or another /code-review briefed by mistake, records nothing.
   on('tool.call', { tool: RECORD }, async ($, e) => {
     const pending = desk.pending
-    if (pending === undefined || e.agentId === undefined || asText(e.round).trim() !== pending.plan.token)
+    if (
+      pending === undefined ||
+      e.agentId === undefined ||
+      asText(e.round).trim() !== pending.plan.token ||
+      (pending.agentId !== undefined && pending.agentId !== e.agentId)
+    )
       return { deny: "record takes the findings of review-gate's own review round, from its review, with the round its instructions name." }
     if (pending.record !== undefined) return { deny: `Round ${pending.plan.n}'s findings are recorded already: finish as your instructions say.` }
-    const record = readRecord(e, pending.changed)
+    const record = readRecord(e, pending.changed, pending.plan.root)
     if (typeof record === 'string') return { deny: record }
     pending.record = record
     if (pending.agentId === undefined) {

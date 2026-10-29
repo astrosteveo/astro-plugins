@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { atMost, emptyLedger, globTest, isCapped, levelFor, newFindings, parseGuide, spent, streak, toLedger } from '../hooks/ledger'
+import { atMost, emptyLedger, globTest, isCapped, kindOf, levelFor, newFindings, parseGuide, severityOf, spent, streak, toLedger } from '../hooks/ledger'
 import type { Reported } from '../hooks/ledger'
 import { capOf, lastJson, readRecord, readRisk, reviewSection } from '../hooks/prompts'
 import type { Plan } from '../hooks/prompts'
@@ -166,6 +166,39 @@ test("a review's findings are graded from what it said, gravest and security fir
   expect(made[0]?.verdict).toBe('confirmed')
   expect(made[2]?.detail).toBe('The last page is skipped')
   expect(made[0]?.detail).toBe('')
+})
+
+test("a finding's grade is read from the review's whole word for it, not a word it starts like", () => {
+  const graded = (category: string) => {
+    const one = reported({ category })
+    return [category, kindOf(one), severityOf(one)]
+  }
+  expect(['memory-leak', 'resource-leak', 'dependency-injection', 'authoring', 'deadlock', 'dockerfile', 'duplicate-charge'].map(graded)).toEqual([
+    ['memory-leak', 'bug', 'important'],
+    ['resource-leak', 'bug', 'important'],
+    ['dependency-injection', 'bug', 'important'],
+    ['authoring', 'bug', 'important'],
+    ['deadlock', 'bug', 'important'],
+    ['dockerfile', 'bug', 'important'],
+    ['duplicate-charge', 'bug', 'important'],
+  ])
+  expect(['secret-leak', 'data-leak', 'sql-injection', 'auth', 'broken-authorization', 'oauth-state', 'path-traversal'].map(graded)).toEqual([
+    ['secret-leak', 'security', 'important'],
+    ['data-leak', 'security', 'important'],
+    ['sql-injection', 'security', 'important'],
+    ['auth', 'security', 'important'],
+    ['broken-authorization', 'security', 'important'],
+    ['oauth-state', 'security', 'important'],
+    ['path-traversal', 'security', 'important'],
+  ])
+  expect(['dead-code', 'duplication', 'duplicate-code', 'docs', 'tests', 'simplification', 'efficiency'].map(graded).map(([, , severity]) => severity)).toEqual(
+    Array(7).fill('nit'),
+  )
+})
+
+test('a path the review gives under the repository root is read from the root', () => {
+  const read = readRecord({ findings: [{ file: '/repo/src/app.ts', summary: 'Off by one', failure_scenario: 'x' }, { file: '/elsewhere/a.ts', summary: 'Kept', failure_scenario: 'y' }] }, new Set(['src/app.ts']), '/repo')
+  expect(typeof read === 'string' ? read : read.findings.map(one => one.file)).toEqual(['src/app.ts', '/elsewhere/a.ts'])
 })
 
 test("a record call is read whatever it leaves out, and a path keeps a real folder named b", () => {

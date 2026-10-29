@@ -1,7 +1,7 @@
 import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import type { Activity, Finding, Ledger, Repo, Run } from '../types'
 import { short } from './git'
-import { ROUND_CAP, duration, isCapped, openFindings, riskNow, spent, streak } from './ledger'
+import { ROUND_CAP, aboutOf, duration, isCapped, openFindings, riskNow, spent, streak } from './ledger'
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
@@ -124,7 +124,7 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
       </Text>
       {rows.map(finding => {
         const { glyph, color } = mark(finding)
-        const about = [finding.category, finding.verdict].filter(word => word !== undefined && word !== '').join(', ')
+        const about = aboutOf(finding)
         return (
           <Box key={finding.id} flexDirection="column" marginTop={1}>
             <Text>

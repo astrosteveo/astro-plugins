@@ -572,6 +572,8 @@ test("the record takes findings only from the round's own review, naming its rou
   expect((await record({})).deny).toBe(refusal)
   expect((await record({ round: 'a-guess', agentId: one.id })).deny).toBe(refusal)
   expect((await record({ findings: 'none', agentId: one.id })).deny).toBe('Give findings as a list, empty when the review found nothing.')
+  // Another agent that has the round's name, once the review's agent is known, records nothing.
+  expect((await record({ agentId: 'agent-other' })).deny).toBe(refusal)
   expect((await record({ agentId: one.id })).result).toBe('Recorded round 1: no new findings. Finish as your instructions say.')
   expect((await record({ agentId: one.id })).deny).toBe("Round 1's findings are recorded already: finish as your instructions say.")
   one.finish('Nothing found.')
