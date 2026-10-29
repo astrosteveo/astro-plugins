@@ -122,31 +122,6 @@ export async function changedFiles(git: Git, from: string, to: string) {
 const PREFIXES = ['--src-prefix=a/', '--dst-prefix=b/']
 
 /**
- * The lines of each file at `to` that the diff from `from` added or changed, as ranges: a hunk's
- * `+c,d` is lines c to c+d-1.
- */
-export async function changedLines(git: Git, from: string, to: string) {
-  const out = must(await git(['diff', '-U0', '--no-renames', '--no-color', '--no-ext-diff', ...PREFIXES, from, to]), 'read the changed lines')
-  const lines = new Map<string, [number, number][]>()
-  let file = ''
-  for (const line of out.split('\n')) {
-    if (line.startsWith('+++ ')) {
-      file = line === '+++ /dev/null' ? '' : line.slice(4).replace(/\t$/, '').replace(/^b\//, '')
-      continue
-    }
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line)
-    if (hunk === null || file === '') continue
-    const start = Number(hunk[1])
-    const count = hunk[2] === undefined ? 1 : Number(hunk[2])
-    if (count > 0) lines.set(file, [...(lines.get(file) ?? []), [start, start + count - 1]])
-  }
-  return lines
-}
-
-export const inRanges = (ranges: readonly [number, number][] | undefined, line: number) =>
-  ranges?.some(([first, last]) => line >= first && line <= last) === true
-
-/**
  * The diff from `from` to `to`, as a stat and as patches with some context, leaving out what the
  * pathspecs `excludes` name. No file is named on the command line, so no change is too big for it.
  */

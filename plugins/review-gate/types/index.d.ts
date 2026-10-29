@@ -4,13 +4,13 @@ export type Severity = 'important' | 'nit' | 'pre-existing'
 /** What a finding is about: a defect, a security hole, or a rule of CLAUDE.md or REVIEW.md broken. */
 export type FindingKind = 'bug' | 'security' | 'convention'
 
-/** How many reviewers and checkers a round runs. */
-export type Depth = 'quick' | 'standard' | 'deep'
+/** The /code-review effort level a round runs at: a higher one reads more and finds more, for more tokens. */
+export type Level = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** How much is at stake in a change, as a classifier read it from the code; `high` needs the person's approval at the gate. */
 export type Risk = { tier: 'low' | 'medium' | 'high'; why: string[] }
 
-/** One finding the checkers held real, and how it was answered. */
+/** One finding a round's review reported, and how it was answered. */
 export type Finding = {
   /** `R<round>-<n>`, such as `R2-1`. */
   id: string
@@ -19,11 +19,16 @@ export type Finding = {
   severity: Severity
   file: string
   line: number
+  /** What goes wrong, in a line. */
   title: string
+  /** The defect in a sentence, where the title is a shorter label for it. */
   detail: string
-  evidence: string
-  /** How many checkers held it real, of how many answered. */
-  votes: { real: number; of: number }
+  /** The input or state that sets it off, and what goes wrong then. */
+  scenario: string
+  /** The review's word for the kind of finding, such as correctness or efficiency. */
+  category?: string
+  /** Set when the review verified the finding. */
+  verdict?: 'confirmed' | 'plausible'
   status: 'open' | 'fixed' | 'dismissed'
   /** The reason it was dismissed, or the commit a later round found it fixed at. */
   answer?: string
@@ -39,41 +44,35 @@ export type Round = {
   /** Where its diff started: the branch's base for a full round, the last reviewed commit for a delta. */
   from: string
   scope: 'full' | 'delta'
-  depth: Depth
+  level: Level
   risk: Risk
-  /** Candidates the reviewers raised, before the vote. */
+  /** Findings the review reported, those the branch had had included. */
   raised: number
-  /** Findings that passed the vote. */
+  /** The most findings the review's level lets it report; a review that reports that many may have left some out. */
+  cap?: number
+  /** Findings the round added. */
   kept: number
   /** Earlier findings this round found fixed. */
   fixed: number
   /** Findings open when the round ended, earlier ones included. */
   open: number
-  /** Reviewers and checkers whose reply held nothing readable. */
-  unread: number
   at: number
   /** How long the round ran, from its start to its record. */
   durationMs?: number
-  /** What its agents and the risk check spent: tokens in and out, and the input read from the cache. */
+  /** What the review and the risk check spent: tokens in and out, and the input read from the cache. */
   tokens?: Tokens
-  /** Each agent the round ran: how long, how many tool calls, and how it ended. */
-  agents?: AgentStat[]
-  /**
-   * False when the round lost agents it needed, so it found less than it should have: such a round
-   * leaves its commit unreviewed.
-   */
-  complete?: boolean
+  /** The review's tool calls. */
+  calls?: number
+  /** Set when every file the round covers is on a REVIEW.md Skip list, so no review ran. */
+  skipped?: boolean
 }
-
-/** One agent of a finished round. */
-export type AgentStat = { label: string; ms: number; calls: number; state: 'done' | 'stopped' | 'unread' }
 
 /** Tokens a round spent. `input` counts what was sent at full price, cache writes included. */
 export type Tokens = { input: number; output: number; cached: number }
 
 /** A branch's review record, kept in the plugin's own store, outside the repository. */
 export type Ledger = {
-  version: 1
+  version: 2
   branch: string
   rounds: Round[]
   findings: Finding[]
@@ -92,27 +91,18 @@ export type Ledger = {
   approved?: { sha: string; at: number }
 }
 
-/** One agent of a round in progress. */
-export type AgentRun = {
-  id: string
-  label: string
-  state: 'running' | 'done' | 'stopped'
-  startedAt: number
-  endedAt?: number
-  /** For a reviewer that answered, how many findings it raised. */
-  raised?: number
-}
-
-/** A round in progress, for the band: its phase, the phase's agents, and the findings raised so far. */
+/** A round in progress, for the band. */
 export type Run = {
   round: number
-  phase: 'judging' | 'reviewing' | 'checking'
+  phase: 'judging' | 'reviewing'
+  /** The level the review runs at, once the risk has picked it. */
+  level?: Level
   startedAt: number
-  agents: AgentRun[]
-  raised: string[]
+  /** The review's agent, once it has made a tool call. */
+  agentId?: string
 }
 
-/** What one of the review's agents is doing: its tool calls so far, and its latest. */
+/** What the review's agent is doing: its tool calls so far, and its latest. */
 export type Activity = { calls: number; doing: string }
 
 /** Where the session's repository stands, for the band. */
@@ -125,7 +115,7 @@ declare module 'claude-code' {
       /** The current branch's record, as last loaded or saved. */
       ledger: Shaped<Ledger | null>
       run: Shaped<Run | null>
-      /** Each review agent's activity, by its agent id. */
+      /** The review agent's activity, by its agent id. */
       activity: StateFamily<Activity | null>
     }
   }
