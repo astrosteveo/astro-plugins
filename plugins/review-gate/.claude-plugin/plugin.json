@@ -1,0 +1,48 @@
+{
+  "name": "review-gate",
+  "version": "0.1.0",
+  "description": "Reviews a branch before its pull request with parallel reviewer agents and checkers that vote, keeps every finding until it is fixed or dismissed with a reason, and opens and merges the pull request only for the reviewed commit.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT",
+  "userConfig": {
+    "depth": {
+      "type": "string",
+      "title": "Review depth",
+      "description": "How many reviewers and checkers a round runs. auto picks by the risk a classifier reads from the change: quick for low, standard for medium, deep for high.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "quick",
+        "standard",
+        "deep"
+      ]
+    },
+    "model": {
+      "type": "string",
+      "title": "Reviewer model",
+      "description": "The model the reviewer and checker agents run on. inherit uses the session's model.",
+      "default": "sonnet",
+      "options": [
+        "inherit",
+        "opus",
+        "sonnet",
+        "haiku"
+      ]
+    },
+    "riskModel": {
+      "type": "string",
+      "title": "Risk model",
+      "description": "The model that judges a change's risk before each round. inherit uses the reviewer model.",
+      "default": "haiku",
+      "options": [
+        "inherit",
+        "opus",
+        "sonnet",
+        "haiku"
+      ]
+    }
+  }
+}
