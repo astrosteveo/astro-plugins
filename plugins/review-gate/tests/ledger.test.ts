@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { emptyLedger, excludes, fixedIds, fresh, globTest, merge, parseGuide, parseLedger, rank, streak, tally } from '../hooks/ledger'
+import { DEPTHS, decided, emptyLedger, excludes, fixedIds, fresh, globTest, merge, parseGuide, parseLedger, rank, spent, streak, tally } from '../hooks/ledger'
 import type { Candidate, CheckerReply, Kept } from '../hooks/ledger'
 import { lastJson, readFindings, readRisk, readVerdicts } from '../hooks/prompts'
 
@@ -230,4 +230,32 @@ test("a checker's votes are read, and a reply with neither list reads as unread"
     earlier: [{ id: 'R1-1', fixed: true, why: '' }],
   })
   expect(readVerdicts('```json\n{"findings": []}\n```')).toBe(undefined)
+})
+
+test('a deep round runs five reviewers and three checkers', () => {
+  expect([DEPTHS.quick.checkers, DEPTHS.standard.checkers, DEPTHS.deep.checkers, DEPTHS.deep.focuses.length]).toEqual([1, 3, 3, 5])
+})
+
+test('a vote is decided once more checkers could not change it, counted over the checkers that started', () => {
+  const yes = (id: string) => ({ id, real: true, introduced: true, severity: 'important' as const, why: '' })
+  const no = (id: string) => ({ id, real: false, introduced: true, severity: 'important' as const, why: '' })
+  const agree: CheckerReply = { verdicts: [yes('C1'), no('C2')], earlier: [{ id: 'R1-1', fixed: true, why: '' }] }
+  // Two of three agree on everything: the third cannot change a majority.
+  expect(decided(2, ['R1-1'], [agree, agree], 3)).toBe(true)
+  // Split on C1: the third checker decides it.
+  expect(decided(2, ['R1-1'], [agree, { ...agree, verdicts: [no('C1'), no('C2')] }], 3)).toBe(false)
+  // One reply of three settles nothing it says yes to, and nothing it says no to.
+  expect(decided(2, ['R1-1'], [agree], 3)).toBe(false)
+  // Kept by two of three started, with the third cut: the tally counts over the three.
+  const kept = tally([candidate({ title: 'One' }), candidate({ title: 'Two' })], [agree, agree], 3)
+  expect(kept.map(one => [one.title, one.votes])).toEqual([['One', { real: 2, of: 2 }]])
+  expect(fixedIds([finding({ id: 'R1-1' })], [agree], 3)).toEqual([])
+  expect(fixedIds([finding({ id: 'R1-1' })], [agree, agree], 3)).toEqual(['R1-1'])
+})
+
+test("a round's cost reads as its time and its tokens, the cache's share named", () => {
+  expect(spent({ ...round(1, 0), durationMs: 252_000, tokens: { input: 150_000, output: 60_000, cached: 610_000 } })).toBe('4m 12s · 820k tokens, 610k from the cache')
+  expect(spent({ ...round(1, 0), durationMs: 9_400, tokens: { input: 900, output: 50, cached: 0 } })).toBe('9s · 950 tokens')
+  expect(spent({ ...round(1, 0), durationMs: 1_000, tokens: { input: 2_400_000, output: 0, cached: 0 } })).toBe('1s · 2.4M tokens')
+  expect(spent(round(1, 0))).toBe('')
 })

@@ -52,7 +52,14 @@ export type Round = {
   /** Reviewers and checkers whose reply held nothing readable. */
   unread: number
   at: number
+  /** How long the round ran, from its start to its record. */
+  durationMs?: number
+  /** What its agents and the risk check spent: tokens in and out, and the input read from the cache. */
+  tokens?: Tokens
 }
+
+/** Tokens a round spent. `input` counts what was sent at full price, cache writes included. */
+export type Tokens = { input: number; output: number; cached: number }
 
 /** A branch's review record, kept in the repository's git folder. */
 export type Ledger = {
@@ -63,16 +70,15 @@ export type Ledger = {
   /** The commit the last round reviewed. */
   reviewed?: string
   /**
-   * The commit the branch forked from when its first round ran. A record whose base is not in the
-   * branch's history belongs to an earlier branch of the same name.
+   * Who began the branch, and when: its first commit's author and date. A record whose `first` is not
+   * the branch's own belongs to an earlier branch of the same name.
    */
-  base?: string
+  first?: string
+  /** The risk the classifier gave the last commit it judged, kept so that commit is not judged twice. */
+  riskFor?: { sha: string; risk: Risk }
   /** The round the count toward the cap starts after: the person's `/review-gate more` moves it. */
   streakFrom: number
-  /**
-   * The person's approval of a high-risk change, good for one commit. It is kept in the plugin's
-   * own store, not in the record's file, and joins the record when it is read.
-   */
+  /** The person's approval of a high-risk change, good for one commit. */
   approved?: { sha: string; at: number }
 }
 

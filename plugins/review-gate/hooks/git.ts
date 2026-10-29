@@ -37,6 +37,8 @@ export type Place = {
   head: string
   /** The default branch's name, such as main; empty when there is none. */
   main: string
+  /** What the branch is compared against: origin's copy of the default branch, else the local one. */
+  mainRef: string
   /** The commit the branch forked from the default branch at; empty when there is none. */
   base: string
   /** Commits on the branch past its base. */
@@ -91,6 +93,7 @@ export async function locate($: EngineInterface, cwd: string): Promise<Place | s
     branch: branch.ok ? branch.out.trim() : '',
     head: head.out.trim(),
     main,
+    mainRef: ref,
     base,
     ahead: count?.ok === true ? Number(count.out.trim()) || 0 : 0,
   }
@@ -174,11 +177,23 @@ export async function guideFiles(git: Git, at: string, files: readonly string[])
     const parts = file.split('/').slice(0, -1)
     for (let depth = 1; depth <= parts.length; depth++) folders.add(parts.slice(0, depth).join('/'))
   }
-  const paths = [...folders].map(folder => (folder === '' ? 'REVIEW.md' : `${folder}/REVIEW.md`))
-  const listed = must(await git(['ls-tree', '--name-only', '-z', at, '--', ...paths]), 'list the REVIEW.md files')
-  const found = listed.split('\0').filter(path => path !== '')
+  // One listing of the tree, filtered here: no folder goes on the command line, however many change.
+  const listed = must(await git(['ls-tree', '-r', '--name-only', '-z', at]), 'list the REVIEW.md files')
+  const found = listed.split('\0').filter(path => {
+    const slash = path.lastIndexOf('/')
+    return path.slice(slash + 1) === 'REVIEW.md' && folders.has(slash < 0 ? '' : path.slice(0, slash))
+  })
   const read = await Promise.all(found.map(async path => ({ path, text: must(await git(['show', `${at}:${path}`]), `read ${path}`) })))
   return read.filter(file => file.text.trim() !== '')
+}
+
+/**
+ * Who began a branch, and when: the author and date of its first commit past `from`. A rebase or
+ * an amend keeps them, and another branch under the same name has its own.
+ */
+export async function firstCommit(git: Git, from: string, to: string) {
+  const out = must(await git(['log', '--reverse', '--format=%aI %ae', `${from}..${to}`]), 'read the branch\'s first commit')
+  return out.split('\n')[0]?.trim() ?? ''
 }
 
 /** The repository's local branches, by name. */

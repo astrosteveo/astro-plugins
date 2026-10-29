@@ -1,12 +1,14 @@
-import type { EngineInterface } from 'claude-code'
-import type { Depth, Finding, Ledger, Risk, Round, Run } from '../types'
-import { changedFiles, changedLines, commitLog, diffOf, guideFiles, inRanges, isAncestor, short, uncommitted } from './git'
+import type { EngineInterface, ModelUsage } from 'claude-code'
+import type { Depth, Finding, Ledger, Risk, Round, Run, Tokens } from '../types'
+import { changedFiles, changedLines, commitLog, diffOf, firstCommit, guideFiles, inRanges, isAncestor, short, uncommitted } from './git'
 import type { Place } from './git'
 import {
   DEPTHS,
   ROUND_CAP,
   UNJUDGED,
+  decided,
   securityReason,
+  spent,
   depthFor,
   excludes,
   fixedIds,
@@ -30,39 +32,63 @@ export const CHECKER_TYPE = 'review-gate:checker'
 /** How long one phase of a round waits for its agents before it counts the missing ones as unread. */
 const PHASE_LIMIT_MS = 20 * 60_000
 
+/** How long the last agent of a phase may run on once all the others have answered. */
+const LAST_AGENT_MS = 3 * 60_000
+
+/** How long the first checker runs alone, so the others' first requests find its prompt in the cache. */
+const STAGGER_SECONDS = '8'
+
+const NONE: Tokens = { input: 0, output: 0, cached: 0 }
+
+/** Tokens with one call's usage added: input at full price (cache writes included), output, and cache reads. */
+export function plus(tokens: Tokens, usage: ModelUsage | undefined): Tokens {
+  if (usage === undefined) return tokens
+  return {
+    input: tokens.input + (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
+    output: tokens.output + (usage.output_tokens ?? 0),
+    cached: tokens.cached + (usage.cache_read_input_tokens ?? 0),
+  }
+}
+
+const sum = (a: Tokens, b: Tokens): Tokens => ({ input: a.input + b.input, output: a.output + b.output, cached: a.cached + b.cached })
+
+/** An agent's reply: its last answer, and what its turn cost. */
+export type Reply = { answer: string; usage?: ModelUsage }
+
 /**
  * Where spawned agents' replies arrive. A spawn answers once its agent starts; the agent's reply is
  * its turn.complete, which a hook hands to `settle`, and a round waits on it with `take`.
  */
 export type Mailbox = {
-  settle: (agentId: string, answer: string) => void
-  take: (agentId: string) => Promise<string>
+  settle: (agentId: string, answer: string, usage?: ModelUsage) => void
+  take: (agentId: string) => Promise<Reply>
   drop: (agentId: string) => void
 }
 
 export function mailbox(): Mailbox {
-  const waiting = new Map<string, (answer: string) => void>()
+  const waiting = new Map<string, (reply: Reply) => void>()
   // A reply can land before its round asks for it: kept a while, the newest few.
-  const early = new Map<string, string>()
+  const early = new Map<string, Reply>()
   return {
-    settle(agentId, answer) {
+    settle(agentId, answer, usage) {
+      const reply: Reply = usage === undefined ? { answer } : { answer, usage }
       const resolve = waiting.get(agentId)
       if (resolve !== undefined) {
         waiting.delete(agentId)
-        resolve(answer)
+        resolve(reply)
         return
       }
-      early.set(agentId, answer)
+      early.set(agentId, reply)
       for (const oldest of early.keys()) {
         if (early.size <= 20) break
         early.delete(oldest)
       }
     },
     take(agentId) {
-      const answer = early.get(agentId)
-      if (answer !== undefined) {
+      const reply = early.get(agentId)
+      if (reply !== undefined) {
         early.delete(agentId)
-        return Promise.resolve(answer)
+        return Promise.resolve(reply)
       }
       return new Promise(resolve => waiting.set(agentId, resolve))
     },
@@ -80,8 +106,10 @@ export type RoundAsk = {
   /** The call's or the person's depth; left out, the option's, else the one the risk calls for. */
   depth?: Depth
   depthOption: 'auto' | Depth
-  /** The reviewers' model; left out, the session's. */
+  /** The reviewers' and checkers' model; left out, the session's. */
   model?: string
+  /** The risk classifier's model; left out, the reviewers'. */
+  riskModel?: string
   /** The person's own run: past the round cap, and again over a commit already reviewed. */
   force: boolean
   signal: AbortSignal
@@ -108,39 +136,61 @@ async function stop($: EngineInterface, agentId: string) {
   await $.tool.call({ tool: 'TaskStop', task_id: agentId }).catch(() => undefined)
 }
 
+/** A phase's agents and what came of them. */
+type Team = {
+  replies: (string | undefined)[]
+  /** Agents that started. */
+  started: number
+  /** Agents stopped because the vote was decided without them: no failure, and not unread. */
+  cut: number
+  tokens: Tokens
+}
+
 /**
  * Starts one agent per job and waits for their replies, in order, undefined for an agent that did
- * not start or did not answer in time. A hook's clock stops while any `$` call of its is in flight,
- * and the replies arrive through other hooks' events, so the wait keeps a short sleep in flight.
+ * not start or did not answer. A hook's clock stops while any `$` call of its is in flight, and the
+ * replies arrive through other hooks' events, so the wait keeps a short sleep in flight.
+ *
+ * It waits no longer than it must: once `decide` says the replies so far settle the outcome, the
+ * rest are stopped; once all but one agent has answered, the last gets LAST_AGENT_MS more. With
+ * `stagger`, the first agent starts alone, so the others, given the same prompt, read it from the
+ * prompt cache.
  */
 async function team(
   $: EngineInterface,
   ask: RoundAsk,
   jobs: readonly Job[],
   onDone: (done: number) => Promise<void>,
-): Promise<(string | undefined)[]> {
-  const ids = await Promise.all(
-    jobs.map(async job => {
-      const spawned = await $.agent
-        .spawn({
-          prompt: job.prompt,
-          description: job.description,
-          subagentType: job.type,
-          cwd: ask.place.root,
-          ...(ask.model === undefined ? {} : { model: ask.model }),
-        })
-        .catch(() => undefined)
-      if (spawned === undefined || spawned.deny !== undefined || spawned.agentId === undefined) return undefined
-      ask.reviewers.add(spawned.agentId)
-      return spawned.agentId
-    }),
-  )
+  options: { stagger?: boolean; decide?: (replies: readonly (string | undefined)[], started: number) => boolean } = {},
+): Promise<Team> {
+  const spawn = async (job: Job) => {
+    const spawned = await $.agent
+      .spawn({
+        prompt: job.prompt,
+        description: job.description,
+        subagentType: job.type,
+        cwd: ask.place.root,
+        ...(ask.model === undefined ? {} : { model: ask.model }),
+      })
+      .catch(() => undefined)
+    if (spawned === undefined || spawned.deny !== undefined || spawned.agentId === undefined) return undefined
+    ask.reviewers.add(spawned.agentId)
+    return spawned.agentId
+  }
+  const [lead, ...others] = jobs
+  const ahead = options.stagger === true && lead !== undefined && others.length > 0 ? [await spawn(lead)] : []
+  if (ahead.length > 0) await $.process.run(['sleep', STAGGER_SECONDS]).catch(() => undefined)
+  const ids = [...ahead, ...(await Promise.all((ahead.length > 0 ? others : jobs).map(spawn)))]
+  const started = ids.filter(id => id !== undefined).length
   const replies: (string | undefined)[] = ids.map(() => undefined)
+  let tokens = NONE
   let done = 0
   const all = Promise.all(
     ids.map(async (id, index) => {
       if (id === undefined) return
-      replies[index] = await ask.mail.take(id)
+      const reply = await ask.mail.take(id)
+      replies[index] = reply.answer
+      tokens = plus(tokens, reply.usage)
       done += 1
     }),
   )
@@ -148,9 +198,21 @@ async function team(
   void all.then(() => {
     settled = true
   })
-  const started = await $.clock.now()
+  const since = await $.clock.now()
+  let lastAlone: number | undefined
+  let isDecided = false
   let shown = -1
-  while (!settled && !ask.signal.aborted && (await $.clock.now()) - started < PHASE_LIMIT_MS) {
+  while (!settled && !ask.signal.aborted) {
+    const now = await $.clock.now()
+    if (now - since >= PHASE_LIMIT_MS) break
+    if (options.decide !== undefined && done > 0 && options.decide(replies, started)) {
+      isDecided = true
+      break
+    }
+    if (started > 1 && done === started - 1) {
+      lastAlone ??= now
+      if (now - lastAlone >= LAST_AGENT_MS) break
+    }
     if (shown !== done) {
       shown = done
       await onDone(done)
@@ -158,14 +220,16 @@ async function team(
     await Promise.race([all, $.process.run(['sleep', '1'])])
   }
   await onDone(done)
+  let cut = 0
   await Promise.all(
     ids.map(async (id, index) => {
       if (id === undefined || replies[index] !== undefined) return
       ask.mail.drop(id)
+      if (isDecided) cut += 1
       await stop($, id)
     }),
   )
-  return replies
+  return { replies, started, cut, tokens }
 }
 
 /** The risk a change carries, a security finding on the branch included. */
@@ -181,16 +245,18 @@ const nameOf = (focus: string) => FOCUS[focus]?.label ?? focus
  * How much is at stake in the branch's change, as a classifier reads it from the code. It is asked
  * twice at most; with no verdict, a person looks.
  */
-async function judge($: EngineInterface, ask: RoundAsk, context: Context, diff: string): Promise<Risk> {
-  const model = ask.model ?? (await $.session.model())
+async function judge($: EngineInterface, ask: RoundAsk, context: Context, diff: string): Promise<{ risk: Risk; tokens: Tokens }> {
+  const model = ask.riskModel ?? ask.model ?? (await $.session.model())
+  // The prompt is marked for the cache, so a second try, or a run again within five minutes, reads it there.
+  const prompt = [{ text: riskPrompt(context, diff), cache: true as const }]
+  let tokens = NONE
   for (let tries = 0; tries < 2 && !ask.signal.aborted; tries++) {
-    const reply = await $.model
-      .complete({ model, system: RISK, prompt: riskPrompt(context, diff), maxTokens: 1_024 }, { signal: ask.signal })
-      .catch(() => undefined)
+    const reply = await $.model.complete({ model, system: RISK, prompt, maxTokens: 1_024 }, { signal: ask.signal }).catch(() => undefined)
+    tokens = plus(tokens, reply?.usage)
     const risk = reply?.isAnswered === true ? readRisk(reply.text) : undefined
-    if (risk !== undefined) return risk
+    if (risk !== undefined) return { risk, tokens }
   }
-  return UNJUDGED
+  return { risk: UNJUDGED, tokens }
 }
 
 /**
@@ -225,6 +291,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   }
   if (!ask.force && streak(ledger) >= ROUND_CAP && open.length > 0) return refuse(stepBack(ledger))
 
+  const startedAt = await $.clock.now()
   const n = (last?.n ?? 0) + 1
   const files = await changedFiles(git, place.base, place.head)
   const guides = (await guideFiles(git, place.base, files)).map(file => parseGuide(file.path, file.text))
@@ -238,7 +305,8 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   const reviewed = ledger.reviewed
   const isDelta = reviewed !== undefined && reviewed !== place.head && last !== undefined && (await isAncestor(git, reviewed, place.head))
   const from = isDelta && reviewed !== undefined ? reviewed : place.base
-  const roundFiles = kept(isDelta ? await changedFiles(git, from, place.head) : files)
+  const newFiles = isDelta ? await changedFiles(git, from, place.head) : files
+  const roundFiles = kept(newFiles)
   // The agents read the diff with REVIEW.md's Skip files left out; the risk classifier reads all of it.
   const [whole, full, diff, commits, lines] = await Promise.all([
     diffOf(git, place.base, place.head, left),
@@ -261,52 +329,77 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     earlier: ledger.findings,
   }
 
-  // The change's risk picks the round's depth, unless the call or the options name one.
-  await ask.progress({ round: n, phase: 'judging', done: 0, of: 1 })
-  const judged = await judge($, ask, { ...context, stat: everything.stat }, everything.body)
+  // The change's risk picks the round's depth, unless the call or the options name one. A commit
+  // judged before keeps its verdict, and a round over new commits alone runs at most at standard.
+  let tokens = NONE
+  let judged = ledger.riskFor?.sha === place.head ? ledger.riskFor.risk : undefined
+  if (judged === undefined) {
+    await ask.progress({ round: n, phase: 'judging', done: 0, of: 1 })
+    const verdict = await judge($, ask, { ...context, stat: everything.stat }, everything.body)
+    judged = verdict.risk
+    tokens = sum(tokens, verdict.tokens)
+  }
   if (ask.signal.aborted) return refuse('The review was stopped before it finished, so nothing was recorded.')
-  const depth = ask.depth ?? (ask.depthOption === 'auto' ? depthFor(riskWith(judged, ledger.findings)) : ask.depthOption)
+  const wanted = ask.depthOption === 'auto' ? depthFor(riskWith(judged, ledger.findings)) : ask.depthOption
+  const depth = ask.depth ?? (isDelta && wanted === 'deep' ? 'standard' : wanted)
 
   const plan = DEPTHS[depth]
   const focuses = roundFiles.length === 0 ? [] : plan.focuses
   const reviewing = (done: number) => ask.progress({ round: n, phase: 'reviewing', done, of: focuses.length })
   await reviewing(0)
-  const raised = await team(
+  const reviewers = await team(
     $,
     ask,
     focuses.map(focus => ({ type: REVIEWER_TYPE, description: `review: ${nameOf(focus)}`, prompt: reviewerPrompt(context, focus) })),
     reviewing,
   )
+  tokens = sum(tokens, reviewers.tokens)
   if (ask.signal.aborted) return refuse('The review was stopped before it finished, so nothing was recorded.')
-  const read = raised.map((reply, index) => (reply === undefined ? undefined : readFindings(reply, focuses[index] ?? 'logic')))
+  const read = reviewers.replies.map((reply, index) => (reply === undefined ? undefined : readFindings(reply, focuses[index] ?? 'logic')))
   const unreadReviewers = read.filter(list => list === undefined).length
   if (focuses.length > 0 && unreadReviewers === focuses.length)
     return refuse(`None of the ${focuses.length} reviewers gave a reply that could be read, so the round has nothing it can stand behind. Nothing was recorded; review again.`)
   const candidates = fresh(merge(read.flatMap(list => list ?? [])), ledger.findings)
 
+  // Only a finding in a file the new commits touched can have been fixed by them; the rest stay
+  // open with no vote.
+  const recheck = isDelta ? open.filter(finding => newFiles.includes(finding.file)) : open
+  const votesOf = (replies: readonly (string | undefined)[]) =>
+    replies.flatMap((reply): CheckerReply[] => {
+      const verdicts = reply === undefined ? undefined : readVerdicts(reply)
+      return verdicts === undefined ? [] : [verdicts]
+    })
   let confirmed: Kept[] = []
   let fixed: string[] = []
   let unreadCheckers = 0
-  if (candidates.length > 0 || open.length > 0) {
+  if (candidates.length > 0 || recheck.length > 0) {
     const checking = (done: number) => ask.progress({ round: n, phase: 'checking', done, of: plan.checkers })
     await checking(0)
-    const prompt = checkerPrompt(context, candidates, open, (file, line) => inRanges(lines.get(file), line))
-    const replies = await team(
+    const prompt = checkerPrompt(context, candidates, recheck, (file, line) => inRanges(lines.get(file), line))
+    const checkers = await team(
       $,
       ask,
       Array.from({ length: plan.checkers }, (_, index) => ({ type: CHECKER_TYPE, description: `check findings ${index + 1}`, prompt })),
       checking,
+      {
+        stagger: true,
+        decide: (replies, started) =>
+          decided(
+            candidates.length,
+            recheck.map(finding => finding.id),
+            votesOf(replies),
+            started,
+          ),
+      },
     )
+    tokens = sum(tokens, checkers.tokens)
     if (ask.signal.aborted) return refuse('The review was stopped before it finished, so nothing was recorded.')
-    const votes = replies.flatMap((reply): CheckerReply[] => {
-      const verdicts = reply === undefined ? undefined : readVerdicts(reply)
-      return verdicts === undefined ? [] : [verdicts]
-    })
-    unreadCheckers = plan.checkers - votes.length
+    const votes = votesOf(checkers.replies)
+    unreadCheckers = checkers.started - checkers.cut - votes.length
     if (votes.length === 0)
       return refuse(`None of the ${plan.checkers} checkers gave a reply that could be read, so no finding could be confirmed. Nothing was recorded; review again.`)
-    confirmed = rank(tally(candidates, votes))
-    fixed = fixedIds(open, votes)
+    confirmed = rank(tally(candidates, votes, checkers.started))
+    fixed = fixedIds(recheck, votes, checkers.started)
   }
 
   const added: Finding[] = confirmed.map((finding, index) => ({
@@ -341,8 +434,17 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     open: findings.filter(finding => finding.status === 'open').length,
     unread: unreadReviewers + unreadCheckers,
     at: await $.clock.now(),
+    tokens,
   }
-  const next: Ledger = { ...ledger, rounds: [...ledger.rounds, round], findings, reviewed: place.head, base: ledger.base ?? place.base }
+  round.durationMs = round.at - startedAt
+  const next: Ledger = {
+    ...ledger,
+    rounds: [...ledger.rounds, round],
+    findings,
+    reviewed: place.head,
+    first: ledger.first ?? (await firstCommit(git, place.base, place.head)),
+    riskFor: { sha: place.head, risk: judged },
+  }
   await ask.save(next)
   return { ok: true, ledger: next, round: n, text: summary(next, n) }
 }
@@ -401,6 +503,8 @@ export function summary(ledger: Ledger, n: number) {
     lines.push(`Nothing is open. ${ledger.branch} at ${short(round.head)} is ready for a pull request.${approval}`)
   }
   if (round.unread > 0) lines.push(`${round.unread} agent repl${round.unread === 1 ? 'y' : 'ies'} could not be read and counted for nothing.`)
+  const cost = spent(round)
+  if (cost !== '') lines.push(`The round took ${cost}.`)
   if (open.length > 0 && streak(ledger) >= ROUND_CAP) lines.push(stepBack(ledger))
   return lines.join('\n\n')
 }

@@ -10,7 +10,7 @@ export const NIT_CAP = 3
 export const DEPTHS: Record<Depth, { focuses: readonly string[]; checkers: number }> = {
   quick: { focuses: ['logic', 'security'], checkers: 1 },
   standard: { focuses: ['logic', 'failure', 'fit', 'security'], checkers: 3 },
-  deep: { focuses: ['logic', 'failure', 'fit', 'security', 'state'], checkers: 5 },
+  deep: { focuses: ['logic', 'failure', 'fit', 'security', 'state'], checkers: 3 },
 }
 
 /** The verdict when the classifier gives none: a person looks, as a gate that cannot tell refuses. */
@@ -21,17 +21,25 @@ export const depthFor = (risk: Risk): Depth => (risk.tier === 'low' ? 'quick' : 
 
 export const emptyLedger = (branch: string): Ledger => ({ version: 1, branch, rounds: [], findings: [], streakFrom: 0 })
 
+/** Where a record lived before it moved into the plugin's store: read once, to bring it across. */
 export const ledgerFile = (store: string, branch: string) => `${store}/${encodeURIComponent(branch)}.json`
 
-// A record another version wrote, or a file edited into another shape, reads as none.
+/** A branch's record in the plugin's own store, under its repository's git folder. */
+export const recordPrefix = (store: string) => `record:${store}:`
+export const recordKey = (store: string, branch: string) => `${recordPrefix(store)}${branch}`
+
+// A record another version wrote, or one edited into another shape, reads as none.
+export function toLedger(value: unknown, branch: string): Ledger {
+  if (typeof value !== 'object' || value === null) return emptyLedger(branch)
+  const record = value as Partial<Ledger>
+  if (record.version !== 1 || !Array.isArray(record.rounds) || !Array.isArray(record.findings)) return emptyLedger(branch)
+  return { ...emptyLedger(branch), ...record, branch }
+}
+
 export function parseLedger(text: unknown, branch: string): Ledger {
   if (typeof text !== 'string') return emptyLedger(branch)
   try {
-    const value: unknown = JSON.parse(text)
-    if (typeof value !== 'object' || value === null) return emptyLedger(branch)
-    const record = value as Partial<Ledger>
-    if (record.version !== 1 || !Array.isArray(record.rounds) || !Array.isArray(record.findings)) return emptyLedger(branch)
-    return { ...emptyLedger(branch), ...record, branch }
+    return toLedger(JSON.parse(text), branch)
   } catch {
     return emptyLedger(branch)
   }
@@ -50,6 +58,22 @@ export function streak(ledger: Ledger) {
 }
 
 export const lastRound = (ledger: Ledger): Round | undefined => ledger.rounds[ledger.rounds.length - 1]
+
+const compact = (count: number) => (count >= 1e6 ? `${(count / 1e6).toFixed(1)}M` : count >= 1e3 ? `${Math.round(count / 1e3)}k` : String(count))
+
+/** What a round cost, as `4m 12s · 820k tokens, 610k from the cache`; empty for a round that kept no count. */
+export function spent(round: Round) {
+  const parts: string[] = []
+  if (round.durationMs !== undefined) {
+    const seconds = Math.round(round.durationMs / 1000)
+    parts.push(seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`)
+  }
+  if (round.tokens !== undefined) {
+    const total = round.tokens.input + round.tokens.output + round.tokens.cached
+    parts.push(`${compact(total)} tokens${round.tokens.cached > 0 ? `, ${compact(round.tokens.cached)} from the cache` : ''}`)
+  }
+  return parts.join(' · ')
+}
 
 /** Why a security finding still standing puts a person in the loop. */
 export const securityReason = (findings: readonly Finding[]) =>
@@ -144,13 +168,15 @@ function kindOf(candidate: Candidate, yes: readonly Verdict[]): FindingKind {
 }
 
 /**
- * The candidates a majority of the checkers held real, `C1` being the first. A finding most of its
- * yes votes say was there before the change is pre-existing; one most call small is a nit. Its kind
- * is the checkers' too: a reviewer's word that it is a security hole is a claim they check.
+ * The candidates a majority of the checkers held real, `C1` being the first, the majority counted
+ * over the checkers `started` (a phase that stopped once the vote was decided has fewer replies). A
+ * finding most of its yes votes say was there before the change is pre-existing; one most call
+ * small is a nit. Its kind is the checkers' too: a reviewer's word that it is a security hole is a
+ * claim they check.
  */
-export function tally(candidates: readonly Candidate[], replies: readonly CheckerReply[]): Kept[] {
+export function tally(candidates: readonly Candidate[], replies: readonly CheckerReply[], started = replies.length): Kept[] {
   if (replies.length === 0) return []
-  const need = quorum(replies.length)
+  const need = quorum(started)
   return candidates.flatMap((candidate, index) => {
     const id = `C${index + 1}`
     const yes = replies.flatMap(reply => {
@@ -166,12 +192,28 @@ export function tally(candidates: readonly Candidate[], replies: readonly Checke
 }
 
 /** The earlier open findings a majority of the checkers found fixed at the reviewed commit. */
-export function fixedIds(open: readonly Finding[], replies: readonly CheckerReply[]) {
+export function fixedIds(open: readonly Finding[], replies: readonly CheckerReply[], started = replies.length) {
   if (replies.length === 0) return []
-  const need = quorum(replies.length)
+  const need = quorum(started)
   return open
     .filter(finding => replies.filter(reply => reply.earlier.some(one => one.id === finding.id && one.fixed)).length >= need)
     .map(finding => finding.id)
+}
+
+/**
+ * Whether the replies so far settle every vote, so the checkers still at work could change nothing:
+ * each candidate and each earlier finding has the yes votes it needs, or too few checkers are left
+ * for it to get them.
+ */
+export function decided(candidates: number, open: readonly string[], replies: readonly CheckerReply[], started: number) {
+  const need = quorum(started)
+  const left = started - replies.length
+  const settles = (yes: number) => yes >= need || yes + left < need
+  for (let index = 1; index <= candidates; index++) {
+    const yes = replies.filter(reply => reply.verdicts.some(verdict => verdict.id === `C${index}` && verdict.real)).length
+    if (!settles(yes)) return false
+  }
+  return open.every(id => settles(replies.filter(reply => reply.earlier.some(one => one.id === id && one.fixed)).length))
 }
 
 const RANK: Record<Severity, number> = { important: 0, 'pre-existing': 1, nit: 2 }

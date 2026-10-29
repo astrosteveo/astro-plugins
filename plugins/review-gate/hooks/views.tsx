@@ -1,7 +1,7 @@
 import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import type { Finding, Ledger, Repo, Run } from '../types'
 import { short } from './git'
-import { DEPTHS, ROUND_CAP, openFindings, riskNow, streak } from './ledger'
+import { DEPTHS, ROUND_CAP, openFindings, riskNow, spent, streak } from './ledger'
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
@@ -90,7 +90,8 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
       </Text>
       <Text dimColor>
         {round.scope === 'full' ? 'whole branch' : `commits since ${short(round.from)}`} · {round.depth}: {plural(plan.focuses.length, 'reviewer')},{' '}
-        {plural(plan.checkers, 'checker')} · risk {risk.tier}
+        {plural(plan.checkers, 'checker')}
+        {spent(round) === '' ? '' : ` · ${spent(round)}`} · risk {risk.tier}
         {risk.why.length > 0 ? `: ${risk.why.join('; ')}` : ''}
       </Text>
       {rows.map(finding => {

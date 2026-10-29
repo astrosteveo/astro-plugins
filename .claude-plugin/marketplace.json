@@ -30,7 +30,7 @@
     {
       "name": "review-gate",
       "source": "./plugins/review-gate",
-      "description": "Reviews a branch before its pull request with parallel reviewer agents and checkers that vote, and refuses gh pr create and merge until every finding is fixed or dismissed with a reason."
+      "description": "Reviews a branch before its pull request with parallel reviewer agents and checkers that vote, keeps every finding until it is fixed or dismissed with a reason, and opens and merges the pull request only for the reviewed commit."
     }
   ]
 }

@@ -1,11 +1,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput } from 'claude-code'
 import type { Depth, Ledger } from '../types'
-import { branches, isAncestor, locate, short } from './git'
+import { branches, firstCommit, locate, short } from './git'
 import type { Place } from './git'
-import { prCommands, reviewerRefusal } from './guard'
-import type { PrCommand } from './guard'
-import { ROUND_CAP, emptyLedger, ledgerFile, openFindings, parseLedger, riskNow } from './ledger'
+import { RAW_PR, gitArgsRefusal, gitArgv, gitGrepArgv, rgArgv } from './guard'
+import type { Search } from './guard'
+import { ROUND_CAP, emptyLedger, ledgerFile, openFindings, parseLedger, recordKey, recordPrefix, riskNow, toLedger } from './ledger'
 import { CHECKER, REVIEWER } from './prompts'
 import { CHECKER_TYPE, REVIEWER_TYPE, mailbox, runRound, summary } from './review'
 import type { RoundAsk } from './review'
@@ -13,6 +13,9 @@ import { band, card } from './views'
 
 const REVIEW = 'mcp__review-gate__review'
 const DISMISS = 'mcp__review-gate__dismiss'
+const PULL_REQUEST = 'mcp__review-gate__pull_request'
+const GIT_TOOL = 'mcp__review-gate__review_git'
+const SEARCH_TOOL = 'mcp__review-gate__review_search'
 const COMMAND = 'review-gate'
 
 const repo = atom({ plugin: 'review-gate', key: 'repo' } as const, null, { shape: 'repo-1' })
@@ -20,6 +23,7 @@ const ledgerState = atom({ plugin: 'review-gate', key: 'ledger' } as const, null
 const run = atom({ plugin: 'review-gate', key: 'run' } as const, null, { shape: 'run-1' })
 
 const DEPTH_NAMES = ['quick', 'standard', 'deep'] as const
+const METHODS = ['merge', 'squash', 'rebase'] as const
 
 const PATH = {
   type: 'string',
@@ -29,7 +33,7 @@ const PATH = {
 const REVIEW_TOOL = {
   name: 'review',
   description:
-    "Review the current branch's commits, as its pull request would show them, before you open the pull request. Reviewer agents, each with its own focus, look for defects in parallel; checker agents then vote, and only findings most of them hold real are kept. Call it once the change is committed and its checks pass: `gh pr create` and `gh pr merge` are refused until the branch's latest commit has been reviewed and every finding answered. Answer each finding: fix it and commit, then review again (later rounds read only the new commits and confirm the fix); or dismiss it with the reason it can stay. After three rounds in a row end with findings open, it stops and asks you to step back with the user. A round takes minutes.",
+    "Review the current branch's commits, as its pull request would show them, before you open the pull request. Reviewer agents, each with its own focus, look for defects in parallel; checker agents then vote, and only findings most of them hold real are kept. Call it once the change is committed and its checks pass: the pull_request tool opens and merges pull requests only for a commit that was reviewed with every finding answered. Answer each finding: fix it and commit, then review again (later rounds read only the new commits and confirm the fix); or dismiss it with the reason it can stay. After three rounds in a row end with findings open, it stops and asks you to step back with the user. A round takes minutes.",
   isDeferred: false,
   inputSchema: {
     type: 'object',
@@ -41,7 +45,7 @@ const REVIEW_TOOL = {
       depth: {
         type: 'string',
         enum: [...DEPTH_NAMES],
-        description: "Leave it out and the change's risk picks: quick runs 2 reviewers and 1 checker, standard 4 and 3, deep 5 and 5.",
+        description: "Leave it out and the change's risk picks: quick runs 2 reviewers and 1 checker, standard 4 and 3, deep 5 and 3.",
       },
       path: PATH,
     },
@@ -64,11 +68,74 @@ const DISMISS_TOOL = {
   },
 }
 
+const PULL_REQUEST_TOOL = {
+  name: 'pull_request',
+  description:
+    "Open or merge a pull request: the only way to, as gh pr create and gh pr merge are refused in Bash. open pushes the current branch to origin and opens its pull request. merge merges a pull request, and only while its head is still the commit that was reviewed. Both are refused until that commit has been reviewed and every finding answered, and a high-risk change also waits for the user's approval in a dialog. Ask the user before you open or merge one.",
+  isDeferred: false,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['open', 'merge'] },
+      title: { type: 'string', description: "open: the pull request's title." },
+      body: { type: 'string', description: 'open: its description, in Markdown.' },
+      base: { type: 'string', description: 'open: the branch it merges into; left out, the default branch.' },
+      draft: { type: 'boolean', description: 'open: open it as a draft.' },
+      number: { type: 'number', description: "merge: the pull request's number; left out, the current branch's." },
+      method: { type: 'string', enum: [...METHODS], description: 'merge: how it merges; left out, with a merge commit.' },
+      deleteBranch: { type: 'boolean', description: 'merge: delete the branch once it is merged.' },
+      path: PATH,
+    },
+    required: ['action'],
+  },
+}
+
+const GIT_TOOL_SPEC = {
+  name: 'review_git',
+  description:
+    "For review-gate's reviewers and checkers only: run one of git's reading commands (log, show, diff, blame, grep, ls-files, ls-tree, rev-parse, cat-file and the like) in the repository under review. Give git's arguments as a list, without git itself.",
+  isDeferred: false,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      args: { type: 'array', items: { type: 'string' }, description: 'git\'s arguments, such as ["log", "-p", "-3", "--", "src/app.ts"].' },
+    },
+    required: ['args'],
+  },
+}
+
+const SEARCH_TOOL_SPEC = {
+  name: 'review_search',
+  description: "For review-gate's reviewers and checkers only: search the repository under review for a pattern, with line numbers.",
+  isDeferred: false,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      pattern: { type: 'string', description: 'A regular expression, or plain text when fixed is set.' },
+      path: { type: 'string', description: 'A file or folder to search; left out, the whole repository.' },
+      glob: { type: 'string', description: 'Only files whose names match it, such as "*.ts".' },
+      ignoreCase: { type: 'boolean' },
+      fixed: { type: 'boolean', description: 'Match the pattern as plain text.' },
+      context: { type: 'number', description: 'Lines to show around each match, up to 20.' },
+    },
+    required: ['pattern'],
+  },
+}
+
 const USAGE = `/review-gate runs a review round on this branch now; /review-gate quick, standard or deep picks its depth. /review-gate status shows where the review stands, /review-gate more allows ${ROUND_CAP} more rounds after the cap, and /review-gate reset forgets this branch's review record.`
+
+const RAW_PR_REFUSAL = `review-gate: open and merge pull requests with ${PULL_REQUEST}, which checks the branch's review, then pushes and runs gh. If the command only mentions this in text, such as a commit message, put that text in a file and pass the file (git commit -F FILE).`
 
 const asText = (value: unknown) => (typeof value === 'string' ? value : '')
 
 const why = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+type Ran = { exitCode: number; stdout: string; stderr: string }
+
+// A program that cannot start answers as one that failed, so callers read one shape.
+async function runIn($: EngineInterface, argv: readonly string[], cwd: string, timeoutMs: number): Promise<Ran> {
+  return $.process.run(argv, { cwd, timeoutMs }).catch(error => ({ exitCode: 1, stdout: '', stderr: why(error) }))
+}
 
 async function cwdOf($: EngineInterface, path: unknown) {
   const given = asText(path).trim()
@@ -77,61 +144,51 @@ async function cwdOf($: EngineInterface, path: unknown) {
   return given.startsWith('/') ? given : `${cwd}/${given}`
 }
 
-// The person's approval lives in the plugin's own store, apart from the record's file, which a
-// command run in the repository could write.
-const approvalKey = (place: Place, branch: string) => `approved:${place.store}/${branch}`
-
-const isApproval = (value: unknown): value is { sha: string; at: number } =>
-  typeof value === 'object' && value !== null && typeof Reflect.get(value, 'sha') === 'string' && typeof Reflect.get(value, 'at') === 'number'
-
-/**
- * A branch's record, with the person's approval joined to it. A record whose base is not in the
- * history of `sha` was left by an earlier branch of the same name, and reads as none.
- */
-async function load($: EngineInterface, place: Place, branch = place.branch, sha = place.head) {
-  const text = await $.fs.read(ledgerFile(place.store, branch)).catch(() => undefined)
-  const ledger = parseLedger(text, branch)
-  if (ledger.base !== undefined && !(await isAncestor(place.git, ledger.base, sha))) return emptyLedger(branch)
-  const approved: unknown = await $.store.get(approvalKey(place, branch))
-  return isApproval(approved) ? { ...ledger, approved } : ledger
+// Who began the branch whose head is `sha`: its fork from the default branch, then its first commit.
+async function identity(place: Place, sha: string) {
+  if (sha === place.head) return firstCommit(place.git, place.base, sha)
+  const fork = await place.git(['merge-base', sha, place.mainRef])
+  if (!fork.ok) throw new Error(fork.err)
+  return firstCommit(place.git, fork.out.trim(), sha)
 }
 
-// The record is written whole or not at all: to a file beside it, then moved over it. The
-// approval stays in the store.
+/**
+ * A branch's record, from the plugin's own store. One a file held before the store did is brought
+ * across once, and its file removed. A record begun by another commit than the branch's first was
+ * left by an earlier branch of the same name, and reads as none.
+ */
+async function load($: EngineInterface, place: Place, branch = place.branch, sha = place.head) {
+  const key = recordKey(place.store, branch)
+  let stored: unknown = await $.store.get(key)
+  if (stored === undefined) {
+    const file = ledgerFile(place.store, branch)
+    const text = await $.fs.read(file).catch(() => undefined)
+    if (typeof text === 'string') {
+      stored = parseLedger(text, branch)
+      await $.store.set(key, stored)
+      await runIn($, ['rm', '-f', '--', file], place.root, 10_000)
+    }
+  }
+  const ledger = toLedger(stored, branch)
+  if (ledger.first === undefined) return ledger
+  // A head this clone cannot place (a pull request not fetched) keeps its record: its review is
+  // still matched to the exact commit.
+  const first = await identity(place, sha).catch(() => ledger.first)
+  return first === ledger.first ? ledger : emptyLedger(branch)
+}
+
 async function save($: EngineInterface, place: Place, ledger: Ledger) {
-  const file = ledgerFile(place.store, ledger.branch)
-  const made = await $.process.run(['mkdir', '-p', '--', place.store])
-  if (made.exitCode !== 0) throw new Error(`could not make ${place.store}: ${made.stderr.trim()}`)
-  await $.fs.write(`${file}.tmp`, `${JSON.stringify({ ...ledger, approved: undefined }, null, 2)}\n`)
-  const moved = await $.process.run(['mv', '-f', '--', `${file}.tmp`, file])
-  if (moved.exitCode !== 0) throw new Error(`could not write ${file}: ${moved.stderr.trim()}`)
+  await $.store.set(recordKey(place.store, ledger.branch), ledger)
   if (ledger.branch === (await read($, repo))?.branch) await update($, ledgerState, () => ledger)
 }
 
-async function approve($: EngineInterface, place: Place, ledger: Ledger, sha: string) {
-  const approved = { sha, at: await $.clock.now() }
-  await $.store.set(approvalKey(place, ledger.branch), approved)
-  if (ledger.branch === (await read($, repo))?.branch) await update($, ledgerState, () => ({ ...ledger, approved }))
-}
-
-// Records of branches that no longer exist go, with their approvals: a branch made later under the
-// same name starts with none.
+// Records of branches that no longer exist go: a branch made later under the same name starts with none.
 async function prune($: EngineInterface, place: Place) {
-  const entries = await $.fs.list(place.store).catch(() => [])
-  if (entries.length === 0) return
+  const prefix = recordPrefix(place.store)
+  const keys = (await $.store.keys()).filter(key => key.startsWith(prefix))
+  if (keys.length === 0) return
   const live = await branches(place.git)
-  for (const entry of entries) {
-    if (entry.kind !== 'file' || !entry.name.endsWith('.json')) continue
-    let branch: string
-    try {
-      branch = decodeURIComponent(entry.name.slice(0, -'.json'.length))
-    } catch {
-      continue
-    }
-    if (live.has(branch)) continue
-    await $.process.run(['rm', '-f', '--', `${place.store}/${entry.name}`])
-    await $.store.delete(approvalKey(place, branch))
-  }
+  for (const key of keys) if (!live.has(key.slice(prefix.length))) await $.store.delete(key)
 }
 
 // Where the session's repository stands, for the band: read after git commands and at each turn's end.
@@ -160,64 +217,16 @@ function nothingOpen(ledger: Ledger, head: string) {
 }
 
 /**
- * The folder a command's cds lead to, from the session's; undefined when one of them cannot be
- * followed without running the shell: a variable, ~user or cd -.
+ * Why a pull request may not be opened or merged for `branch` at `sha`, or undefined when it may:
+ * the commit was reviewed, no finding is open, and a high-risk change has the person's approval for
+ * that commit, asked for here when it has none.
  */
-async function folderOf($: EngineInterface, cds: readonly string[]) {
-  let folder = await $.session.cwd()
-  for (const target of cds) {
-    if (/[$`]/.test(target) || target === '-' || (target.startsWith('~') && target !== '~' && !target.startsWith('~/'))) return undefined
-    if (target === '~' || target.startsWith('~/')) {
-      const home = await $.env.get('HOME')
-      if (home === undefined || home === '') return undefined
-      folder = `${home}${target.slice(1)}`
-    } else {
-      folder = target.startsWith('/') ? target : `${folder}/${target}`
-    }
-  }
-  return folder
-}
-
-/**
- * Why a pull request command may not run yet, or undefined when it may: the commit it proposes was
- * reviewed, no finding is open, and a high-risk change has the person's approval for that commit.
- * Where the gate cannot tell what the command acts on, it refuses.
- */
-async function gate($: EngineInterface, pr: PrCommand): Promise<string | undefined> {
-  if (pr.isOpaque === true)
-    return `review-gate cannot tell which pull request this acts on, as xargs supplies its arguments. Run gh pr ${pr.kind} with the pull request named.`
-  const folder = await folderOf($, pr.cd)
-  if (folder === undefined)
-    return 'review-gate cannot tell which repository this pull request command acts on: a cd before it uses a variable, ~user or cd -. Run it in the repository, or cd to a plain path first.'
-  const place = await locate($, folder)
-  if (typeof place === 'string') return `review-gate cannot check the review: ${place} Run the pull request command in the repository it is for.`
-  let branch = place.branch
-  let sha = place.head
-  if (pr.kind === 'merge') {
-    // What merges is the pull request's head on GitHub, so that is the commit to vouch for.
-    const named = [...(pr.target === undefined ? [] : [pr.target]), ...(pr.repo === undefined ? [] : ['--repo', pr.repo])]
-    const view = await $.process
-      .run(['gh', 'pr', 'view', ...named, '--json', 'headRefName,headRefOid'], { cwd: place.root, timeoutMs: 30_000 })
-      .catch(error => ({ exitCode: 1, stdout: '', stderr: why(error) }))
-    const head = view.exitCode === 0 ? (JSON.parse(view.stdout) as { headRefName?: string; headRefOid?: string }) : undefined
-    if (head?.headRefName === undefined || head.headRefOid === undefined)
-      return `review-gate could not look up the pull request (${view.stderr.trim() || 'gh gave no head'}), so it cannot tell whether its commit was reviewed. Check gh works, then run this again.`
-    branch = head.headRefName
-    sha = head.headRefOid
-  } else if (pr.head !== undefined) {
-    branch = pr.head.slice(pr.head.indexOf(':') + 1)
-    const ref = await place.git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])
-    if (!ref.ok) return `review-gate cannot see branch ${branch} in ${place.root}, so it cannot check its review. Open the pull request from the clone that has the branch.`
-    sha = ref.out.trim()
-  }
-  if (branch === '') return 'review-gate cannot tell which branch this pull request is for: HEAD is detached. Check out the branch first.'
-  if (branch === place.main) return undefined
-
+async function vouch($: EngineInterface, place: Place, branch: string, sha: string, action: 'open' | 'merge'): Promise<string | undefined> {
   const ledger = await load($, place, branch, sha)
   if (ledger.reviewed !== sha)
     return `Review first: ${branch} at ${short(sha)} has not been reviewed${
       ledger.reviewed === undefined ? '' : ` (the last round covered ${short(ledger.reviewed)})`
-    }. Call ${REVIEW} with what the change is for, answer each finding, then run this again.`
+    }. Call ${REVIEW} with what the change is for, answer each finding, then try again.`
   const open = openFindings(ledger)
   if (open.length > 0)
     return `${branch} has ${open.length} open review finding${open.length === 1 ? '' : 's'}: ${open
@@ -228,25 +237,84 @@ async function gate($: EngineInterface, pr: PrCommand): Promise<string | undefin
 
   // A person's approval: the dialog is theirs to answer, never the model's.
   const dismissed = ledger.findings.filter(finding => finding.status === 'dismissed')
-  const action = pr.kind === 'create' ? 'opening its pull request' : 'merging it'
+  const doing = action === 'open' ? 'opening its pull request' : 'merging it'
   const question = `The review of ${branch} passed, and it needs your approval: ${risk.why.join('; ')}.${
     dismissed.length === 0 ? '' : ` Dismissed findings: ${dismissed.map(finding => `${finding.id} ${finding.title} (${finding.answer ?? ''})`).join('; ')}.`
-  } Do you approve ${action} at ${short(sha)}?`
+  } Do you approve ${doing} at ${short(sha)}?`
   const answer = await $.ui.ask(question, { options: ['Approve', 'Not yet'], header: 'Review' }).catch(() => undefined)
   if (answer !== 'Approve')
     return `The user has not approved ${branch} at ${short(sha)}, which needs a person: ${risk.why.join('; ')}. Ask them what they want changed.`
-  await approve($, place, ledger, sha)
+  await save($, place, { ...ledger, approved: { sha, at: await $.clock.now() } })
   return undefined
 }
 
-// The record is the gate's own: Claude's file tools and shell commands are refused it.
-const RECORD_PATH = /\/\.git\/(?:[^/]+\/)*review-gate(?:\/|$)/
-const RECORD_COMMAND = /\.git\b[^\n|;&]*review-gate|review-gate[^\n|;&]*\.git\b|review-gate\/[^\s'"]*\.json/
-const RECORD_REFUSAL = `review-gate: the review record is the gate's own, so this was refused. Answer a finding by fixing it, or with ${DISMISS} and a reason; only the user resets the record, with /review-gate reset.`
+type Input = Record<string, unknown>
+type Answer = { result: string } | { deny: string }
 
-// The agents' replies, the review's own agents, and whether a round runs: the session's, kept here.
+// Pushes the current branch and opens its pull request, once its review vouches for it.
+async function openPullRequest($: EngineInterface, place: Place, input: Input): Promise<Answer> {
+  if (place.branch === '' || place.branch === place.main)
+    return { deny: `Check out the branch to open a pull request for: ${place.branch || 'a detached HEAD'} is not one.` }
+  const title = asText(input.title).trim()
+  if (title === '') return { deny: 'Give the pull request a title.' }
+  const refusal = await vouch($, place, place.branch, place.head, 'open')
+  if (refusal !== undefined) return { deny: refusal }
+  const pushed = await runIn($, ['git', 'push', '-u', 'origin', place.branch], place.root, 120_000)
+  if (pushed.exitCode !== 0) return { deny: `git push failed, so no pull request was opened: ${pushed.stderr.trim()}` }
+  const base = asText(input.base).trim() || place.main
+  const made = await runIn(
+    $,
+    ['gh', 'pr', 'create', '--head', place.branch, '--base', base, '--title', title, '--body', asText(input.body), ...(input.draft === true ? ['--draft'] : [])],
+    place.root,
+    60_000,
+  )
+  if (made.exitCode !== 0) return { deny: `The branch was pushed, but gh could not open the pull request: ${made.stderr.trim()}` }
+  return { result: `Opened ${made.stdout.trim()} for ${place.branch} at ${short(place.head)}.` }
+}
+
+// Merges a pull request whose head its review vouches for; gh refuses if that head moves meanwhile.
+async function mergePullRequest($: EngineInterface, place: Place, input: Input): Promise<Answer> {
+  const number = typeof input.number === 'number' && Number.isInteger(input.number) && input.number > 0 ? String(input.number) : undefined
+  const view = await runIn(
+    $,
+    ['gh', 'pr', 'view', ...(number === undefined ? [] : [number]), '--json', 'number,headRefName,headRefOid,state'],
+    place.root,
+    30_000,
+  )
+  const found = view.exitCode === 0 ? (JSON.parse(view.stdout) as { number?: number; headRefName?: string; headRefOid?: string; state?: string }) : undefined
+  if (found?.number === undefined || found.headRefName === undefined || found.headRefOid === undefined)
+    return { deny: `gh could not find the pull request: ${view.stderr.trim() || 'it gave no head'}.` }
+  if (found.state !== undefined && found.state !== 'OPEN') return { deny: `Pull request #${found.number} is ${found.state.toLowerCase()}, so there is nothing to merge.` }
+  const refusal = await vouch($, place, found.headRefName, found.headRefOid, 'merge')
+  if (refusal !== undefined) return { deny: refusal }
+  const method = METHODS.find(name => name === input.method) ?? 'merge'
+  const merged = await runIn(
+    $,
+    ['gh', 'pr', 'merge', String(found.number), `--${method}`, '--match-head-commit', found.headRefOid, ...(input.deleteBranch === true ? ['--delete-branch'] : [])],
+    place.root,
+    120_000,
+  )
+  if (merged.exitCode !== 0) return { deny: `gh could not merge #${found.number}: ${merged.stderr.trim()}` }
+  return { result: `Merged #${found.number}: ${found.headRefName} at ${short(found.headRefOid)}.` }
+}
+
+// What the reviewers' tools hand back: the output, cut where it runs long, and git's complaint.
+const OUTPUT_CAP = 100_000
+
+function shown(ran: Ran, empty: string) {
+  const out =
+    ran.stdout.length > OUTPUT_CAP
+      ? `${ran.stdout.slice(0, OUTPUT_CAP)}\n… cut at ${OUTPUT_CAP} of ${ran.stdout.length} characters: narrow the command.`
+      : ran.stdout
+  const failed = ran.exitCode !== 0 && ran.stderr.trim() !== '' ? `\n(exit ${ran.exitCode}) ${ran.stderr.trim()}` : ''
+  return `${out}${failed}`.trim() || empty
+}
+
+// The agents' replies, the review's own agents, the folder a round runs in, and whether one runs:
+// the session's, kept here.
 const mail = mailbox()
 const reviewers = new Set<string>()
+let activeRoot: string | undefined
 let busy = false
 
 async function isReviewer($: EngineInterface, agentId: string) {
@@ -255,12 +323,13 @@ async function isReviewer($: EngineInterface, agentId: string) {
   return agents.some(agent => agent.id === agentId && (agent.type === REVIEWER_TYPE || agent.type === CHECKER_TYPE))
 }
 
-type Settings = { depthOption: 'auto' | Depth; model?: string }
+type Settings = { depthOption: 'auto' | Depth; model?: string; riskModel?: string }
 
 // One round, for the tool and the command alike; a second is refused while one runs.
 async function round($: EngineInterface, place: Place, settings: Settings, ask: Pick<RoundAsk, 'intent' | 'depth' | 'force' | 'signal'>) {
   if (busy) return { ok: false as const, text: 'A review round is running already: wait for it to finish.' }
   busy = true
+  activeRoot = place.root
   try {
     return await runRound($, {
       ...ask,
@@ -276,6 +345,7 @@ async function round($: EngineInterface, place: Place, settings: Settings, ask: 
     })
   } finally {
     busy = false
+    activeRoot = undefined
     await update($, run, () => null)
     await refresh($).catch(() => undefined)
   }
@@ -298,17 +368,20 @@ async function roundCard($: EngineInterface, e: RenderInput, text: string) {
   return card($, e, record, Number(named[1]), await read($, repo))
 }
 
+const choice = (value: unknown) => (typeof value === 'string' && value !== '' && value !== 'inherit' ? value : undefined)
+
 export const register: Register = (on, options) => {
-  const model = typeof options.model === 'string' && options.model !== 'inherit' ? options.model : undefined
+  const model = choice(options.model)
+  const riskModel = choice(options.riskModel)
   const settings: Settings = {
     depthOption: DEPTH_NAMES.find(name => name === options.depth) ?? 'auto',
     ...(model === undefined ? {} : { model }),
+    ...(riskModel === undefined ? {} : { riskModel }),
   }
 
   on('session.start', async ($, e, next) => {
-    await $.tool.register(REVIEW_TOOL)
-    await $.tool.register(DISMISS_TOOL)
-    const agent = { tools: ['Read', 'Bash'], model: 'inherit', maxTurns: 80 }
+    for (const tool of [REVIEW_TOOL, DISMISS_TOOL, PULL_REQUEST_TOOL, GIT_TOOL_SPEC, SEARCH_TOOL_SPEC]) await $.tool.register(tool)
+    const agent = { tools: ['Read', GIT_TOOL, SEARCH_TOOL], model: 'inherit', maxTurns: 80 }
     await $.agent.register({ name: 'reviewer', description: 'Reviews a change for one kind of defect. review-gate runs it.', prompt: REVIEWER, ...agent })
     await $.agent.register({ name: 'checker', description: 'Votes on review findings. review-gate runs it.', prompt: CHECKER, ...agent })
     await $.command.register({
@@ -328,51 +401,65 @@ export const register: Register = (on, options) => {
 
   // A subagent's reply is its turn's end; the main thread's end is a moment to look at git again.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId !== undefined) mail.settle(e.agentId, e.answer)
+    if (e.agentId !== undefined) mail.settle(e.agentId, e.answer, e.usage)
     else await refresh($).catch(() => undefined)
     return next(e)
   })
 
-  // The review's agents read the repository and change nothing in it.
-  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    if (e.agentId === undefined || !(await isReviewer($, e.agentId))) return next(e)
-    const refusal = reviewerRefusal(e.command, e.run_in_background === true)
-    return refusal === undefined ? next(e) : { deny: refusal }
-  }).catch((_, e, next) =>
-    next.called || !reviewers.has(e.agentId ?? '') ? next(e) : { deny: 'review-gate: the check on a reviewer command failed, so it was refused.' },
+  // A pull request is opened and merged by the gate's own tool. The match is on the line's text, so
+  // however the command is wrapped, it is caught.
+  on('tool.call', { tool: 'Bash' }, (_, e, next) => (RAW_PR.test(e.command) ? { deny: RAW_PR_REFUSAL } : next(e))).catch((_, e, next) =>
+    next.called ? next(e) : { deny: RAW_PR_REFUSAL },
   )
 
-  // The gate: a pull request is opened or merged only for a reviewed commit with nothing open.
-  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    for (const pr of prCommands(e.command)) {
-      const refusal = await gate($, pr)
-      if (refusal !== undefined) return { deny: refusal }
-    }
-    return next(e)
-  }).catch((_, e, next) =>
-    next.called || prCommands(e.command).length === 0
-      ? next(e)
-      : { deny: 'review-gate: the review gate failed, so the pull request command was refused.' },
-  )
-
-  on('tool.call', { tool: 'Bash' }, (_, e, next) => (RECORD_COMMAND.test(e.command) ? { deny: RECORD_REFUSAL } : next(e))).catch(
-    (_, e, next) => (next.called ? next(e) : { deny: RECORD_REFUSAL }),
-  )
-  on('tool.call', { tool: 'Write' }, (_, e, next) => (RECORD_PATH.test(e.file_path) ? { deny: RECORD_REFUSAL } : next(e))).catch(
-    (_, e, next) => (next.called ? next(e) : { deny: RECORD_REFUSAL }),
-  )
-  on('tool.call', { tool: 'Edit' }, (_, e, next) => (RECORD_PATH.test(e.file_path) ? { deny: RECORD_REFUSAL } : next(e))).catch(
-    (_, e, next) => (next.called ? next(e) : { deny: RECORD_REFUSAL }),
-  )
-  on('tool.call', { tool: 'NotebookEdit' }, (_, e, next) => (RECORD_PATH.test(e.notebook_path) ? { deny: RECORD_REFUSAL } : next(e))).catch(
-    (_, e, next) => (next.called ? next(e) : { deny: RECORD_REFUSAL }),
-  )
+  // The review's agents have no shell: they read through review_git and review_search.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) =>
+    e.agentId !== undefined && (await isReviewer($, e.agentId))
+      ? { deny: 'review-gate: reviewers have no shell. Read files with Read, and use review_git and review_search.' }
+      : next(e),
+  ).catch((_, e, next) => (next.called || !reviewers.has(e.agentId ?? '') ? next(e) : { deny: 'review-gate: reviewers have no shell.' }))
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     if (e.agentId === undefined && /\b(git|gh)\b/.test(e.command)) await refresh($)
     return ran
   }).catch((_, e, next) => next(e))
+
+  on('tool.call', { tool: GIT_TOOL }, async ($, e) => {
+    if (e.agentId === undefined || !(await isReviewer($, e.agentId))) return { deny: "review_git is for review-gate's own reviewers and checkers." }
+    const args = (Array.isArray(e.args) ? e.args : []).filter((arg): arg is string => typeof arg === 'string')
+    const refusal = gitArgsRefusal(args)
+    if (refusal !== undefined) return { deny: `review-gate: ${refusal}.` }
+    const ran = await runIn($, gitArgv(args), activeRoot ?? (await $.session.cwd()), 60_000)
+    return { result: shown(ran, '(no output)') }
+  }).catch(() => ({ deny: 'review-gate: the git command could not be run.' }))
+
+  on('tool.call', { tool: SEARCH_TOOL }, async ($, e) => {
+    if (e.agentId === undefined || !(await isReviewer($, e.agentId))) return { deny: "review_search is for review-gate's own reviewers and checkers." }
+    const pattern = asText(e.pattern)
+    if (pattern === '') return { deny: 'Give a pattern to search for.' }
+    const search: Search = {
+      pattern,
+      path: asText(e.path),
+      glob: asText(e.glob),
+      ignoreCase: e.ignoreCase === true,
+      fixed: e.fixed === true,
+      context: typeof e.context === 'number' ? e.context : 0,
+    }
+    const cwd = activeRoot ?? (await $.session.cwd())
+    // ripgrep exits 1 for no match and 2 for an error; where it cannot start, git grep searches.
+    const rg = await $.process.run(rgArgv(search), { cwd, timeoutMs: 60_000 }).catch(() => undefined)
+    const ran = rg ?? (await runIn($, gitGrepArgv(search), cwd, 60_000))
+    return { result: shown(ran, 'No matches.') }
+  }).catch(() => ({ deny: 'review-gate: the search could not be run.' }))
+
+  on('tool.call', { tool: PULL_REQUEST }, async ($, e) => {
+    const place = await locate($, await cwdOf($, e.path))
+    if (typeof place === 'string') return { deny: place }
+    if (e.action === 'open') return openPullRequest($, place, e)
+    if (e.action === 'merge') return mergePullRequest($, place, e)
+    return { deny: 'Say what to do: action is "open" or "merge".' }
+  }).catch(() => ({ deny: 'review-gate: the pull request tool failed before it finished. Check the branch and any pull request with gh pr view.' }))
 
   on('tool.call', { tool: REVIEW }, async ($, e, next) => {
     const place = await locate($, await cwdOf($, e.path))
@@ -434,8 +521,7 @@ export const register: Register = (on, options) => {
         await save($, place, { ...ledger, streakFrom: ledger.rounds.length })
         return { text: `${place.branch} may run ${ROUND_CAP} more rounds.` }
       }
-      await $.process.run(['rm', '-f', '--', ledgerFile(place.store, place.branch)])
-      await $.store.delete(approvalKey(place, place.branch))
+      await $.store.delete(recordKey(place.store, place.branch))
       await update($, ledgerState, () => emptyLedger(place.branch))
       return { text: `Forgot ${place.branch}'s review record: ${ledger.rounds.length} rounds and ${ledger.findings.length} findings.` }
     }

@@ -4,9 +4,9 @@ import type { Candidate, CheckerReply, Guide, Recheck, Verdict } from './ledger'
 
 const FENCE = '```'
 
-// The rule both agent types share: they look and never touch, and the session refuses the rest.
+// The rule both agent types share: they look and never touch, through tools that cannot do more.
 const READ_ONLY =
-  'You only read. Open files with Read, and run commands that look: git log, show, diff, blame and grep, rg, grep, find, ls, cat, head, tail, wc and sed -n. Never edit a file, stage, commit, switch branches, or run the project, its tests or its scripts: the session refuses commands that could change anything. The working tree matches the commit under review.'
+  "You only read, and you have no shell. Open files with Read. Run git's reading commands (log, show, diff, blame, grep, ls-files, ls-tree) with the review_git tool, giving git's arguments as a list, such as [\"log\", \"-p\", \"-3\", \"--\", \"src/app.ts\"]. Search the code with the review_search tool. The working tree matches the commit under review."
 
 /** The system prompt of a reviewer: it hunts one kind of defect in a change. */
 export const REVIEWER = `You review one change to a git repository and report the defects you find in it.

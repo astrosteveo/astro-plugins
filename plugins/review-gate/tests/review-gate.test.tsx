@@ -1,16 +1,23 @@
 import type { On } from 'claude-code'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
 import { emptyLedger, globTest } from '../hooks/ledger'
 
 const ROOT = '/repo'
-const RECORD = `${ROOT}/.git/review-gate/feat%2Fapp.json`
+const KEY = 'record:/repo/.git/review-gate:feat/app'
 const BASE = 'b'.repeat(40)
 const ONE = '1'.repeat(40)
 const TWO = '2'.repeat(40)
+const FIRST = '2026-10-28T10:00:00-05:00 dev@example.com'
 const REVIEW = 'mcp__review-gate__review'
 const DISMISS = 'mcp__review-gate__dismiss'
+const PULL_REQUEST = 'mcp__review-gate__pull_request'
+const GIT_TOOL = 'mcp__review-gate__review_git'
+const SEARCH_TOOL = 'mcp__review-gate__review_search'
+
+const MEDIUM = '```json\n{"tier": "medium", "why": ["src/app.ts changes how results are paged"]}\n```'
+const HIGH = '```json\n{"tier": "high", "why": ["src/app.ts builds a shell command from the query"]}\n```'
 
 /** The repository the fake git answers for: the branch's commits after BASE, and what each changes. */
 type World = {
@@ -20,6 +27,8 @@ type World = {
   changes: Record<string, string[]>
   dirty: string[]
   guide?: string
+  /** The commit whose tree holds the REVIEW.md `guide` is: the base, unless the branch added it. */
+  guideAt?: string
   agents?: { id: string; type: string }[]
   /** What the person picks when the gate asks. */
   answer?: string
@@ -27,15 +36,15 @@ type World = {
   risk?: string
   /** The repository's local branches. */
   branches?: string[]
-  /** The commit whose tree holds the REVIEW.md `guide` is: the base, unless the branch added it. */
-  guideAt?: string
   /** Whether git fails to list the changed files. */
   failDiff?: boolean
+  /** Whether ripgrep can start. */
+  hasRg?: boolean
+  /** The clock, which the test moves. */
+  now: number
 }
 
 type Spawned = { id: string; type: string; description: string; prompt: string }
-
-const MEDIUM = '```json\n{"tier": "medium", "why": ["src/app.ts changes how results are paged"]}\n```'
 
 const world = (over: Partial<World> = {}): World => ({
   risk: MEDIUM,
@@ -44,18 +53,25 @@ const world = (over: Partial<World> = {}): World => ({
   history: [BASE, ONE],
   changes: { [ONE]: ['src/app.ts'] },
   dirty: [],
+  now: 1_000,
   ...over,
 })
 
-// An engine under the plugin: a git that answers from the world, a disk in memory, and agents
-// that start when spawned and answer when the test says.
+const USAGE = { input_tokens: 1000, output_tokens: 100, cache_creation_input_tokens: 0, cache_read_input_tokens: 500, model: 'claude-test' }
+
+// An engine under the plugin: a git that answers from the world, the plugin's store in memory, gh
+// and ripgrep stand-ins, and agents that start when spawned and answer when the test says.
 function engine(on: On, repo: World) {
+  const store = new Map<string, unknown>()
   const files = new Map<string, string>()
   const spawned: Spawned[] = []
   const asked: string[] = []
-  // What the risk classifier was asked, and with which model; and every git call, by its arguments.
-  const judged: { model: string; prompt: string }[] = []
-  const calls: string[][] = []
+  // What the risk classifier was asked; every program run, by its argv; spawns and staggers, in
+  // order; and the agents stopped.
+  const judged: { model: string; prompt: string; cached: boolean }[] = []
+  const argvs: string[][] = []
+  const log: string[] = []
+  const stops: string[] = []
   const ran = (exitCode: number, stdout = '') => ({
     value: { exitCode, stdout, stderr: exitCode === 0 ? '' : 'failed', isStdoutTruncated: false, isStderrTruncated: false },
   })
@@ -63,11 +79,12 @@ function engine(on: On, repo: World) {
     const commits = repo.history.slice(repo.history.indexOf(from) + 1, repo.history.indexOf(to) + 1)
     return [...new Set(commits.flatMap(commit => repo.changes[commit] ?? []))]
   }
-  const git = (args: string[], cwd: string) => {
-    calls.push(args)
+  const git = (given: string[], cwd: string) => {
+    if (cwd !== ROOT && !cwd.startsWith(`${ROOT}/`)) return ran(128)
+    const args = [...given]
+    while ((args[0] ?? '').startsWith('-')) args.splice(0, args[0] === '-c' || args[0] === '-C' ? 2 : 1)
     const [sub, ...rest] = args
     const last = rest[rest.length - 1] ?? ''
-    if (cwd !== ROOT && !cwd.startsWith(`${ROOT}/`)) return ran(128)
     if (sub === 'rev-parse') {
       if (rest[0] === '--show-toplevel') return ran(0, `${ROOT}\n`)
       if (rest[0] === '--path-format=absolute') return ran(0, `${ROOT}/.git\n`)
@@ -82,10 +99,11 @@ function engine(on: On, repo: World) {
     if (sub === 'merge-base') return ran(0, `${BASE}\n`)
     if (sub === 'rev-list') return ran(0, `${repo.history.indexOf(repo.head)}\n`)
     if (sub === 'status') return ran(0, repo.dirty.map(path => ` M ${path}\0`).join(''))
-    if (sub === 'log') return ran(0, '1111111 Add the app\n\nIt pages through results.\n\0')
+    if (sub === 'log') return rest.includes('--format=%aI %ae') ? ran(0, `${FIRST}\n`) : ran(0, '1111111 Add the app\n\nIt pages through results.\n\0')
     if (sub === 'for-each-ref') return ran(0, (repo.branches ?? ['main', 'feat/app']).map(name => `${name}\n`).join(''))
+    if (sub === 'push') return ran(0)
     const guided = repo.guide !== undefined && (rest.includes(repo.guideAt ?? BASE) || rest[0] === `${repo.guideAt ?? BASE}:REVIEW.md`)
-    if (sub === 'ls-tree') return ran(0, guided ? 'REVIEW.md\0' : '')
+    if (sub === 'ls-tree') return ran(0, guided ? 'REVIEW.md\0src/app.ts\0' : 'src/app.ts\0')
     if (sub === 'show') return guided ? ran(0, repo.guide ?? '') : ran(128)
     if (sub === 'diff') {
       const dash = rest.indexOf('--')
@@ -95,14 +113,20 @@ function engine(on: On, repo: World) {
       if (rest[0] === '-U0') return ran(0, changed.map(file => `+++ b/${file}\n@@ -0,0 +1,40 @@\n`).join(''))
       // `-- . :(exclude,glob)…` keeps the changed files no exclusion names.
       const left = rest.slice(dash + 2).map(spec => globTest(`/${spec.replace(':(exclude,glob)', '')}`))
-      const listed = dash < 0 ? changed : changed.filter(file => !left.some(test => test(file)))
+      const listed = dash < 0 ? changed : changed.filter(file => !left.some(skip => skip(file)))
       if ((rest[0] ?? '').startsWith('--stat')) return ran(0, listed.map(file => ` ${file} | 40 +`).join('\n'))
       return ran(0, listed.map(file => `diff --git a/${file} b/${file}\n+export const page = 1\n`).join(''))
     }
-    return ran(1)
+    return ran(0, `git ${args.join(' ')}\n`)
+  }
+  const gh = (args: string[]) => {
+    if (args[1] === 'view') return ran(0, JSON.stringify({ number: 7, headRefName: repo.branch, headRefOid: repo.head, state: 'OPEN' }))
+    if (args[1] === 'create') return ran(0, 'https://github.com/o/r/pull/7\n')
+    return ran(0)
   }
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: ROOT }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__review-gate__${e.name}` } }))
   on('agent.register', (_, e) => ({ value: { agent: `review-gate:${e.name}` } }))
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -115,13 +139,14 @@ function engine(on: On, repo: World) {
     const type = call.subagentType ?? call.subagent_type ?? ''
     const id = `agent-${spawned.length + 1}`
     spawned.push({ id, type, description: e.description, prompt: e.prompt })
+    log.push(`spawn ${type}`)
     // It answers as a spawn does, and as the Agent tool does for an agent it started in the background.
     return { model: 'claude-test', agentId: id, result: { status: 'async_launched', agentId: id, description: e.description, prompt: e.prompt } } as never
   })
   on('turn.complete', (_, e) => ({ text: e.answer }))
-  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('model.complete', (_, e) => {
-    judged.push({ model: e.model, prompt: e.prompt })
+    judged.push({ model: e.model, prompt: e.prompt, cached: e.promptBlocks?.some(block => block.cache === true) === true })
     const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
     return {
       value:
@@ -130,40 +155,40 @@ function engine(on: On, repo: World) {
           : { isAnswered: true as const, text: repo.risk, usage },
     }
   })
-  on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('clock.now', () => ({ value: 1_000 }))
+  on('clock.now', () => ({ value: repo.now }))
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => {
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
+  on('store.delete', (_, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: [...store.keys()] }))
   on('fs.read', (_, e) => {
     const text = files.get(String(e.path))
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
   })
-  on('fs.write', (_, e) => {
-    files.set(String(e.path), String(e.text))
-    return { value: undefined }
-  })
-  on('fs.list', (_, e) => ({
-    value: [...files.keys()]
-      .filter(path => path.startsWith(`${e.path}/`) && !path.slice(e.path.length + 1).includes('/'))
-      .map(path => ({ name: path.slice(e.path.length + 1), kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false })),
-  }))
-  mock.store(on)
-  mock.env(on, { HOME: '/home/u' })
   on('process.run', (_, e) => {
     const argv = e.argv.map(String)
-    if (argv[0] === 'git') return git(argv.slice(3), e.init?.cwd ?? ROOT)
-    if (argv[0] === 'mv') {
-      files.set(argv[4] ?? '', files.get(argv[3] ?? '') ?? '')
-      files.delete(argv[3] ?? '')
-      return ran(0)
+    argvs.push(argv)
+    if (argv[0] === 'git') return git(argv.slice(1), e.init?.cwd ?? ROOT)
+    if (argv[0] === 'gh') return gh(argv.slice(1))
+    if (argv[0] === 'rg') {
+      if (repo.hasRg === false) throw new Error('rg: not found')
+      return ran(0, 'src/app.ts:12:const token = query\n')
     }
-    if (argv[0] === 'rm') {
-      files.delete(argv[3] ?? '')
-      return ran(0)
-    }
-    if (argv[0] === 'gh') return ran(0, JSON.stringify({ headRefName: repo.branch, headRefOid: repo.head }))
+    if (argv[0] === 'sleep' && argv[1] !== '1') log.push(`sleep ${argv[1]}`)
+    if (argv[0] === 'rm') files.delete(argv[3] ?? '')
     return ran(0)
   })
   on('tool.call', (_, e) => {
+    if (e.tool === 'TaskStop') {
+      stops.push(String((e as unknown as { task_id?: string }).task_id))
+      return { result: {} }
+    }
     if (e.tool !== 'AskUserQuestion') return { result: {} }
     const questions = (e as unknown as { questions: { question: string }[] }).questions
     const question = questions[0]?.question ?? ''
@@ -174,12 +199,12 @@ function engine(on: On, repo: World) {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  return { files, spawned, asked, judged, calls }
+  return { store, files, spawned, asked, judged, argvs, log, stops }
 }
 
 const start = ($: Engine) => $.session.start({ cwd: ROOT, surface: 'terminal', isInteractive: true })
 
-const ledgerOf = (files: Map<string, string>): Ledger => JSON.parse(files.get(RECORD) ?? 'null') as Ledger
+const ledgerOf = (store: Map<string, unknown>) => store.get(KEY) as Ledger
 
 const round = (n: number, head: string, open: number, over: Partial<Round> = {}): Round => ({
   n,
@@ -212,7 +237,7 @@ const finding = (over: Partial<Finding>): Finding => ({
   ...over,
 })
 
-const seed = (files: Map<string, string>, over: Partial<Ledger>) => files.set(RECORD, JSON.stringify({ ...emptyLedger('feat/app'), ...over }))
+const seed = (store: Map<string, unknown>, over: Partial<Ledger>) => store.set(KEY, { ...emptyLedger('feat/app'), first: FIRST, ...over })
 
 // Waits for the plugin to get as far as the test needs: each tick is an event through the engine,
 // which lets the plugin's own calls on it go round.
@@ -222,7 +247,7 @@ async function until($: Engine, what: string, done: () => boolean) {
 }
 
 const reply = ($: Engine, agentId: string, answer: string) =>
-  $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: `turn-${agentId}`, agentId, reason: 'answer' })
+  $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: `turn-${agentId}`, agentId, reason: 'answer', usage: USAGE })
 
 const json = (value: unknown) => `Done.\n\n\`\`\`json\n${JSON.stringify(value)}\n\`\`\``
 
@@ -250,53 +275,55 @@ const SHELL = {
 
 const vote = (id: string, real: boolean) => ({ id, real, introduced: true, severity: 'important', why: real ? 'the bound is off' : 'run() quotes it' })
 
-test('a round sends one reviewer per focus, has checkers vote, and records what most hold real', async ($, on) => {
+const open = (title = 'Add search') => ({ tool: PULL_REQUEST, action: 'open', title, body: 'Body text' }) as const
+
+test('a round sends one reviewer per focus, has checkers vote, and records what most hold real, with its cost', async ($, on) => {
   const repo = world()
-  const { files, spawned, judged } = engine(on, repo)
+  const { store, spawned, judged, log } = engine(on, repo)
   await start($)
 
   const call = $.tool.call({ tool: REVIEW, intent: 'Page through search results.' })
   await until($, 'four reviewers', () => spawned.length === 4)
-  expect(judged.map(one => one.model)).toEqual(['claude-opus-5-5'])
+  // The risk check runs on its own model, Haiku unless the options say otherwise, its prompt marked for the cache.
+  expect(judged.map(one => [one.model, one.cached])).toEqual([['haiku', true]])
   expect(judged[0]?.prompt).toContain('Judge the change on branch feat/app at commit 1111111: everything it would merge.')
-  expect(judged[0]?.prompt).toContain('diff --git a/src/app.ts b/src/app.ts')
   expect(spawned.map(agent => agent.description)).toEqual(['review: correctness', 'review: failure paths', 'review: fit', 'review: security'])
   expect(spawned.map(agent => agent.type)).toEqual(Array(4).fill('review-gate:reviewer'))
   expect(spawned[0]?.prompt).toContain('This round covers the whole branch: git diff bbbbbbb 1111111')
-  expect(spawned[0]?.prompt).toContain('What the change is for: Page through search results.')
   for (const agent of spawned.splice(0)) {
     const findings = agent.description === 'review: correctness' ? [SKIPPED_PAGE] : agent.description === 'review: security' ? [SHELL] : []
     await reply($, agent.id, json({ findings }))
   }
 
   await until($, 'three checkers', () => spawned.length === 3)
-  expect(spawned.map(agent => agent.type)).toEqual(Array(3).fill('review-gate:checker'))
+  // The first checker starts alone, so the others find its prompt in the cache.
+  expect(log.slice(-4)).toEqual(['spawn review-gate:checker', 'sleep 8', 'spawn review-gate:checker', 'spawn review-gate:checker'])
   expect(spawned[0]?.prompt).toContain('C1. src/app.ts:12 (a line this branch changes; raised as bug, important, by 1 reviewer)')
-  expect(spawned[0]?.prompt).toContain('C2. src/app.ts:30')
   await reply($, spawned[0]?.id ?? '', json({ verdicts: [vote('C1', true), vote('C2', true)], earlier: [] }))
   await reply($, spawned[1]?.id ?? '', json({ verdicts: [vote('C1', true), vote('C2', false)], earlier: [] }))
   await reply($, spawned[2]?.id ?? '', 'I ran out of time.')
 
-  const result = await call
-  const text = String(result.result)
+  const text = String((await call).result)
   expect(text.split('\n')[0]).toBe(
     'Review round 1 of feat/app at 1111111: the whole branch, standard depth (4 reviewers, 3 checkers), risk medium (src/app.ts changes how results are paged).',
   )
   expect(text).toContain('R1-1 · important · src/app.ts:12 · 2 of 2 checkers agree')
   expect(text).toContain('1 agent reply could not be read and counted for nothing.')
-  // The shell finding had one vote of two: not kept.
+  expect(text).toContain('The round took 0s · 11k tokens, 4k from the cache.')
   expect(text.includes('reaches a shell')).toBe(false)
 
-  const ledger = ledgerOf(files)
+  const ledger = ledgerOf(store)
   expect(ledger.reviewed).toBe(ONE)
+  expect(ledger.first).toBe(FIRST)
+  expect(ledger.riskFor).toEqual({ sha: ONE, risk: { tier: 'medium', why: ['src/app.ts changes how results are paged'] } })
   expect(ledger.findings.map(one => [one.id, one.status, one.severity])).toEqual([['R1-1', 'open', 'important']])
-  expect(ledger.rounds.map(one => [one.n, one.scope, one.raised, one.kept, one.open, one.unread])).toEqual([[1, 'full', 2, 1, 1, 1]])
+  expect(ledger.rounds[0]?.tokens).toEqual({ input: 7001, output: 701, cached: 3500 })
 })
 
-test('the next round reads only the new commits, hands the reviewers what was raised, and confirms a fix', async ($, on) => {
+test('the next round reads only the new commits, confirms a fix, and stops the checker it no longer needs', async ($, on) => {
   const repo = world({ head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts', 'README.md'], [TWO]: ['src/app.ts'] } })
-  const { files, spawned } = engine(on, repo)
-  seed(files, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
+  const { store, spawned, stops } = engine(on, repo)
+  seed(store, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
   await start($)
 
   const call = $.tool.call({ tool: REVIEW, intent: 'Page through search results.' })
@@ -309,24 +336,23 @@ test('the next round reads only the new commits, hands the reviewers what was ra
   await until($, 'three checkers', () => spawned.length === 3)
   expect(spawned[0]?.prompt).toContain('Findings to check:\n\n(none)')
   expect(spawned[0]?.prompt).toContain('R1-1. src/app.ts:12 The last page is skipped')
-  for (const [index, agent] of spawned.splice(0).entries()) {
-    await reply($, agent.id, json({ verdicts: [], earlier: [{ id: 'R1-1', fixed: index !== 2, why: 'the bound is pages now' }] }))
-  }
+  // Two of three say it is fixed: the third could change nothing, and is stopped.
+  for (const agent of spawned.slice(0, 2)) await reply($, agent.id, json({ verdicts: [], earlier: [{ id: 'R1-1', fixed: true, why: 'the bound is pages now' }] }))
 
   const text = String((await call).result)
+  expect(stops).toEqual([spawned[2]?.id])
   expect(text.split('\n')[0]).toBe(
     'Review round 2 of feat/app at 2222222: the commits since 1111111, standard depth (4 reviewers, 3 checkers), risk medium (src/app.ts changes how results are paged).',
   )
   expect(text).toContain('Found fixed this round: R1-1 (The last page is skipped).')
   expect(text).toContain('Nothing is open. feat/app at 2222222 is ready for a pull request.')
-  const ledger = ledgerOf(files)
-  expect(ledger.findings.map(one => [one.id, one.status, one.answer, one.closedRound])).toEqual([['R1-1', 'fixed', 'fixed at 2222222', 2]])
-  expect(ledger.reviewed).toBe(TWO)
+  expect(text.includes('could not be read')).toBe(false)
+  expect(ledgerOf(store).findings.map(one => [one.id, one.status, one.answer, one.closedRound])).toEqual([['R1-1', 'fixed', 'fixed at 2222222', 2]])
 })
 
 test("the classifier's verdict on the code sets the risk: high reads deeper, and a person approves the pull request", async ($, on) => {
-  const repo = world({ risk: '```json\n{"tier": "high", "why": ["src/app.ts builds a shell command from the query"]}\n```' })
-  const { files, spawned } = engine(on, repo)
+  const repo = world({ risk: HIGH })
+  const { store, spawned } = engine(on, repo)
   await start($)
   const call = $.tool.call({ tool: REVIEW, intent: 'Search the log.' })
   await until($, 'five reviewers', () => spawned.length === 5)
@@ -334,22 +360,75 @@ test("the classifier's verdict on the code sets the risk: high reads deeper, and
   for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
   const text = String((await call).result)
   expect(text.split('\n')[0]).toBe(
-    'Review round 1 of feat/app at 1111111: the whole branch, deep depth (5 reviewers, 5 checkers), risk high (src/app.ts builds a shell command from the query).',
+    'Review round 1 of feat/app at 1111111: the whole branch, deep depth (5 reviewers, 3 checkers), risk high (src/app.ts builds a shell command from the query).',
   )
   expect(text).toContain('It is high risk, so the gate asks the user to approve it when the pull request is opened or merged.')
-  expect(ledgerOf(files).rounds[0]?.risk).toEqual({ tier: 'high', why: ['src/app.ts builds a shell command from the query'] })
+  expect(ledgerOf(store).rounds[0]?.risk).toEqual({ tier: 'high', why: ['src/app.ts builds a shell command from the query'] })
 })
 
 test('a classifier that gives no verdict is asked again, and then leaves the change to a person', async ($, on) => {
-  const repo = world({ risk: undefined })
-  const { files, spawned, judged } = engine(on, repo)
+  const { store, spawned, judged } = engine(on, world({ risk: undefined }))
   await start($)
   const call = $.tool.call({ tool: REVIEW })
   await until($, 'five reviewers', () => spawned.length === 5)
   expect(judged.length).toBe(2)
   for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
   await call
-  expect(ledgerOf(files).rounds[0]?.risk).toEqual({ tier: 'high', why: ['the classifier gave no verdict on its risk, so a person looks'] })
+  expect(ledgerOf(store).rounds[0]?.risk).toEqual({ tier: 'high', why: ['the classifier gave no verdict on its risk, so a person looks'] })
+})
+
+test('a commit judged before keeps its verdict, and is not judged again', async ($, on) => {
+  const { store, spawned, judged } = engine(on, world())
+  seed(store, { riskFor: { sha: ONE, risk: { tier: 'low', why: ['it changes only docs'] } } })
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'two reviewers', () => spawned.length === 2)
+  expect(judged).toEqual([])
+  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
+  expect(String((await call).result)).toContain('quick depth (2 reviewers, 1 checkers), risk low (it changes only docs)')
+})
+
+test('a round over new commits alone runs at most at standard depth, and rechecks only findings in files they touched', async ($, on) => {
+  const repo = world({ risk: HIGH, head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts', 'src/other.ts'], [TWO]: ['src/app.ts'] } })
+  const { store, spawned } = engine(on, repo)
+  seed(store, {
+    rounds: [round(1, ONE, 2, { depth: 'deep' })],
+    findings: [finding({}), finding({ id: 'R1-2', file: 'src/other.ts', title: 'Pages overlap' })],
+    reviewed: ONE,
+  })
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'four reviewers', () => spawned.length === 4)
+  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
+  await until($, 'three checkers', () => spawned.length === 3)
+  expect(spawned[0]?.prompt).toContain('R1-1. src/app.ts:12')
+  expect(spawned[0]?.prompt.includes('R1-2.')).toBe(false)
+  for (const agent of spawned.slice(0, 2)) await reply($, agent.id, json({ verdicts: [], earlier: [{ id: 'R1-1', fixed: true, why: '' }] }))
+  await call
+  expect(ledgerOf(store).findings.map(one => [one.id, one.status])).toEqual([
+    ['R1-1', 'fixed'],
+    ['R1-2', 'open'],
+  ])
+})
+
+test('the last agent of a phase gets three minutes once the others have answered, then is stopped', async ($, on) => {
+  const repo = world()
+  const { spawned, stops } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  let finished = false
+  void call.then(() => {
+    finished = true
+  })
+  await until($, 'four reviewers', () => spawned.length === 4)
+  for (const agent of spawned.slice(0, 3)) await reply($, agent.id, json({ findings: [] }))
+  // Ten seconds of clock a tick, until the round gives up on the fourth.
+  await until($, 'the round to end', () => {
+    repo.now += 10_000
+    return finished
+  })
+  expect(stops).toEqual([spawned[3]?.id])
+  expect(String((await call).result)).toContain('1 agent reply could not be read and counted for nothing.')
 })
 
 test('a review is refused on the default branch, with no commits past it, and with changes not committed', async ($, on) => {
@@ -369,113 +448,192 @@ test('a review is refused on the default branch, with no commits past it, and wi
 })
 
 test('a commit reviewed already is not reviewed again by the model', async ($, on) => {
-  const repo = world()
-  const { files, spawned } = engine(on, repo)
-  seed(files, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
+  const { store, spawned } = engine(on, world())
+  seed(store, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
   await start($)
-  const text = String((await $.tool.call({ tool: REVIEW })).result)
-  expect(text).toContain('This commit was reviewed already; nothing was run again.')
+  expect(String((await $.tool.call({ tool: REVIEW })).result)).toContain('This commit was reviewed already; nothing was run again.')
   expect(spawned).toEqual([])
 })
 
 test('after three rounds that leave findings open the model is refused another, until the person allows more', async ($, on) => {
   const repo = world({ head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts'], [TWO]: ['src/app.ts'] } })
-  const { files } = engine(on, repo)
-  seed(files, { rounds: [round(1, ONE, 2), round(2, ONE, 2), round(3, ONE, 1)], findings: [finding({})], reviewed: ONE })
+  const { store } = engine(on, repo)
+  seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 2), round(3, ONE, 1)], findings: [finding({})], reviewed: ONE })
   await start($)
-
   const refused = (await $.tool.call({ tool: REVIEW })).deny ?? ''
   expect(refused.startsWith('3 rounds in a row have ended with findings open (round 1 left 2 open, round 2 left 2 open, round 3 left 1 open)')).toBe(true)
-  expect(refused).toContain('tell the user what keeps coming back (R1-1 The last page is skipped)')
-
   const person = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 120 } }
   expect((await $.command.run({ command: 'review-gate', args: 'more', ...person, origin: { kind: 'sdk' } })).text).toBe(
     'Only the person at the keyboard can run /review-gate more.',
   )
-  const more = await $.command.run({ command: 'review-gate', args: 'more', ...person })
-  expect(more.text).toBe('feat/app may run 3 more rounds.')
-  expect(ledgerOf(files).streakFrom).toBe(3)
+  expect((await $.command.run({ command: 'review-gate', args: 'more', ...person })).text).toBe('feat/app may run 3 more rounds.')
+  expect(ledgerOf(store).streakFrom).toBe(3)
 })
 
-test('the gate refuses a pull request until its commit is reviewed and nothing is open', async ($, on) => {
-  const repo = world()
-  const { files } = engine(on, repo)
+test('a pull request opens through the tool only for a reviewed commit with nothing open, and pushes first', async ($, on) => {
+  const { store, argvs } = engine(on, world())
   await start($)
-  const create = () => $.tool.call({ tool: 'Bash', command: 'git push -u origin feat/app && gh pr create --fill' })
-
-  expect((await create()).deny).toBe(
-    'Review first: feat/app at 1111111 has not been reviewed. Call mcp__review-gate__review with what the change is for, answer each finding, then run this again.',
+  expect((await $.tool.call(open(' '))).deny).toBe('Give the pull request a title.')
+  expect((await $.tool.call(open())).deny).toBe(
+    'Review first: feat/app at 1111111 has not been reviewed. Call mcp__review-gate__review with what the change is for, answer each finding, then try again.',
   )
-  seed(files, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
-  expect((await create()).deny).toBe(
+  seed(store, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
+  expect((await $.tool.call(open())).deny).toBe(
     'feat/app has 1 open review finding: R1-1 (src/app.ts:12 The last page is skipped). Fix each and commit, then call mcp__review-gate__review again; or dismiss it with mcp__review-gate__dismiss and a reason.',
   )
-
   const dismissed = await $.tool.call({ tool: DISMISS, ids: ['r1-1'], reason: 'The caller never passes the last page index.' })
-  expect(dismissed.result).toBe(
-    'Dismissed R1-1: The caller never passes the last page index.\nNothing is open. feat/app at 1111111 is ready for a pull request.',
-  )
-  expect((await create()).deny).toBe(undefined)
-
-  // A commit after the review is one the review never saw.
-  repo.history.push(TWO)
-  repo.head = TWO
-  expect((await $.tool.call({ tool: 'Bash', command: 'gh pr merge --squash' })).deny).toBe(
-    'Review first: feat/app at 2222222 has not been reviewed (the last round covered 1111111). Call mcp__review-gate__review with what the change is for, answer each finding, then run this again.',
-  )
+  expect(dismissed.result).toBe('Dismissed R1-1: The caller never passes the last page index.\nNothing is open. feat/app at 1111111 is ready for a pull request.')
+  expect(argvs.some(argv => argv[0] === 'gh')).toBe(false)
+  expect((await $.tool.call(open())).result).toBe('Opened https://github.com/o/r/pull/7 for feat/app at 1111111.')
+  expect(argvs.filter(argv => argv[0] === 'gh' || argv[1] === 'push')).toEqual([
+    ['git', 'push', '-u', 'origin', 'feat/app'],
+    ['gh', 'pr', 'create', '--head', 'feat/app', '--base', 'main', '--title', 'Add search', '--body', 'Body text'],
+  ])
 })
 
-test('a dismissal needs an open finding and a reason', async ($, on) => {
-  const { files } = engine(on, world())
-  seed(files, { rounds: [round(1, ONE, 1)], findings: [finding({}), finding({ id: 'R1-2', status: 'fixed' })], reviewed: ONE })
+test("a merge goes through only while the pull request's head is the reviewed commit", async ($, on) => {
+  const repo = world()
+  const { store, argvs } = engine(on, repo)
+  seed(store, { rounds: [round(1, ONE, 0)], reviewed: ONE })
   await start($)
-  const dismiss = (ids: string[], reason = 'The caller never passes the last page index.') => $.tool.call({ tool: DISMISS, ids, reason })
-  expect((await dismiss(['R1-9'])).deny).toBe('feat/app has no finding R1-9.')
-  expect((await dismiss(['R1-2'])).deny).toBe('R1-2 is not open.')
-  expect((await dismiss(['R1-1'], 'wrong')).deny).toBe('Give the reason in a sentence: why the finding is wrong, or why the code is fine as it is.')
-  expect(ledgerOf(files).findings[0]?.status).toBe('open')
+  expect((await $.tool.call({ tool: PULL_REQUEST, action: 'merge', number: 7, method: 'squash' })).result).toBe('Merged #7: feat/app at 1111111.')
+  expect(argvs.at(-1)).toEqual(['gh', 'pr', 'merge', '7', '--squash', '--match-head-commit', ONE])
+  repo.history.push(TWO)
+  repo.head = TWO
+  expect((await $.tool.call({ tool: PULL_REQUEST, action: 'merge' })).deny).toBe(
+    'Review first: feat/app at 2222222 has not been reviewed (the last round covered 1111111). Call mcp__review-gate__review with what the change is for, answer each finding, then try again.',
+  )
 })
 
 test('a high-risk change waits for the person, and their approval holds for that commit alone', async ($, on) => {
   const repo = world()
-  const { files, asked } = engine(on, repo)
-  const risk = { tier: 'high' as const, why: ['it changes .github/workflows/ci.yml, a path a person approves'] }
-  seed(files, {
+  const { store, asked } = engine(on, repo)
+  const risk = { tier: 'high' as const, why: ['src/auth.ts decides who may sign in'] }
+  seed(store, {
     rounds: [round(1, ONE, 0, { risk })],
     findings: [finding({ status: 'dismissed', answer: 'The caller never passes the last page index.' })],
     reviewed: ONE,
   })
   await start($)
-  const create = () => $.tool.call({ tool: 'Bash', command: 'gh pr create --fill' })
-
-  expect((await create()).deny).toBe(
-    'The user has not approved feat/app at 1111111, which needs a person: it changes .github/workflows/ci.yml, a path a person approves. Ask them what they want changed.',
+  expect((await $.tool.call(open())).deny).toBe(
+    'The user has not approved feat/app at 1111111, which needs a person: src/auth.ts decides who may sign in. Ask them what they want changed.',
   )
   expect(asked[0]).toBe(
-    'The review of feat/app passed, and it needs your approval: it changes .github/workflows/ci.yml, a path a person approves. Dismissed findings: R1-1 The last page is skipped (The caller never passes the last page index.). Do you approve opening its pull request at 1111111?',
+    'The review of feat/app passed, and it needs your approval: src/auth.ts decides who may sign in. Dismissed findings: R1-1 The last page is skipped (The caller never passes the last page index.). Do you approve opening its pull request at 1111111?',
   )
-
   repo.answer = 'Approve'
-  expect((await create()).deny).toBe(undefined)
-  // The approval is kept in the plugin's store, apart from the file a command could write.
-  expect(ledgerOf(files).approved).toBe(undefined)
-  expect((await create()).deny).toBe(undefined)
+  expect((await $.tool.call(open())).result).toBe('Opened https://github.com/o/r/pull/7 for feat/app at 1111111.')
+  expect(ledgerOf(store).approved).toEqual({ sha: ONE, at: 1_000 })
+  expect((await $.tool.call(open())).result).toBe('Opened https://github.com/o/r/pull/7 for feat/app at 1111111.')
   expect(asked.length).toBe(2)
 })
 
-test("a reviewer agent's commands are held to reading; another agent's are not", async ($, on) => {
-  engine(on, world({ agents: [{ id: 'agent-r', type: 'review-gate:reviewer' }, { id: 'agent-g', type: 'general-purpose' }] }))
+test('a shell line that opens or merges a pull request is sent to the tool, however it is wrapped', async ($, on) => {
+  engine(on, world())
   await start($)
-  const refused = await $.tool.call({ tool: 'Bash', command: 'git checkout main', agentId: 'agent-r' })
-  expect(refused.deny).toBe('review-gate: reviewers only read, so this command was refused: git checkout is not one that only reads.')
-  expect((await $.tool.call({ tool: 'Bash', command: 'git log -3', agentId: 'agent-r' })).deny).toBe(undefined)
-  expect((await $.tool.call({ tool: 'Bash', command: 'git checkout main', agentId: 'agent-g' })).deny).toBe(undefined)
+  const refusal =
+    "review-gate: open and merge pull requests with mcp__review-gate__pull_request, which checks the branch's review, then pushes and runs gh. If the command only mentions this in text, such as a commit message, put that text in a file and pass the file (git commit -F FILE)."
+  for (const command of ['gh pr create --fill', "bash -c 'gh pr merge 3'", 'echo 3 | xargs gh pr merge', 'cd ~/x && gh pr new']) {
+    expect({ command, deny: (await $.tool.call({ tool: 'Bash', command })).deny }).toEqual({ command, deny: refusal })
+  }
+  expect((await $.tool.call({ tool: 'Bash', command: 'gh pr view 3' })).deny).toBe(undefined)
 })
 
-test("a review's row draws as a card of its findings, and the band says what is open", async ($, on) => {
-  const { files } = engine(on, world())
-  seed(files, {
-    rounds: [round(1, ONE, 1)],
+test("the review's agents read through their own tools, and have no shell", async ($, on) => {
+  const repo = world({ agents: [{ id: 'agent-r', type: 'review-gate:reviewer' }, { id: 'agent-g', type: 'general-purpose' }] })
+  const { argvs } = engine(on, repo)
+  await start($)
+  expect((await $.tool.call({ tool: GIT_TOOL, args: ['shortlog', '-s'], agentId: 'agent-r' })).result).toBe('git shortlog -s')
+  await $.tool.call({ tool: GIT_TOOL, args: ['diff', 'a', 'b'], agentId: 'agent-r' })
+  expect(argvs.at(-1)).toEqual(['git', '-c', 'core.quotePath=false', '--no-pager', 'diff', '--no-ext-diff', 'a', 'b'])
+  expect((await $.tool.call({ tool: GIT_TOOL, args: ['commit', '-m', 'x'], agentId: 'agent-r' })).deny).toBe(
+    'review-gate: git commit is not one that only reads.',
+  )
+  expect((await $.tool.call({ tool: GIT_TOOL, args: ['log'] })).deny).toBe("review_git is for review-gate's own reviewers and checkers.")
+  expect((await $.tool.call({ tool: GIT_TOOL, args: ['log'], agentId: 'agent-g' })).deny).toBe("review_git is for review-gate's own reviewers and checkers.")
+
+  expect((await $.tool.call({ tool: SEARCH_TOOL, pattern: 'token', path: 'src', agentId: 'agent-r' })).result).toBe('src/app.ts:12:const token = query')
+  expect(argvs.at(-1)?.[0]).toBe('rg')
+  repo.hasRg = false
+  await $.tool.call({ tool: SEARCH_TOOL, pattern: 'token', agentId: 'agent-r' })
+  expect(argvs.at(-1)?.slice(0, 5)).toEqual(['git', '-c', 'core.quotePath=false', '--no-pager', 'grep'])
+
+  expect((await $.tool.call({ tool: 'Bash', command: 'git log', agentId: 'agent-r' })).deny).toBe(
+    'review-gate: reviewers have no shell. Read files with Read, and use review_git and review_search.',
+  )
+  expect((await $.tool.call({ tool: 'Bash', command: 'git log', agentId: 'agent-g' })).deny).toBe(undefined)
+})
+
+test('a dismissal needs an open finding and a reason', async ($, on) => {
+  const { store } = engine(on, world())
+  seed(store, { rounds: [round(1, ONE, 1)], findings: [finding({}), finding({ id: 'R1-2', status: 'fixed' })], reviewed: ONE })
+  await start($)
+  const dismiss = (ids: string[], reason = 'The caller never passes the last page index.') => $.tool.call({ tool: DISMISS, ids, reason })
+  expect((await dismiss(['R1-9'])).deny).toBe('feat/app has no finding R1-9.')
+  expect((await dismiss(['R1-2'])).deny).toBe('R1-2 is not open.')
+  expect((await dismiss(['R1-1'], 'wrong')).deny).toBe('Give the reason in a sentence: why the finding is wrong, or why the code is fine as it is.')
+  expect(ledgerOf(store).findings[0]?.status).toBe('open')
+})
+
+test('a record a file held before the store did is brought across once, and the file removed', async ($, on) => {
+  const { store, files } = engine(on, world())
+  const file = `${ROOT}/.git/review-gate/feat%2Fapp.json`
+  files.set(file, JSON.stringify({ ...emptyLedger('feat/app'), rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE }))
+  await start($)
+  expect(ledgerOf(store).findings.map(one => one.id)).toEqual(['R1-1'])
+  expect(files.has(file)).toBe(false)
+})
+
+test('a record begun by another branch of the same name reads as none, and records of deleted branches go', async ($, on) => {
+  const { store } = engine(on, world())
+  seed(store, { rounds: [round(1, ONE, 0)], reviewed: ONE, first: '2025-01-01T00:00:00Z someone@example.com' })
+  store.set('record:/repo/.git/review-gate:feat/old', emptyLedger('feat/old'))
+  await start($)
+  expect([...store.keys()]).toEqual([KEY])
+  expect((await $.tool.call(open())).deny).toBe(
+    'Review first: feat/app at 1111111 has not been reviewed. Call mcp__review-gate__review with what the change is for, answer each finding, then try again.',
+  )
+})
+
+test("a git read that fails ends the round with git's words, and nothing is recorded", async ($, on) => {
+  const { store, spawned } = engine(on, world({ failDiff: true }))
+  await start($)
+  expect((await $.tool.call({ tool: REVIEW })).deny).toBe('git could not list the changed files: failed. Nothing was recorded.')
+  expect(spawned).toEqual([])
+  expect(store.has(KEY)).toBe(false)
+})
+
+test('REVIEW.md is read where the branch forked, its Skip files kept from the agents but not from the classifier', async ($, on) => {
+  const repo = world({ guide: '# Rules\n\n## Skip\n- src/\n', changes: { [ONE]: ['src/app.ts', 'README.md'] } })
+  const { spawned, judged, argvs } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'four reviewers', () => spawned.length === 4)
+  expect(argvs.some(argv => argv.includes('ls-tree') && argv.includes(BASE))).toBe(true)
+  expect(argvs.filter(argv => argv[0] === 'git' && argv.includes('diff')).every(argv => argv.includes('--no-ext-diff'))).toBe(true)
+  expect(judged[0]?.prompt).toContain('diff --git a/src/app.ts b/src/app.ts')
+  expect(spawned[0]?.prompt).toContain('--- REVIEW.md')
+  expect(spawned[0]?.prompt).toContain('diff --git a/README.md b/README.md')
+  expect(spawned[0]?.prompt.includes('diff --git a/src/app.ts')).toBe(false)
+  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
+  await call
+})
+
+test('a REVIEW.md the branch adds does not apply to its own review', async ($, on) => {
+  const { spawned } = engine(on, world({ guide: '## Skip\n- src/\n', guideAt: ONE }))
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'four reviewers', () => spawned.length === 4)
+  expect(spawned[0]?.prompt.includes('REVIEW.md')).toBe(false)
+  expect(spawned[0]?.prompt).toContain('diff --git a/src/app.ts b/src/app.ts')
+  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
+  await call
+})
+
+test("a review's row draws as a card of its findings and their cost, and the band says what is open", async ($, on) => {
+  const { store } = engine(on, world())
+  seed(store, {
+    rounds: [round(1, ONE, 1, { durationMs: 252_000, tokens: { input: 150_000, output: 60_000, cached: 610_000 } })],
     findings: [
       finding({}),
       finding({ id: 'R1-2', kind: 'security', title: 'The query string reaches a shell', status: 'dismissed', answer: 'run() quotes every argument.' }),
@@ -494,13 +652,12 @@ test("a review's row draws as a card of its findings, and the band says what is 
     })
     const drawn = (await row.findAll({ type: 'Text' })).map(text => text.text).join('\n')
     expect(drawn).toContain('Review round 1')
+    expect(drawn).toContain('4m 12s · 820k tokens, 610k from the cache')
     expect(drawn).toContain('R1-1')
-    expect(drawn).toContain('The last page is skipped')
     expect(drawn).toContain('dismissed: run() quotes every argument.')
     expect(drawn).toContain('1 finding open.')
     await row.unmount()
 
-    // A command's row reaches the hook with the plugin's name before its text.
     const output = await $.ui.mount({
       plugin: 'review-gate',
       surface,
@@ -508,9 +665,7 @@ test("a review's row draws as a card of its findings, and the band says what is 
       requestId: 'msg_1',
       props: { command: 'review-gate', args: 'status', text: 'review-gate: Review round 1 of feat/app at 1111111: the whole branch.', isErrored: false },
     })
-    const listed = (await output.findAll({ type: 'Text' })).map(text => text.text).join('\n')
-    expect(listed).toContain('Review round 1')
-    expect(listed).toContain('The last page is skipped')
+    expect((await output.findAll({ type: 'Text' })).map(text => text.text).join('\n')).toContain('The last page is skipped')
     await output.unmount()
 
     const band = await $.ui.mount({
@@ -539,91 +694,4 @@ test('a row that is not a round, or a refused review, draws as the engine draws 
   })
   expect((await row.findAll({ type: 'Text' })).map(text => text.text)).toEqual(['engine'])
   await row.unmount()
-})
-
-test('a record left by an earlier branch of the same name reads as none', async ($, on) => {
-  const { files } = engine(on, world())
-  seed(files, { rounds: [round(1, ONE, 0)], findings: [], reviewed: ONE, base: 'c'.repeat(40) })
-  await start($)
-  expect((await $.tool.call({ tool: 'Bash', command: 'gh pr create --fill' })).deny).toBe(
-    'Review first: feat/app at 1111111 has not been reviewed. Call mcp__review-gate__review with what the change is for, answer each finding, then run this again.',
-  )
-})
-
-test('the records of branches that no longer exist are dropped', async ($, on) => {
-  const { files } = engine(on, world())
-  seed(files, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
-  files.set(`${ROOT}/.git/review-gate/feat%2Fold.json`, JSON.stringify(emptyLedger('feat/old')))
-  await start($)
-  expect([...files.keys()].filter(path => path.includes('/review-gate/'))).toEqual([RECORD])
-})
-
-test("Claude's file tools and shell commands are refused the review record", async ($, on) => {
-  engine(on, world())
-  await start($)
-  const refusal =
-    "review-gate: the review record is the gate's own, so this was refused. Answer a finding by fixing it, or with mcp__review-gate__dismiss and a reason; only the user resets the record, with /review-gate reset."
-  expect((await $.tool.call({ tool: 'Write', file_path: RECORD, content: '{}' })).deny).toBe(refusal)
-  expect((await $.tool.call({ tool: 'Edit', file_path: RECORD, old_string: 'a', new_string: 'b' })).deny).toBe(refusal)
-  expect((await $.tool.call({ tool: 'Bash', command: 'rm .git/review-gate/feat%2Fapp.json' })).deny).toBe(refusal)
-  expect((await $.tool.call({ tool: 'Bash', command: 'cd .git && rm -f review-gate/feat%2Fapp.json' })).deny).toBe(refusal)
-  expect((await $.tool.call({ tool: 'Bash', command: 'git log -- plugins/review-gate' })).deny).toBe(undefined)
-  expect((await $.tool.call({ tool: 'Write', file_path: `${ROOT}/plugins/review-gate/README.md`, content: '#' })).deny).toBe(undefined)
-})
-
-test('the gate refuses a pull request command when it cannot tell what the command acts on', async ($, on) => {
-  engine(on, world())
-  await start($)
-  const deny = async (command: string) => (await $.tool.call({ tool: 'Bash', command })).deny ?? ''
-  expect(await deny('cd "$REPO" && gh pr create --fill')).toBe(
-    'review-gate cannot tell which repository this pull request command acts on: a cd before it uses a variable, ~user or cd -. Run it in the repository, or cd to a plain path first.',
-  )
-  expect(await deny('cd ~/elsewhere && gh pr create --fill')).toBe(
-    'review-gate cannot check the review: /home/u/elsewhere is not in a git repository. Run the pull request command in the repository it is for.',
-  )
-  expect(await deny('echo 3 | xargs gh pr merge')).toBe(
-    'review-gate cannot tell which pull request this acts on, as xargs supplies its arguments. Run gh pr merge with the pull request named.',
-  )
-  expect(await deny('gh pr create --head gone --fill')).toBe(
-    'review-gate cannot see branch gone in /repo, so it cannot check its review. Open the pull request from the clone that has the branch.',
-  )
-  // gh's alias, and a second command in the same line, are gated too.
-  expect((await deny('gh pr new --fill')).startsWith('Review first: feat/app at 1111111')).toBe(true)
-  expect((await deny("bash -c 'gh pr merge'")).startsWith('Review first: feat/app at 1111111')).toBe(true)
-})
-
-test("a git read that fails ends the round with git's words, and nothing is recorded", async ($, on) => {
-  const { files, spawned } = engine(on, world({ failDiff: true }))
-  await start($)
-  expect((await $.tool.call({ tool: REVIEW })).deny).toBe('git could not list the changed files: failed. Nothing was recorded.')
-  expect(spawned).toEqual([])
-  expect(files.has(RECORD)).toBe(false)
-})
-
-test('REVIEW.md is read where the branch forked, its Skip files kept from the agents but not from the classifier', async ($, on) => {
-  const repo = world({ guide: '# Rules\n\n## Skip\n- src/\n', changes: { [ONE]: ['src/app.ts', 'README.md'] } })
-  const { spawned, judged, calls } = engine(on, repo)
-  await start($)
-  const call = $.tool.call({ tool: REVIEW })
-  await until($, 'four reviewers', () => spawned.length === 4)
-  expect(calls.some(args => args[0] === 'ls-tree' && args.includes(BASE))).toBe(true)
-  expect(calls.filter(args => args[0] === 'diff').every(args => args.includes('--no-ext-diff'))).toBe(true)
-  expect(judged[0]?.prompt).toContain('diff --git a/src/app.ts b/src/app.ts')
-  expect(spawned[0]?.prompt).toContain('--- REVIEW.md')
-  expect(spawned[0]?.prompt).toContain('diff --git a/README.md b/README.md')
-  expect(spawned[0]?.prompt.includes('diff --git a/src/app.ts')).toBe(false)
-  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
-  await call
-})
-
-test('a REVIEW.md the branch adds does not apply to its own review', async ($, on) => {
-  const repo = world({ guide: '## Skip\n- src/\n', guideAt: ONE })
-  const { spawned } = engine(on, repo)
-  await start($)
-  const call = $.tool.call({ tool: REVIEW })
-  await until($, 'four reviewers', () => spawned.length === 4)
-  expect(spawned[0]?.prompt.includes('REVIEW.md')).toBe(false)
-  expect(spawned[0]?.prompt).toContain('diff --git a/src/app.ts b/src/app.ts')
-  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
-  await call
 })
