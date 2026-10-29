@@ -121,7 +121,11 @@ export type RoundAsk = {
   progress: (change: (run: Run | null) => Run | null) => Promise<void>
   /** How many tool calls an agent has made. */
   callsOf: (agentId: string) => Promise<number>
-  save: (ledger: Ledger) => Promise<void>
+  /**
+   * Changes the branch's record as it stands when the round ends: `change` gives the new record, or
+   * why the round may not add to it, which comes back and leaves the record as it was.
+   */
+  edit: (change: (ledger: Ledger) => Ledger | string) => Promise<Ledger | string>
 }
 
 export type RoundResult = { ok: true; ledger: Ledger; round: number; text: string } | { ok: false; text: string }
@@ -461,42 +465,51 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     votes: finding.votes,
     status: 'open',
   }))
-  const findings: Finding[] = [
-    ...ledger.findings.map(finding =>
-      fixed.includes(finding.id) ? { ...finding, status: 'fixed' as const, answer: `fixed at ${short(place.head)}`, closedRound: n } : finding,
-    ),
-    ...added,
-  ]
-  const round: Round = {
-    n,
-    head: place.head,
-    from,
-    scope: isDelta ? 'delta' : 'full',
-    depth,
-    risk: riskWith(judged, findings),
-    raised: candidates.length,
-    kept: added.length,
-    fixed: fixed.length,
-    open: findings.filter(finding => finding.status === 'open').length,
-    unread: unreadReviewers + unreadCheckers,
-    at: await $.clock.now(),
-    tokens,
-    agents: stats,
-    complete: isComplete,
-  }
-  round.durationMs = round.at - startedAt
-  // A round that lost agents keeps what it found but vouches for nothing: the commit stays to be
-  // reviewed. A classifier with no verdict is asked again next time.
-  const next: Ledger = {
-    ...ledger,
-    rounds: [...ledger.rounds, round],
-    findings,
-    ...(isComplete ? { reviewed: place.head } : {}),
-    first: ledger.first ?? (await firstCommit(git, place.base, place.head)),
-    ...(isUnjudged ? {} : { riskFor: { sha: place.head, risk: judged } }),
-  }
-  await ask.save(next)
-  return { ok: true, ledger: next, round: n, text: summary(next, n) }
+  const at = await $.clock.now()
+  const first = ledger.first ?? (await firstCommit(git, place.base, place.head))
+  // The round adds to the record as it stands now, so an answer given while it ran, such as a
+  // dismissal, an approval or the person's leave for more rounds, stays. A record reset meanwhile,
+  // or given a round by another session, is not the one the round read, and is left alone.
+  const saved = await ask.edit(current => {
+    if (current.rounds.length !== ledger.rounds.length)
+      return `${place.branch}'s review record was reset, or another session recorded a round on it, while this round ran, so this round was not recorded. Review again.`
+    const findings: Finding[] = [
+      ...current.findings.map(finding =>
+        fixed.includes(finding.id) ? { ...finding, status: 'fixed' as const, answer: `fixed at ${short(place.head)}`, closedRound: n } : finding,
+      ),
+      ...added,
+    ]
+    const round: Round = {
+      n,
+      head: place.head,
+      from,
+      scope: isDelta ? 'delta' : 'full',
+      depth,
+      risk: riskWith(judged, findings),
+      raised: candidates.length,
+      kept: added.length,
+      fixed: fixed.length,
+      open: findings.filter(finding => finding.status === 'open').length,
+      unread: unreadReviewers + unreadCheckers,
+      at,
+      durationMs: at - startedAt,
+      tokens,
+      agents: stats,
+      complete: isComplete,
+    }
+    // A round that lost agents keeps what it found but vouches for nothing: the commit stays to be
+    // reviewed. A classifier with no verdict is asked again next time.
+    return {
+      ...current,
+      rounds: [...current.rounds, round],
+      findings,
+      ...(isComplete ? { reviewed: place.head } : {}),
+      first: current.first ?? first,
+      ...(isUnjudged ? {} : { riskFor: { sha: place.head, risk: judged } }),
+    }
+  })
+  if (typeof saved === 'string') return refuse(saved)
+  return { ok: true, ledger: saved, round: n, text: summary(saved, n) }
 }
 
 /** What the round cap says: three rounds have left findings open, so the next move is a person's. */

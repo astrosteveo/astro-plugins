@@ -172,6 +172,28 @@ async function save($: EngineInterface, place: Place, ledger: Ledger) {
   if (ledger.branch === (await read($, repo))?.branch) await update($, ledgerState, () => ledger)
 }
 
+// Writes to the records, one at a time.
+let writing: Promise<unknown> = Promise.resolve()
+
+function serially<T>(work: () => Promise<T>): Promise<T> {
+  const done = writing.then(work)
+  writing = done.catch(() => undefined)
+  return done
+}
+
+/**
+ * Changes a branch's record as it stands when written, so a change made since the caller read it,
+ * such as a dismissal while a round ran, is kept. `change` gives the new record, or why the record
+ * may not change; that reason comes back and nothing is written.
+ */
+async function edit($: EngineInterface, place: Place, change: (ledger: Ledger) => Ledger | string, branch = place.branch, sha = place.head) {
+  return serially(async () => {
+    const next = change(await load($, place, branch, sha))
+    if (typeof next !== 'string') await save($, place, next)
+    return next
+  })
+}
+
 // Records of branches that no longer exist go: a branch made later under the same name starts with none.
 async function prune($: EngineInterface, place: Place) {
   const prefix = recordPrefix(place.store)
@@ -234,7 +256,8 @@ async function vouch($: EngineInterface, place: Place, branch: string, sha: stri
   const answer = await $.ui.ask(question, { options: ['Approve', 'Not yet'], header: 'Review' }).catch(() => undefined)
   if (answer !== 'Approve')
     return `The user has not approved ${branch} at ${short(sha)}, which needs a person: ${risk.why.join('; ')}. Ask them what they want changed.`
-  await save($, place, { ...ledger, approved: { sha, at: await $.clock.now() } })
+  const at = await $.clock.now()
+  await edit($, place, current => ({ ...current, approved: { sha, at } }), branch, sha)
   return undefined
 }
 
@@ -332,7 +355,7 @@ async function round($: EngineInterface, place: Place, settings: Settings, ask: 
         await update($, run, change)
       },
       callsOf: async agentId => (await read($, memberOf(activity, { requestId: agentId })))?.calls ?? 0,
-      save: ledger => save($, place, ledger),
+      edit: change => edit($, place, change),
     })
   } finally {
     busy = false
@@ -493,16 +516,17 @@ export const register: Register = (on, options) => {
     const place = await locate($, await cwdOf($, e.path))
     if (typeof place === 'string') return { deny: place }
     await show($, place)
-    const ledger = await load($, place)
-    const unknown = ids.filter(id => !ledger.findings.some(finding => finding.id === id))
-    if (unknown.length > 0) return { deny: `${place.branch} has no finding ${unknown.join(', ')}.` }
-    const closed = ids.filter(id => ledger.findings.find(finding => finding.id === id)?.status !== 'open')
-    if (closed.length > 0) return { deny: `${closed.join(', ')} ${closed.length === 1 ? 'is' : 'are'} not open.` }
-    const next: Ledger = {
-      ...ledger,
-      findings: ledger.findings.map(finding => (ids.includes(finding.id) ? { ...finding, status: 'dismissed' as const, answer: reason } : finding)),
-    }
-    await save($, place, next)
+    const next = await edit($, place, ledger => {
+      const unknown = ids.filter(id => !ledger.findings.some(finding => finding.id === id))
+      if (unknown.length > 0) return `${place.branch} has no finding ${unknown.join(', ')}.`
+      const closed = ids.filter(id => ledger.findings.find(finding => finding.id === id)?.status !== 'open')
+      if (closed.length > 0) return `${closed.join(', ')} ${closed.length === 1 ? 'is' : 'are'} not open.`
+      return {
+        ...ledger,
+        findings: ledger.findings.map(finding => (ids.includes(finding.id) ? { ...finding, status: 'dismissed' as const, answer: reason } : finding)),
+      }
+    })
+    if (typeof next === 'string') return { deny: next }
     const open = openFindings(next)
     return {
       result: `Dismissed ${ids.join(', ')}: ${reason}\n${
@@ -529,10 +553,11 @@ export const register: Register = (on, options) => {
       if (!isPerson) return { text: `Only the person at the keyboard can run /review-gate ${verb}.` }
       if (last === undefined) return { text: `${place.branch} has no review record.` }
       if (verb === 'more') {
-        await save($, place, { ...ledger, streakFrom: ledger.rounds.length })
+        await edit($, place, current => ({ ...current, streakFrom: current.rounds.length }))
         return { text: `${place.branch} may run ${ROUND_CAP} more rounds.` }
       }
-      await $.store.delete(recordKey(place.store, place.branch))
+      // A round running now finds its record gone when it ends, and records nothing.
+      await serially(() => $.store.delete(recordKey(place.store, place.branch)))
       await update($, ledgerState, () => emptyLedger(place.branch))
       return { text: `Forgot ${place.branch}'s review record: ${ledger.rounds.length} rounds and ${ledger.findings.length} findings.` }
     }

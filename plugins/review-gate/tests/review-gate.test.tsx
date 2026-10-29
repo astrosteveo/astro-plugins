@@ -298,6 +298,9 @@ const vote = (id: string, real: boolean) => ({ id, real, introduced: true, sever
 
 const open = (title = 'Add search') => ({ tool: PULL_REQUEST, action: 'open', title, body: 'Body text' }) as const
 
+// A command the person typed.
+const person = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 120 } }
+
 test('a round sends one reviewer per focus, has checkers vote, and records what most hold real, with its cost', async ($, on) => {
   const repo = world()
   const { store, spawned, judged, log } = engine(on, repo)
@@ -496,7 +499,6 @@ test('after three rounds that leave findings open the model is refused another, 
   await start($)
   const refused = (await $.tool.call({ tool: REVIEW })).deny ?? ''
   expect(refused.startsWith('3 rounds in a row have ended with findings open (round 1 left 2 open, round 2 left 2 open, round 3 left 1 open)')).toBe(true)
-  const person = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: false, columns: 120 } }
   expect((await $.command.run({ command: 'review-gate', args: 'more', ...person, origin: { kind: 'sdk' } })).text).toBe(
     'Only the person at the keyboard can run /review-gate more.',
   )
@@ -607,6 +609,49 @@ test('a dismissal needs an open finding and a reason', async ($, on) => {
   expect((await dismiss(['R1-2'])).deny).toBe('R1-2 is not open.')
   expect((await dismiss(['R1-1'], 'wrong')).deny).toBe('Give the reason in a sentence: why the finding is wrong, or why the code is fine as it is.')
   expect(ledgerOf(store).findings[0]?.status).toBe('open')
+})
+
+test("a dismissal and the person's leave for more rounds, given while a round runs, stay when it records", async ($, on) => {
+  const repo = world({ head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts'], [TWO]: ['src/app.ts'] } })
+  const { store, spawned } = engine(on, repo)
+  seed(store, { rounds: [round(1, ONE, 2)], findings: [finding({}), finding({ id: 'R1-2', line: 40, title: 'Pages overlap' })], reviewed: ONE })
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'four reviewers', () => spawned.length === 4)
+  expect((await $.tool.call({ tool: DISMISS, ids: ['R1-2'], reason: 'Each page starts where the last one ended.' })).result).toContain('Dismissed R1-2')
+  expect((await $.command.run({ command: 'review-gate', args: 'more', ...person })).text).toBe('feat/app may run 3 more rounds.')
+  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
+  await until($, 'three checkers', () => spawned.length === 3)
+  const earlier = [
+    { id: 'R1-1', fixed: true, why: 'the bound is pages now' },
+    { id: 'R1-2', fixed: false, why: 'the pages still meet' },
+  ]
+  for (const agent of spawned.slice(0, 2)) await reply($, agent.id, json({ verdicts: [], earlier }))
+  expect(String((await call).result)).toContain('Nothing is open. feat/app at 2222222 is ready for a pull request.')
+  const ledger = ledgerOf(store)
+  expect(ledger.findings.map(one => [one.id, one.status, one.answer])).toEqual([
+    ['R1-1', 'fixed', 'fixed at 2222222'],
+    ['R1-2', 'dismissed', 'Each page starts where the last one ended.'],
+  ])
+  expect([ledger.rounds.length, ledger.rounds[1]?.open, ledger.streakFrom, ledger.reviewed]).toEqual([2, 0, 1, TWO])
+})
+
+test('a round whose record the person resets while it runs records nothing, so the record stays forgotten', async ($, on) => {
+  const repo = world({ head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts'], [TWO]: ['src/app.ts'] } })
+  const { store, spawned } = engine(on, repo)
+  seed(store, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'four reviewers', () => spawned.length === 4)
+  expect((await $.command.run({ command: 'review-gate', args: 'reset', ...person })).text).toContain("Forgot feat/app's review record")
+  // The round leaves out what R1-1 already said, so recorded after the reset it would vouch with that defect unrecorded.
+  for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: agent.description === 'review: correctness' ? [SKIPPED_PAGE] : [] }))
+  await until($, 'three checkers', () => spawned.length === 3)
+  for (const agent of spawned.slice(0, 2)) await reply($, agent.id, json({ verdicts: [], earlier: [{ id: 'R1-1', fixed: false, why: 'still pages - 1' }] }))
+  expect((await call).deny).toBe(
+    "feat/app's review record was reset, or another session recorded a round on it, while this round ran, so this round was not recorded. Review again.",
+  )
+  expect(store.has(KEY)).toBe(false)
 })
 
 test('a record written as a file in the git folder vouches for nothing: only the plugin keeps records', async ($, on) => {
