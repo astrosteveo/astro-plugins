@@ -1,6 +1,6 @@
-import { atom, read, update } from 'claude-code'
+import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput } from 'claude-code'
-import type { Depth, Ledger } from '../types'
+import type { Activity, Depth, Ledger } from '../types'
 import { branches, firstCommit, locate, short } from './git'
 import type { Place } from './git'
 import { RAW_PR, gitArgsRefusal, gitArgv, gitGrepArgv, rgArgv } from './guard'
@@ -20,7 +20,8 @@ const COMMAND = 'review-gate'
 
 const repo = atom({ plugin: 'review-gate', key: 'repo' } as const, null, { shape: 'repo-1' })
 const ledgerState = atom({ plugin: 'review-gate', key: 'ledger' } as const, null, { shape: 'ledger-1' })
-const run = atom({ plugin: 'review-gate', key: 'run' } as const, null, { shape: 'run-1' })
+const run = atom({ plugin: 'review-gate', key: 'run' } as const, null, { shape: 'run-2' })
+const activity = atom({ plugin: 'review-gate', key: 'activity' } as const, null)
 
 const DEPTH_NAMES = ['quick', 'standard', 'deep'] as const
 const METHODS = ['merge', 'squash', 'rebase'] as const
@@ -164,7 +165,7 @@ async function load($: EngineInterface, place: Place, branch = place.branch, sha
     const file = ledgerFile(place.store, branch)
     const text = await $.fs.read(file).catch(() => undefined)
     if (typeof text === 'string') {
-      stored = parseLedger(text, branch)
+      stored = { ...parseLedger(text, branch), approved: undefined }
       await $.store.set(key, stored)
       await runIn($, ['rm', '-f', '--', file], place.root, 10_000)
     }
@@ -259,7 +260,7 @@ async function openPullRequest($: EngineInterface, place: Place, input: Input): 
   if (title === '') return { deny: 'Give the pull request a title.' }
   const refusal = await vouch($, place, place.branch, place.head, 'open')
   if (refusal !== undefined) return { deny: refusal }
-  const pushed = await runIn($, ['git', 'push', '-u', 'origin', place.branch], place.root, 120_000)
+  const pushed = await runIn($, ['git', 'push', '-u', 'origin', `${place.head}:refs/heads/${place.branch}`], place.root, 120_000)
   if (pushed.exitCode !== 0) return { deny: `git push failed, so no pull request was opened: ${pushed.stderr.trim()}` }
   const base = asText(input.base).trim() || place.main
   const made = await runIn(
@@ -299,7 +300,7 @@ async function mergePullRequest($: EngineInterface, place: Place, input: Input):
 }
 
 // What the reviewers' tools hand back: the output, cut where it runs long, and git's complaint.
-const OUTPUT_CAP = 100_000
+const OUTPUT_CAP = 30_000
 
 function shown(ran: Ran, empty: string) {
   const out =
@@ -338,9 +339,10 @@ async function round($: EngineInterface, place: Place, settings: Settings, ask: 
       ledger: await load($, place),
       mail,
       reviewers,
-      progress: async value => {
-        await update($, run, () => value)
+      progress: async change => {
+        await update($, run, change)
       },
+      callsOf: async agentId => (await read($, memberOf(activity, { requestId: agentId })))?.calls ?? 0,
       save: ledger => save($, place, ledger),
     })
   } finally {
@@ -349,6 +351,16 @@ async function round($: EngineInterface, place: Place, settings: Settings, ask: 
     await update($, run, () => null)
     await refresh($).catch(() => undefined)
   }
+}
+
+// A review agent's tool call as a few words for the band.
+function describeCall(e: { tool: string } & Record<string, unknown>) {
+  const root = activeRoot === undefined ? '' : `${activeRoot}/`
+  const path = (value: unknown) => asText(value).replace(root, '')
+  if (e.tool === 'Read') return `reading ${path(e.file_path)}`
+  if (e.tool === GIT_TOOL) return `git ${(Array.isArray(e.args) ? e.args : []).map(asText).join(' ')}`.slice(0, 80)
+  if (e.tool === SEARCH_TOOL) return `searching "${asText(e.pattern).slice(0, 40)}"${asText(e.path) === '' ? '' : ` in ${path(e.path)}`}`
+  return e.tool
 }
 
 // A plugin tool's result as its row holds it: the text, or text blocks.
@@ -381,7 +393,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     for (const tool of [REVIEW_TOOL, DISMISS_TOOL, PULL_REQUEST_TOOL, GIT_TOOL_SPEC, SEARCH_TOOL_SPEC]) await $.tool.register(tool)
-    const agent = { tools: ['Read', GIT_TOOL, SEARCH_TOOL], model: 'inherit', maxTurns: 80 }
+    // Medium effort and a turn limit keep each agent's thinking and its context in bounds.
+    const agent = { tools: ['Read', GIT_TOOL, SEARCH_TOOL], model: 'inherit', effort: 'medium', maxTurns: 40 }
     await $.agent.register({ name: 'reviewer', description: 'Reviews a change for one kind of defect. review-gate runs it.', prompt: REVIEWER, ...agent })
     await $.agent.register({ name: 'checker', description: 'Votes on review findings. review-gate runs it.', prompt: CHECKER, ...agent })
     await $.command.register({
@@ -411,6 +424,15 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Bash' }, (_, e, next) => (RAW_PR.test(e.command) ? { deny: RAW_PR_REFUSAL } : next(e))).catch((_, e, next) =>
     next.called ? next(e) : { deny: RAW_PR_REFUSAL },
   )
+
+  // What each of the review's agents is doing, for the band: its calls so far, and its latest.
+  on('tool.call', async ($, e, next) => {
+    if (e.agentId !== undefined && reviewers.has(e.agentId)) {
+      const doing = describeCall(e)
+      await update($, memberOf(activity, { requestId: e.agentId }), last => ({ calls: (last?.calls ?? 0) + 1, doing }))
+    }
+    return next(e)
+  }).catch((_, e, next) => next(e))
 
   // The review's agents have no shell: they read through review_git and review_search.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) =>
@@ -534,7 +556,10 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
-    const mine = band($, e, await read($, repo), await read($, ledgerState), await read($, run))
+    const live = await read($, run)
+    const doing = new Map<string, Activity | null>()
+    for (const agent of live?.agents ?? []) doing.set(agent.id, await read($, memberOf(activity, { requestId: agent.id })))
+    const mine = band($, e, await read($, repo), await read($, ledgerState), live, doing, await $.clock.now())
     if (mine === undefined) return below
     const { Box } = $.ui.resolve(e)
     return (

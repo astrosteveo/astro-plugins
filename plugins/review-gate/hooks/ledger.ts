@@ -61,13 +61,16 @@ export const lastRound = (ledger: Ledger): Round | undefined => ledger.rounds[le
 
 const compact = (count: number) => (count >= 1e6 ? `${(count / 1e6).toFixed(1)}M` : count >= 1e3 ? `${Math.round(count / 1e3)}k` : String(count))
 
+/** A length of time as `4m 12s`, or `9s` under a minute. */
+export function duration(ms: number) {
+  const seconds = Math.max(0, Math.round(ms / 1000))
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s` : `${seconds}s`
+}
+
 /** What a round cost, as `4m 12s · 820k tokens, 610k from the cache`; empty for a round that kept no count. */
 export function spent(round: Round) {
   const parts: string[] = []
-  if (round.durationMs !== undefined) {
-    const seconds = Math.round(round.durationMs / 1000)
-    parts.push(seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`)
-  }
+  if (round.durationMs !== undefined) parts.push(duration(round.durationMs))
   if (round.tokens !== undefined) {
     const total = round.tokens.input + round.tokens.output + round.tokens.cached
     parts.push(`${compact(total)} tokens${round.tokens.cached > 0 ? `, ${compact(round.tokens.cached)} from the cache` : ''}`)

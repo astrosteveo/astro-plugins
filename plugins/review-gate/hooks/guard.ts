@@ -56,7 +56,8 @@ export function gitArgsRefusal(args: readonly string[]): string | undefined {
   const rest = args.slice(at + 1)
   if (rest.some(arg => abbreviates(arg, 'output'))) return 'git --output writes a file'
   if (rest.some(arg => abbreviates(arg, 'ext-diff'))) return 'git --ext-diff runs another program'
-  if (subcommand === 'grep' && rest.some(arg => arg.startsWith('-O') || abbreviates(arg, 'open-files-in-pager')))
+  // -O runs a pager program, alone or in a cluster of short flags such as -iO.
+  if (subcommand === 'grep' && rest.some(arg => /^-[A-Za-z]*O/.test(arg) || abbreviates(arg, 'open-files-in-pager')))
     return 'git grep -O runs another program'
   return undefined
 }
@@ -84,6 +85,10 @@ export function rgArgv(search: Search) {
     'never',
     '--max-columns',
     '400',
+    // Hidden files too, as git grep searches them; never the .git folder.
+    '--hidden',
+    '--glob',
+    '!.git',
     ...(search.ignoreCase === true ? ['--ignore-case'] : []),
     ...(search.fixed === true ? ['--fixed-strings'] : []),
     ...(lines(search) > 0 ? ['--context', String(lines(search))] : []),
@@ -95,10 +100,14 @@ export function rgArgv(search: Search) {
   ]
 }
 
-/** git grep's argv for the same search, where ripgrep is not installed. */
+/**
+ * git grep's argv for the same search, where ripgrep is not installed. A path is passed as given, so
+ * one file is searched as a file; a glob narrows a folder to the names it matches.
+ */
 export function gitGrepArgv(search: Search) {
-  const folder = search.path === undefined || search.path === '' || search.path === '.' ? '' : `${search.path.replace(/\/+$/, '')}/`
-  const where = search.glob === undefined || search.glob === '' ? (folder === '' ? '.' : folder) : `:(glob)${folder}**/${search.glob}`
+  const path = search.path === undefined || search.path === '' ? '.' : search.path
+  const folder = path === '.' ? '' : `${path.replace(/\/+$/, '')}/`
+  const where = search.glob === undefined || search.glob === '' ? path : `:(glob)${folder}**/${search.glob}`
   return [
     'git',
     '-c',

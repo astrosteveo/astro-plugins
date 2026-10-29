@@ -1,8 +1,12 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { Finding, Ledger, Round } from '../types'
+import type { Activity, Finding, Ledger, Round, Run } from '../types'
 import { emptyLedger, globTest } from '../hooks/ledger'
+import { liveBand } from '../hooks/views'
+
+// The test runtime has timers, though the hooks' own environment does not.
+declare function setTimeout(callback: () => void, ms: number): unknown
 
 const ROOT = '/repo'
 const KEY = 'record:/repo/.git/review-gate:feat/app'
@@ -171,7 +175,7 @@ function engine(on: On, repo: World) {
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
   })
-  on('process.run', (_, e) => {
+  on('process.run', async (_, e) => {
     const argv = e.argv.map(String)
     argvs.push(argv)
     if (argv[0] === 'git') return git(argv.slice(1), e.init?.cwd ?? ROOT)
@@ -180,7 +184,13 @@ function engine(on: On, repo: World) {
       if (repo.hasRg === false) throw new Error('rg: not found')
       return ran(0, 'src/app.ts:12:const token = query\n')
     }
-    if (argv[0] === 'sleep' && argv[1] !== '1') log.push(`sleep ${argv[1]}`)
+    // A sleep takes a moment, so a round's wait is no busy loop, and moves the clock a tenth of its
+    // length, so a round left waiting by a failed check still ends at its phase limit.
+    if (argv[0] === 'sleep') {
+      await new Promise<void>(resolve => setTimeout(resolve, 1))
+      repo.now += Number(argv[1]) * 100
+      if (argv[1] !== '1') log.push(`sleep ${argv[1]}`)
+    }
     if (argv[0] === 'rm') files.delete(argv[3] ?? '')
     return ran(0)
   })
@@ -239,11 +249,23 @@ const finding = (over: Partial<Finding>): Finding => ({
 
 const seed = (store: Map<string, unknown>, over: Partial<Ledger>) => store.set(KEY, { ...emptyLedger('feat/app'), first: FIRST, ...over })
 
-// Waits for the plugin to get as far as the test needs: each tick is an event through the engine,
-// which lets the plugin's own calls on it go round.
+// One tick of a wait: an event through the engine, and a millisecond, so the plugin's own calls and
+// its sleeps go round.
+async function tick($: Engine) {
+  await $.turn.start({ text: '', turnId: 'tick', agentId: 'tick' })
+  await new Promise<void>(resolve => setTimeout(resolve, 1))
+}
+
+// Waits for the plugin to get as far as the test needs.
 async function until($: Engine, what: string, done: () => boolean) {
-  for (let tries = 0; tries < 5_000 && !done(); tries++) await $.turn.start({ text: '', turnId: 'tick', agentId: 'tick' })
+  for (let tries = 0; tries < 2_000 && !done(); tries++) await tick($)
   expect({ what, done: done() }).toEqual({ what, done: true })
+}
+
+// The same, for a check that reads a drawing.
+async function untilShown($: Engine, what: string, done: () => Promise<boolean>) {
+  for (let tries = 0; tries < 500 && !(await done()); tries++) await tick($)
+  expect({ what, done: await done() }).toEqual({ what, done: true })
 }
 
 const reply = ($: Engine, agentId: string, answer: string) =>
@@ -309,7 +331,7 @@ test('a round sends one reviewer per focus, has checkers vote, and records what 
   )
   expect(text).toContain('R1-1 · important · src/app.ts:12 · 2 of 2 checkers agree')
   expect(text).toContain('1 agent reply could not be read and counted for nothing.')
-  expect(text).toContain('The round took 0s · 11k tokens, 4k from the cache.')
+  expect(text).toMatch(/The round took \d+s · 11k tokens, 4k from the cache\./)
   expect(text.includes('reaches a shell')).toBe(false)
 
   const ledger = ledgerOf(store)
@@ -375,6 +397,7 @@ test('a classifier that gives no verdict is asked again, and then leaves the cha
   for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
   await call
   expect(ledgerOf(store).rounds[0]?.risk).toEqual({ tier: 'high', why: ['the classifier gave no verdict on its risk, so a person looks'] })
+  expect(ledgerOf(store).riskFor).toBe(undefined)
 })
 
 test('a commit judged before keeps its verdict, and is not judged again', async ($, on) => {
@@ -388,7 +411,7 @@ test('a commit judged before keeps its verdict, and is not judged again', async 
   expect(String((await call).result)).toContain('quick depth (2 reviewers, 1 checkers), risk low (it changes only docs)')
 })
 
-test('a round over new commits alone runs at most at standard depth, and rechecks only findings in files they touched', async ($, on) => {
+test('a round over new commits alone runs at most at standard depth, and rechecks every open finding', async ($, on) => {
   const repo = world({ risk: HIGH, head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts', 'src/other.ts'], [TWO]: ['src/app.ts'] } })
   const { store, spawned } = engine(on, repo)
   seed(store, {
@@ -401,8 +424,9 @@ test('a round over new commits alone runs at most at standard depth, and recheck
   await until($, 'four reviewers', () => spawned.length === 4)
   for (const agent of spawned.splice(0)) await reply($, agent.id, json({ findings: [] }))
   await until($, 'three checkers', () => spawned.length === 3)
+  // A fix may sit in another file than the one a finding names, so both are looked at again.
   expect(spawned[0]?.prompt).toContain('R1-1. src/app.ts:12')
-  expect(spawned[0]?.prompt.includes('R1-2.')).toBe(false)
+  expect(spawned[0]?.prompt).toContain('R1-2. src/other.ts:12')
   for (const agent of spawned.slice(0, 2)) await reply($, agent.id, json({ verdicts: [], earlier: [{ id: 'R1-1', fixed: true, why: '' }] }))
   await call
   expect(ledgerOf(store).findings.map(one => [one.id, one.status])).toEqual([
@@ -411,9 +435,9 @@ test('a round over new commits alone runs at most at standard depth, and recheck
   ])
 })
 
-test('the last agent of a phase gets three minutes once the others have answered, then is stopped', async ($, on) => {
+test('the last agent of a phase gets three minutes once the others have answered, then is stopped, and the round counts for nothing', async ($, on) => {
   const repo = world()
-  const { spawned, stops } = engine(on, repo)
+  const { store, spawned, stops } = engine(on, repo)
   await start($)
   const call = $.tool.call({ tool: REVIEW })
   let finished = false
@@ -428,7 +452,18 @@ test('the last agent of a phase gets three minutes once the others have answered
     return finished
   })
   expect(stops).toEqual([spawned[3]?.id])
-  expect(String((await call).result)).toContain('1 agent reply could not be read and counted for nothing.')
+  const text = String((await call).result)
+  expect(text).toContain('1 agent reply could not be read and counted for nothing.')
+  expect(text).toContain('This round lost 1 of its agents, so it does not count as a review of 1111111: review again to cover what they missed.')
+  expect(text.includes('ready for a pull request')).toBe(false)
+  const ledger = ledgerOf(store)
+  expect([ledger.reviewed, ledger.rounds[0]?.complete]).toEqual([undefined, false])
+  expect(ledger.rounds[0]?.agents?.map(agent => [agent.label, agent.state])).toEqual([
+    ['correctness', 'done'],
+    ['failure paths', 'done'],
+    ['fit', 'done'],
+    ['security', 'unread'],
+  ])
 })
 
 test('a review is refused on the default branch, with no commits past it, and with changes not committed', async ($, on) => {
@@ -486,7 +521,7 @@ test('a pull request opens through the tool only for a reviewed commit with noth
   expect(argvs.some(argv => argv[0] === 'gh')).toBe(false)
   expect((await $.tool.call(open())).result).toBe('Opened https://github.com/o/r/pull/7 for feat/app at 1111111.')
   expect(argvs.filter(argv => argv[0] === 'gh' || argv[1] === 'push')).toEqual([
-    ['git', 'push', '-u', 'origin', 'feat/app'],
+    ['git', 'push', '-u', 'origin', `${ONE}:refs/heads/feat/app`],
     ['gh', 'pr', 'create', '--head', 'feat/app', '--base', 'main', '--title', 'Add search', '--body', 'Body text'],
   ])
 })
@@ -578,9 +613,14 @@ test('a dismissal needs an open finding and a reason', async ($, on) => {
 test('a record a file held before the store did is brought across once, and the file removed', async ($, on) => {
   const { store, files } = engine(on, world())
   const file = `${ROOT}/.git/review-gate/feat%2Fapp.json`
-  files.set(file, JSON.stringify({ ...emptyLedger('feat/app'), rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE }))
+  files.set(
+    file,
+    JSON.stringify({ ...emptyLedger('feat/app'), rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE, approved: { sha: ONE, at: 5 } }),
+  )
   await start($)
   expect(ledgerOf(store).findings.map(one => one.id)).toEqual(['R1-1'])
+  // An approval is given in the dialog, never read from a file.
+  expect(ledgerOf(store).approved).toBe(undefined)
   expect(files.has(file)).toBe(false)
 })
 
@@ -694,4 +734,64 @@ test('a row that is not a round, or a refused review, draws as the engine draws 
   })
   expect((await row.findAll({ type: 'Text' })).map(text => text.text)).toEqual(['engine'])
   await row.unmount()
+})
+
+test('while a round runs, its state names each agent of the phase, and what each reviewer raised', async ($, on) => {
+  const repo = world()
+  // A drawing waits for the round in the test kit, so the round is read as the plugin writes it.
+  const runs: (Run | null)[] = []
+  on('state.set', (_, e, next) => {
+    // A shaped value is written with its shape tag around it.
+    if (e.plugin === 'review-gate' && e.key === 'run') runs.push((e.value as unknown as { value?: Run | null }).value ?? null)
+    return next(e)
+  })
+  const { spawned } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'four reviewers', () => spawned.length === 4)
+  const live = async () => runs.at(-1)
+  expect((await live())?.agents.map(agent => [agent.label, agent.state])).toEqual([
+    ['correctness', 'running'],
+    ['failure paths', 'running'],
+    ['fit', 'running'],
+    ['security', 'running'],
+  ])
+  await reply($, spawned[0]?.id ?? '', json({ findings: [SKIPPED_PAGE] }))
+  for (let tries = 0; tries < 200 && (await live())?.agents[0]?.state !== 'done'; tries++) await tick($)
+  const raised = await live()
+  expect([raised?.phase, raised?.raised, raised?.agents[0]?.state, raised?.agents[0]?.raised]).toEqual(['reviewing', ['The last page is skipped'], 'done', 1])
+  for (const agent of spawned.slice(1)) await reply($, agent.id, json({ findings: [] }))
+  await until($, 'three checkers', () => spawned.length === 7)
+  for (const agent of spawned.slice(4, 6)) await reply($, agent.id, json({ verdicts: [vote('C1', true)], earlier: [] }))
+  await call
+  expect(await live()).toBe(null)
+})
+
+test('the live band draws each agent with its time, calls and latest action, and a watch button for a running one', async ($, on) => {
+  const run: Run = {
+    round: 3,
+    phase: 'reviewing',
+    startedAt: 0,
+    agents: [
+      { id: 'a1', label: 'correctness', state: 'done', startedAt: 0, endedAt: 242_000, raised: 2 },
+      { id: 'a2', label: 'failure paths', state: 'running', startedAt: 0 },
+    ],
+    raised: ['git grep cannot search one file', 'the push sends a commit made after the review'],
+  }
+  const doing = new Map<string, Activity | null>([
+    ['a1', { calls: 31, doing: 'searching "token"' }],
+    ['a2', { calls: 44, doing: 'reading hooks/review.ts' }],
+  ])
+  on('ui.render', ($, e) => liveBand($, e, run, doing, 370_000))
+  const props = { hasSurvey: false, isWorking: true, maxRows: 12, bodyColumns: 160, scroll: { offset: 0, bodyRows: 12 }, view: {} }
+  const band = await $.ui.mount({ plugin: 'review-gate', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props })
+  const drawn = (await band.findAll({ type: 'Text' })).map(text => text.text).join('\n')
+  expect(drawn).toContain('round 3 · reviewing 1 of 2 · 6m 10s')
+  expect(drawn).toContain('correctness    ')
+  expect(drawn).toContain('4m 02s · 31 calls · raised 2')
+  expect(drawn).toContain('6m 10s · 44 calls · reading hooks/review.ts')
+  expect(drawn).toContain('raised so far: git grep cannot search one file · the push sends a commit made after the review')
+  // Only the running agent has a button; pressing it opens that agent's transcript.
+  expect((await band.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['watch-a2'])
+  await band.unmount()
 })

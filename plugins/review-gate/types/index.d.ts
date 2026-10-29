@@ -56,7 +56,17 @@ export type Round = {
   durationMs?: number
   /** What its agents and the risk check spent: tokens in and out, and the input read from the cache. */
   tokens?: Tokens
+  /** Each agent the round ran: how long, how many tool calls, and how it ended. */
+  agents?: AgentStat[]
+  /**
+   * False when the round lost agents it needed, so it found less than it should have: such a round
+   * leaves its commit unreviewed.
+   */
+  complete?: boolean
 }
+
+/** One agent of a finished round. */
+export type AgentStat = { label: string; ms: number; calls: number; state: 'done' | 'stopped' | 'unread' }
 
 /** Tokens a round spent. `input` counts what was sent at full price, cache writes included. */
 export type Tokens = { input: number; output: number; cached: number }
@@ -82,8 +92,28 @@ export type Ledger = {
   approved?: { sha: string; at: number }
 }
 
-/** A round in progress, for the band. */
-export type Run = { round: number; phase: 'judging' | 'reviewing' | 'checking'; done: number; of: number }
+/** One agent of a round in progress. */
+export type AgentRun = {
+  id: string
+  label: string
+  state: 'running' | 'done' | 'stopped'
+  startedAt: number
+  endedAt?: number
+  /** For a reviewer that answered, how many findings it raised. */
+  raised?: number
+}
+
+/** A round in progress, for the band: its phase, the phase's agents, and the findings raised so far. */
+export type Run = {
+  round: number
+  phase: 'judging' | 'reviewing' | 'checking'
+  startedAt: number
+  agents: AgentRun[]
+  raised: string[]
+}
+
+/** What one of the review's agents is doing: its tool calls so far, and its latest. */
+export type Activity = { calls: number; doing: string }
 
 /** Where the session's repository stands, for the band. */
 export type Repo = { branch: string; head: string; main: string; isDefault: boolean; ahead: number }
@@ -95,6 +125,8 @@ declare module 'claude-code' {
       /** The current branch's record, as last loaded or saved. */
       ledger: Shaped<Ledger | null>
       run: Shaped<Run | null>
+      /** Each review agent's activity, by its agent id. */
+      activity: StateFamily<Activity | null>
     }
   }
 }

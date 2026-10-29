@@ -8,7 +8,7 @@ Claude calls the `review` tool once a change is committed and its checks pass. T
 
 Reviewers leave out style, naming and missing tests, report a recurring mistake once with every place it occurs, and keep to three nits a round. They have no shell: they read files with Read, run git's reading commands through a `review_git` tool and search with a `review_search` tool. Both run their program by its arguments, with no shell to expand them, and `review_git` takes only the subcommands that read.
 
-The first round reads the whole branch. Later rounds read only the commits since the last one, run at most at standard depth, and recheck only the open findings in files those commits touched. A finding the branch has had is never raised again. After three rounds in a row end with findings open, the tool refuses a fourth and tells Claude to step back and talk to you.
+The first round reads the whole branch. Later rounds read only the commits since the last one and run at most at standard depth, and their checkers look again at every open finding, since a fix may sit in another file. A finding the branch has had is never raised again. A round that loses agents keeps what it found but leaves its commit unreviewed, so the next round covers what they missed. After three rounds in a row end with findings open, the tool refuses a fourth and tells Claude to step back and talk to you.
 
 Every finding needs an answer. Claude fixes it and commits, and the next round confirms the fix; or it dismisses the finding with a reason through the `dismiss` tool, and the reason shows in the card.
 
@@ -20,7 +20,7 @@ Risk picks the depth: quick (2 reviewers, 1 checker) for low, standard (4 and 3)
 
 ## Pull requests
 
-Claude opens and merges pull requests through the `pull_request` tool. `open` pushes the branch to origin and runs `gh pr create`. `merge` runs `gh pr merge` with `--match-head-commit`, so gh refuses if the pull request's head moves away from the reviewed commit. Both are refused until that commit has been reviewed and no finding is open. A review covers one commit, so a commit made after it needs a round of its own.
+Claude opens and merges pull requests through the `pull_request` tool. `open` pushes the reviewed commit to the branch on origin, by its id, and runs `gh pr create`. `merge` runs `gh pr merge` with `--match-head-commit`, so gh refuses if the pull request's head moves away from the reviewed commit. Both are refused until that commit has been reviewed and no finding is open. A review covers one commit, so a commit made after it needs a round of its own.
 
 For a high-risk change, the tool asks you in Claude Code's question dialog to approve that commit before its pull request is opened or merged. Claude cannot answer the dialog, and the approval holds for that commit alone.
 
@@ -28,14 +28,27 @@ A shell line that runs `gh pr create`, `gh pr new` or `gh pr merge`, however it 
 
 ## Cost and time
 
-- Reviewers and checkers run on Sonnet, and the risk classifier on Haiku, unless `/config` says otherwise.
+- Reviewers and checkers run on Sonnet, and the risk classifier on Haiku, unless `/config` says otherwise. The agents think at medium effort and take at most 40 turns, and a tool's output is cut at 30,000 characters, so their contexts stay small.
 - The checkers share one prompt. The first starts alone and the rest a few seconds later, so they read its prompt from the prompt cache. The classifier marks its prompt for the cache too, for a second try.
-- Once the votes so far settle every finding, the checkers still at work are stopped. Once all but one agent of a phase has answered, the last gets three more minutes.
+- Once the votes so far settle every finding, the checkers still at work are stopped. Once all but one agent of a phase has answered, the last gets three more minutes, and no phase runs past ten.
 - Each round records how long it took and the tokens it spent, with the share read from the cache, and the card shows them.
 
 ## In the terminal
 
-The band above the prompt says where the branch stands: a round in progress (`round 2: judging the change's risk`, then `round 2: checkers 1 of 3 done`), findings open, commits not reviewed yet, or a commit ready for its pull request, with a note when it waits for your approval. A review's row in the chat draws as a card that lists each finding with its grade, place and votes; fixed ones are ticked, and dismissed ones show their reason. ctrl+o shows the text Claude read.
+While a round runs, the band above the prompt shows it agent by agent:
+
+```
+review · round 3 · reviewing 2 of 4 · 6m 10s
+  ✓ correctness     4m 02s · 31 calls · raised 2
+  ● failure paths   6m 10s · 44 calls · reading hooks/review.ts   [ watch ]
+  ✓ fit             3m 40s · 22 calls · raised 0
+  ● security        6m 10s · 38 calls · git log -p -- hooks/guard.ts   [ watch ]
+  raised so far: git grep cannot search one file · the push sends a commit made after the review
+```
+
+Each line is an agent of the phase: done or running, its time and tool calls, and what it is doing now or what it raised. A finding shows under "raised so far" as soon as a reviewer answers, before the checkers vote on it. `watch` opens that agent's own transcript.
+
+Between rounds the band says where the branch stands: findings open, commits not reviewed yet, or a commit ready for its pull request, with a note when it waits for your approval. A review's row in the chat draws as a card that lists each finding with its grade, place and votes; fixed ones are ticked, and dismissed ones show their reason. Its last line gives each agent's time, so a slow round shows where its time went. ctrl+o shows the text Claude read.
 
 - `/review-gate` runs a round now; `/review-gate quick`, `standard` or `deep` picks its depth. Your run goes past the cap and reviews a commit again.
 - `/review-gate status` shows the latest round.

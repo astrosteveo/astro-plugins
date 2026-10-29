@@ -1,28 +1,84 @@
 import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
-import type { Finding, Ledger, Repo, Run } from '../types'
+import type { Activity, AgentRun, Finding, Ledger, Repo, Run } from '../types'
 import { short } from './git'
-import { DEPTHS, ROUND_CAP, openFindings, riskNow, spent, streak } from './ledger'
+import { DEPTHS, ROUND_CAP, duration, openFindings, riskNow, spent, streak } from './ledger'
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
+const cut = (text: string, most: number) => (text.length <= most ? text : `${text.slice(0, most - 1)}…`)
+
+// What a running round's agent shows after its time and calls: its latest action, or how it ended.
+function agentTail(agent: AgentRun, doing: Activity | null | undefined) {
+  if (agent.state === 'running') return cut(doing?.doing ?? 'starting', 60)
+  if (agent.state === 'stopped') return 'stopped'
+  return agent.raised === undefined ? 'done' : `raised ${agent.raised}`
+}
+
 /**
- * One line above the prompt while a branch has something to say: a round running, findings open,
- * commits not reviewed yet, or a commit ready for its pull request. Nothing on the default branch.
+ * The band while a round runs: a line for the round, a line per agent of its phase (done or running,
+ * its time and tool calls, what it is doing now, and a button that opens its transcript), and the
+ * findings the reviewers have raised so far.
  */
-export function band($: EngineInterface, e: RenderInput, repo: Repo | null, ledger: Ledger | null, run: Run | null): RenderElement | undefined {
+export function liveBand($: EngineInterface, e: RenderInput, run: Run, doing: ReadonlyMap<string, Activity | null>, now: number): RenderElement {
+  const { Box, Button, Text } = $.ui.resolve(e)
+  const finished = run.agents.filter(agent => agent.state !== 'running').length
+  const phase =
+    run.phase === 'judging'
+      ? "judging the change's risk"
+      : `${run.phase === 'reviewing' ? 'reviewing' : 'checking'} ${finished} of ${run.agents.length}`
+  const raised = run.raised.slice(0, 3).map(title => cut(title, 50))
+  return (
+    <Box flexDirection="column">
+      <Text>
+        <Text dimColor>review · </Text>
+        <Text color="suggestion">
+          round {run.round} · {phase} · {duration(now - run.startedAt)}
+        </Text>
+      </Text>
+      {run.agents.map(agent => {
+        const activity = doing.get(agent.id)
+        const color = agent.state === 'running' ? 'suggestion' : agent.state === 'done' ? 'success' : 'inactive'
+        return (
+          <Box key={agent.id} flexDirection="row">
+            <Text>
+              {'  '}
+              <Text color={color}>{agent.state === 'running' ? '●' : agent.state === 'done' ? '✓' : '–'}</Text> {agent.label.padEnd(14)}{' '}
+              <Text dimColor>
+                {duration((agent.endedAt ?? now) - agent.startedAt).padStart(7)} · {activity?.calls ?? 0} calls ·{' '}
+              </Text>
+              {agentTail(agent, activity)}{' '}
+            </Text>
+            {agent.state === 'running' && <Button key={`watch-${agent.id}`} label="watch" onPress={() => $.ui.view({ agentId: agent.id })} />}
+          </Box>
+        )
+      })}
+      {raised.length > 0 && (
+        <Text dimColor>
+          {'  '}raised so far: {raised.join(' · ')}
+          {run.raised.length > raised.length ? ` and ${run.raised.length - raised.length} more` : ''}
+        </Text>
+      )}
+    </Box>
+  )
+}
+
+/**
+ * The band above the prompt while a branch has something to say: a round running, shown agent by
+ * agent; findings open; commits not reviewed yet; or a commit ready for its pull request. Nothing
+ * on the default branch.
+ */
+export function band(
+  $: EngineInterface,
+  e: RenderInput,
+  repo: Repo | null,
+  ledger: Ledger | null,
+  run: Run | null,
+  doing: ReadonlyMap<string, Activity | null>,
+  now: number,
+): RenderElement | undefined {
   const { Box, Text } = $.ui.resolve(e)
   const label = <Text dimColor>review · </Text>
-  if (run !== null) {
-    const who = run.phase === 'reviewing' ? 'reviewers' : 'checkers'
-    return (
-      <Box flexDirection="row">
-        {label}
-        <Text color="suggestion">
-          round {run.round}: {run.phase === 'judging' ? "judging the change's risk" : `${who} ${run.done} of ${run.of} done`}
-        </Text>
-      </Box>
-    )
-  }
+  if (run !== null) return liveBand($, e, run, doing, now)
   if (repo === null || repo.isDefault || ledger === null || ledger.branch !== repo.branch) return undefined
   if (ledger.rounds.length === 0) {
     if (repo.ahead === 0) return undefined
@@ -128,6 +184,14 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
           <Text color="warning">High risk: the gate asks you to approve it.</Text>
         )}
         {moved && <Text color="warning">Commits since this round have not been reviewed.</Text>}
+        {round.complete === false && (
+          <Text color="warning">This round lost {round.unread} of its agents, so it does not count as a review: review again.</Text>
+        )}
+        {round.agents !== undefined && round.agents.length > 0 && (
+          <Text dimColor>
+            {round.agents.map(agent => `${agent.label} ${duration(agent.ms)}${agent.state === 'done' ? '' : ` (${agent.state})`}`).join(' · ')}
+          </Text>
+        )}
         {round.unread > 0 && (
           <Text dimColor>
             {round.unread} {round.unread === 1 ? 'reply' : 'replies'} could not be read and counted for nothing.

@@ -27,6 +27,7 @@ test("the review's git tool refuses what writes, runs another program or is not 
     [['diff', '--ext-diff'], 'git --ext-diff runs another program'],
     [['grep', '-Ovim', 'token'], 'git grep -O runs another program'],
     [['grep', '--open-files', 'token'], 'git grep -O runs another program'],
+    [['grep', '-iOvim', 'token'], 'git grep -O runs another program'],
     [[], 'name a git subcommand, such as log or show'],
   ]
   for (const [args, reason] of refused) expect({ args, refusal: gitArgsRefusal(args) }).toEqual({ args, refusal: reason })
@@ -47,6 +48,9 @@ test('a search becomes ripgrep or git grep argv, every flag its own, the pattern
     'never',
     '--max-columns',
     '400',
+    '--hidden',
+    '--glob',
+    '!.git',
     '--ignore-case',
     '--context',
     '2',
@@ -57,7 +61,7 @@ test('a search becomes ripgrep or git grep argv, every flag its own, the pattern
     '--',
     'src',
   ])
-  expect(rgArgv({ pattern: 'a.b', fixed: true, context: 99 }).slice(7)).toEqual(['--fixed-strings', '--context', '20', '--regexp', 'a.b', '--', '.'])
+  expect(rgArgv({ pattern: 'a.b', fixed: true, context: 99 }).slice(10)).toEqual(['--fixed-strings', '--context', '20', '--regexp', 'a.b', '--', '.'])
   expect(gitGrepArgv({ pattern: 'token', path: 'src/', glob: '*.ts' })).toEqual([
     'git',
     '-c',
@@ -73,6 +77,9 @@ test('a search becomes ripgrep or git grep argv, every flag its own, the pattern
     ':(glob)src/**/*.ts',
   ])
   expect(gitGrepArgv({ pattern: 'x', fixed: true }).slice(-5)).toEqual(['--fixed-strings', '-e', 'x', '--', '.'])
+  // One file is searched as a file.
+  expect(gitGrepArgv({ pattern: 'x', path: 'src/app.ts' }).slice(-2)).toEqual(['--', 'src/app.ts'])
+  expect(gitGrepArgv({ pattern: 'x', path: 'src/' }).slice(-2)).toEqual(['--', 'src/'])
 })
 
 test('a line that opens or merges a pull request is caught however it is wrapped, and other gh commands are not', () => {
