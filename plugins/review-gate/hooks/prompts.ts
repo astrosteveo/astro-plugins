@@ -1,5 +1,6 @@
 import type { Finding, Level, Risk } from '../types'
 import { short } from './git'
+import { whereOf } from './ledger'
 import type { Guide, Recheck, Reported } from './ledger'
 
 const FENCE = '```'
@@ -90,7 +91,7 @@ export type Plan = {
 }
 
 const findingLine = (finding: Finding) =>
-  `- ${finding.id} [${finding.status}${finding.status === 'dismissed' && finding.answer !== undefined ? `: ${finding.answer}` : ''}] ${finding.file}:${finding.line} ${finding.title}`
+  `- ${finding.id} [${finding.status}${finding.status === 'dismissed' && finding.answer !== undefined ? `: ${finding.answer}` : ''}] ${whereOf(finding)} ${finding.title}`
 
 /**
  * The section a round adds to /code-review's prompt: the round's scope, what the branch has had
@@ -119,7 +120,7 @@ export function reviewSection(plan: Plan) {
     lines.push(
       '',
       `Open findings to look at again. For each, read the code at ${short(plan.head)} and decide whether it is fixed; the fix may be in another file than the one named:`,
-      ...open.map(finding => `- ${finding.id} ${finding.file}:${finding.line} ${finding.title}${finding.detail === '' ? '' : `. ${finding.detail}`}`),
+      ...open.map(finding => `- ${finding.id} ${whereOf(finding)} ${finding.title}${finding.detail === '' ? '' : `. ${finding.detail}`}`),
     )
   lines.push(
     '',

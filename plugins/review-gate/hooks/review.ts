@@ -1,9 +1,10 @@
 import type { EngineInterface, ModelUsage } from 'claude-code'
 import type { Finding, Ledger, Level, Risk, Round, Run, Tokens } from '../types'
-import { changedFiles, commitLog, diffOf, firstCommit, guideFiles, isAncestor, short, uncommitted } from './git'
+import { changedFiles, commitLog, diffOf, firstCommit, guideFiles, isAncestor, short, uncommitted, untracked } from './git'
 import type { Place } from './git'
-import { LEVELS, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, isApplied, isCapped, levelFor, openFindings, parseGuide, riskNow, riskWith, spent, streak } from './ledger'
-import type { Recheck, Reported } from './ledger'
+import { LEVELS, NIT_CAP, ROUND_CAP, UNJUDGED, aboutOf, atMost, fixState, globTest, isCapped, levelFor, openFindings, parseGuide, riskNow, riskWith, spent, streak, whereOf } from './ledger'
+import type { Tree } from './ledger'
+import type { Recheck } from './ledger'
 import { RISK, readRisk, riskPrompt } from './prompts'
 import type { Context, Fix, Plan } from './prompts'
 
@@ -89,8 +90,19 @@ export type Pending = {
   agentId?: string
   /** The review's tool calls so far. */
   calls: number
-  /** What the review recorded through the record tool, and the findings it adds, with the ids the review was told. */
-  record?: { findings: Reported[]; rechecked: Recheck[]; added: Finding[] }
+  /** Whether a file is one REVIEW.md skips, so a finding in it is left out. */
+  isSkipped: (file: string) => boolean
+  /**
+   * Where the skill named code-review came from, when it is not Claude Code's own: a project's or a
+   * person's skill of that name is not the gate's review, and is not briefed.
+   */
+  shadowed?: string
+  /**
+   * What the review recorded through the record tool: how many findings it reported, the rechecks,
+   * the findings the round adds, with the ids the review was told, and how many it left out as
+   * repeats, as nits past the cap, and as findings in files REVIEW.md skips.
+   */
+  record?: { raised: number; rechecked: Recheck[]; added: Finding[]; repeats: number; nitsLeft: number; skippedOut: number }
   /** With --fix, what the review did about each finding, from its second record call. */
   fixes?: Fix[]
 }
@@ -174,11 +186,12 @@ function forked(value: unknown): Forked | undefined {
 }
 
 /**
- * Waits for `promise`, or until the round is stopped or `limitMs` passes, when it gives undefined. A
+ * Waits for `promise`, or until the round is stopped or `limitMs` passes, when it gives no value. A
  * hook's own clock runs while no call of its is in flight, and the reply comes through another
- * hook's event, so the wait keeps a short sleep in flight.
+ * hook's event, so the wait keeps a `sleep` in flight. The hook's own sleep would spend its clock,
+ * so where `sleep` cannot run the wait ends at once, and says so, rather than spin or time out.
  */
-async function waitFor<T>($: EngineInterface, promise: Promise<T>, signal: AbortSignal, limitMs: number): Promise<T | undefined> {
+async function waitFor<T>($: EngineInterface, promise: Promise<T>, signal: AbortSignal, limitMs: number): Promise<{ value?: T; isStuck: boolean }> {
   let value: T | undefined
   let isSettled = false
   void promise.then(got => {
@@ -187,16 +200,24 @@ async function waitFor<T>($: EngineInterface, promise: Promise<T>, signal: Abort
   })
   const since = await $.clock.now()
   while (!isSettled && !signal.aborted && (await $.clock.now()) - since < limitMs) {
-    await Promise.race([promise, pause($, signal)])
+    const slept = await Promise.race([promise.then(() => true), pause($)])
+    if (!slept && !isSettled) return { isStuck: true }
   }
-  return value
+  return value === undefined ? { isStuck: false } : { value, isStuck: false }
 }
 
-// A second with a call in flight. Where sleep cannot run, the hook's own sleep waits instead, so the
-// wait never spins.
-async function pause($: EngineInterface, signal: AbortSignal) {
+// A second with a call in flight; false when `sleep` cannot run.
+async function pause($: EngineInterface) {
   const ran = await $.process.run(['sleep', '1']).catch(() => undefined)
-  if (ran === undefined || ran.exitCode !== 0) await $.clock.sleep(1_000, { signal }).catch(() => undefined)
+  return ran !== undefined && ran.exitCode === 0
+}
+
+const STUCK = 'review-gate could not wait for the review, since the `sleep` program could not run here, so it stopped the review.'
+
+// Where HEAD is: its commit, and its branch, empty when detached; undefined when git cannot say.
+async function headOf(git: Place['git']) {
+  const [head, branch] = await Promise.all([git(['rev-parse', 'HEAD']), git(['symbolic-ref', '--short', '-q', 'HEAD'])])
+  return head.ok ? { head: head.out.trim(), branch: branch.ok ? branch.out.trim() : '' } : undefined
 }
 
 // Ends a review the round no longer waits for, so it spends nothing more. Best effort: one that has
@@ -210,12 +231,12 @@ async function stop($: EngineInterface, agentId: string) {
  * one the Skill tool started in the background is waited for, and stopped once the round stops
  * waiting for it.
  */
-async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<Reply | undefined> {
+async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<{ reply?: Reply; isStuck: boolean }> {
   const got = await waitFor($, ask.mail.take(run.agentId), ask.signal, run.background === true ? REVIEW_LIMIT_MS : REPLY_LIMIT_MS)
-  if (got !== undefined) return got
+  if (got.value !== undefined) return { reply: got.value, isStuck: false }
   ask.mail.drop(run.agentId)
   if (run.background === true) await stop($, run.agentId)
-  return undefined
+  return { isStuck: got.isStuck && run.background === true }
 }
 
 /**
@@ -303,19 +324,26 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     skip,
     earlier: ledger.findings,
   }
-  let record: Pending['record'] = { findings: [], rechecked: [], added: [] }
+  let record: NonNullable<Pending['record']> = { raised: 0, rechecked: [], added: [], repeats: 0, nitsLeft: 0, skippedOut: 0 }
   let cap: number | undefined
   let calls: number | undefined
   let report = ''
   let isUnfinished = false
-  // Why a review that ran in the foreground says it did not succeed, its words or a stand-in.
+  let isStuck = false
+  // Why the review did not succeed, in its words or a stand-in.
   let failed: string | undefined
-  // Tracked files the review left changed: its fixes with --fix, and changes it was asked not to make without.
+  // Files the review left changed, new ones included: its fixes with --fix, and changes it was asked
+  // not to make without.
   let touched: string[] = []
   let fixes: Fix[] | undefined
-  // Commits that change only files REVIEW.md skips leave the review nothing to read.
-  if (roundFiles.length > 0) {
-    const pending: Pending = { plan, changed: new Set(files), isBriefed: false, calls: 0 }
+  // Where the review left HEAD, when it moved it.
+  let moved: { head: string; branch: string } | undefined
+  // Commits that change only files REVIEW.md skips leave the review nothing to read, unless it has
+  // open findings to look at again: a fix may sit in a skipped file.
+  const isReviewed = roundFiles.length > 0 || open.length > 0
+  if (isReviewed) {
+    const pending: Pending = { plan, changed: new Set(files), isSkipped: file => skipped.some(test => test(file)), isBriefed: false, calls: 0 }
+    const before = new Set(await untracked(git).catch(() => []))
     ask.desk.pending = pending
     await ask.progress(run => (run === null ? run : { ...run, phase: 'reviewing', level }))
     const args = [level, `${from}..${place.head}`, ...(ask.fix ? ['--fix'] : []), ...(ask.maxFindings === undefined ? [] : ['--max-findings', ask.maxFindings])]
@@ -328,34 +356,53 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       if (orphan !== undefined) await stop($, orphan)
       return refuse(STOPPED)
     }
+    if (pending.shadowed !== undefined) {
+      if (run !== undefined) await stop($, run.agentId)
+      return refuse(
+        `The skill named ${SKILL} here comes from ${pending.shadowed}, not Claude Code, so review-gate did not run it as its review: a branch could make it say anything. Rename that skill, or remove it, then review again. Nothing was recorded.`,
+      )
+    }
+    // A review that failed after it recorded keeps its record, and the round says it failed.
     const failure = failureOf(called)
-    if (failure !== undefined) return refuse(`/code-review could not run: ${failure}. Nothing was recorded.`)
+    if (failure !== undefined && pending.record === undefined) return refuse(`/code-review could not run: ${failure}. Nothing was recorded.`)
+    failed = failure
     if (run !== undefined) {
       // A review the Skill tool started in the background is known from here, and the band follows it.
       if (pending.agentId === undefined) {
         pending.agentId = run.agentId
         await ask.progress(current => (current === null ? current : { ...current, agentId: run.agentId }))
       }
-      const reply = await replyOf($, ask, run)
-      tokens = plus(tokens, reply?.usage)
-      // A review in the background hands back word of its start, not its result.
-      report = (reply?.answer ?? (run.background === true ? '' : run.result)).trim()
+      // One that did not succeed, or did not start, is not waited for.
+      if (run.success === false) {
+        failed = run.result.trim() || 'it gave no reason'
+        if (run.background === true) await stop($, run.agentId)
+      } else {
+        const got = await replyOf($, ask, run)
+        tokens = plus(tokens, got.reply?.usage)
+        // A review in the background hands back word of its start, not its result.
+        report = (got.reply?.answer ?? (run.background === true ? '' : run.result)).trim()
+        isStuck = got.isStuck
+        isUnfinished = got.reply === undefined && run.background === true && !isStuck
+      }
       calls = pending.calls
-      isUnfinished = reply === undefined && run.background === true
-      // A review in the background says only whether it started; one in the foreground, whether it succeeded.
-      if (run.background !== true && run.success === false) failed = run.result.trim() || 'it gave no reason'
     }
     if (ask.signal.aborted) return refuse(STOPPED)
     if (pending.record === undefined)
       return refuse(
         `/code-review ended without recording its findings${
           run === undefined ? ', and it ran in no agent of its own' : failed === undefined ? '' : `, and it failed: ${failed}`
-        }, so the round has nothing to stand on. Nothing was recorded; review again.`,
+        }, so the round has nothing to stand on.${isStuck ? ` ${STUCK}` : ''} Nothing was recorded; review again.`,
       )
     record = pending.record
     cap = pending.cap
-    touched = await uncommitted(git).catch(() => [])
-    // A fix is in the working tree or nowhere: a review that left the tree clean applied none.
+    // The review runs with a shell: it may have committed its fixes, or left HEAD elsewhere.
+    const now = await headOf(git)
+    if (now !== undefined && (now.head !== place.head || now.branch !== place.branch)) moved = now
+    const committed = moved !== undefined && moved.branch === place.branch && (await isAncestor(git, place.head, moved.head)) ? await changedFiles(git, place.head, moved.head) : []
+    const created = (await untracked(git).catch(() => [])).filter(file => !before.has(file))
+    touched = [...new Set([...committed, ...(await uncommitted(git).catch(() => [])), ...created])]
+    // A fix is in the working tree, or in a commit the review made, or nowhere: a review that changed
+    // nothing applied none.
     fixes = ask.fix ? pending.fixes?.map(one => (touched.length === 0 ? { ...one, applied: false } : one)) : undefined
   }
 
@@ -391,16 +438,18 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       scope: isDelta ? 'delta' : 'full',
       level,
       risk: riskWith(judged, findings),
-      raised: record.findings.length,
+      raised: record.raised,
       ...(cap === undefined ? {} : { cap }),
       kept: added.length,
+      ...(record.nitsLeft > 0 ? { nitsLeft: record.nitsLeft } : {}),
+      ...(record.skippedOut > 0 ? { skippedOut: record.skippedOut } : {}),
       fixed: closing.length,
       open: findings.filter(finding => finding.status === 'open').length,
       at,
       durationMs: at - startedAt,
       tokens,
       ...(calls === undefined ? {} : { calls }),
-      ...(roundFiles.length === 0 ? { skipped: true } : {}),
+      ...(isReviewed ? {} : { skipped: true }),
     }
     // A classifier with no verdict is asked again next time.
     return {
@@ -416,13 +465,22 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   const notes: string[] = []
   if (isUnfinished)
     notes.push(`The review had not finished after ${REVIEW_LIMIT_MS / 60_000} minutes, so it was stopped; it had recorded its findings before that.`)
+  if (isStuck) notes.push(`${STUCK} It had recorded its findings before that.`)
   if (failed !== undefined) notes.push(`The review recorded its findings, then failed: ${failed}`)
+  if (moved !== undefined) {
+    const where = moved.branch === '' ? `a detached HEAD at ${short(moved.head)}` : `${moved.branch} at ${short(moved.head)}`
+    notes.push(
+      moved.branch === place.branch
+        ? `The review moved ${place.branch} from ${short(place.head)} to ${short(moved.head)}. This round covers ${short(place.head)}; review again to cover the review's commits.`
+        : `The review left the repository on ${where}. This round covers ${place.branch} at ${short(place.head)}: check ${place.branch} out again before you go on.`,
+    )
+  }
   // A review that said what it fixed is shown by the summary; one that did not is quoted.
   const quoted = report === '' ? '' : ` Its report:\n\n${report}`
   // A round whose files are all skipped ran no review, so it has no fixes to speak of.
-  if (ask.fix && roundFiles.length > 0) {
+  if (ask.fix && isReviewed) {
     if (touched.length === 0) notes.push(`The review changed no file, though --fix let it.${fixes === undefined ? quoted : ''}`)
-    else if (fixes !== undefined) notes.push(`The review's changes, in the working tree and not committed: ${listed(touched, 10)}.`)
+    else if (fixes !== undefined) notes.push(`The review's changes${moved?.branch === place.branch ? '' : ', in the working tree and not committed'}: ${listed(touched, 10)}.`)
     else
       notes.push(
         `The review then changed ${listed(touched)}, as --fix asks, but did not say which findings it fixed.${quoted}\n\nCommit the fixes you keep and review again: the next round confirms each fix.`,
@@ -442,9 +500,7 @@ export function stepBack(ledger: Ledger) {
     .join('; ')}) and whether the approach should change, and ask how to go on. They can allow more rounds with /review-gate more.`
 }
 
-const whereOf = (finding: Finding) => (finding.line > 0 ? `${finding.file}:${finding.line}` : finding.file)
-
-function findingText(finding: Finding) {
+function findingText(finding: Finding, isUndone = false) {
   const kind = finding.kind === 'bug' ? '' : ` ${finding.kind}`
   const about = aboutOf(finding)
   return [
@@ -453,6 +509,7 @@ function findingText(finding: Finding) {
     ...(finding.detail === '' ? [] : [`  ${finding.detail.replace(/\n/g, '\n  ')}`]),
     ...(finding.scenario === '' ? [] : [`  When: ${finding.scenario.replace(/\n/g, '\n  ')}`]),
     ...(finding.fix !== undefined && !finding.fix.applied && finding.fix.why !== '' ? [`  The review left it: ${finding.fix.why}`] : []),
+    ...(isUndone ? ["  The review's fix for it is no longer in the working tree."] : []),
   ].join('\n')
 }
 
@@ -461,9 +518,11 @@ export const isLevel = (word: unknown): word is Level => LEVELS.some(level => le
 
 /**
  * A round as the model and the person's command read it. Its first line names the round, branch
- * and commit, which the chat's card is found by.
+ * and commit, which the chat's card is found by. `tree`, where the repository stands now, tells a
+ * fix the review left uncommitted from one committed since, or undone; left out, as when the round
+ * has just ended, the fixes are in the working tree.
  */
-export function summary(ledger: Ledger, n: number) {
+export function summary(ledger: Ledger, n: number, tree?: Tree) {
   const round = ledger.rounds.find(one => one.n === n)
   if (round === undefined) return `${ledger.branch} has no review round ${n}.`
   const risk = riskNow(ledger) ?? round.risk
@@ -473,24 +532,35 @@ export function summary(ledger: Ledger, n: number) {
     }, /code-review ${round.level}, risk ${risk.tier}${risk.why.length > 0 ? ` (${risk.why.join('; ')})` : ''}.`,
   ]
   const open = openFindings(ledger)
-  const applied = open.filter(isApplied)
-  const waiting = open.filter(finding => !isApplied(finding))
-  if (applied.length > 0)
+  const state = (finding: Finding) => fixState(ledger, finding, tree)
+  const fixList = (list: readonly Finding[]) =>
+    list.map(finding => `${finding.id} · ${whereOf(finding)}\n  ${finding.title}${finding.fix?.why ? `\n  Fixed: ${finding.fix.why}` : ''}`).join('\n\n')
+  const ofOpen = (count: number) =>
+    count === open.length ? (count === 1 ? 'the open finding' : `all ${count} open findings`) : `${count} of the ${open.length} open findings`
+  const uncommitted = open.filter(finding => state(finding) === 'uncommitted')
+  const committed = open.filter(finding => state(finding) === 'committed')
+  const waiting = open.filter(finding => state(finding) === undefined || state(finding) === 'gone')
+  if (uncommitted.length > 0)
     lines.push(
-      `The review fixed ${applied.length === open.length ? (open.length === 1 ? 'the open finding' : `all ${open.length} open findings`) : `${applied.length} of the ${open.length} open findings`} in the working tree. Look over the fixes and commit the ones you keep, then review again: that round checks each fix and closes it.`,
-      applied.map(finding => `${finding.id} · ${whereOf(finding)}\n  ${finding.title}${finding.fix?.why ? `\n  Fixed: ${finding.fix.why}` : ''}`).join('\n\n'),
+      `The review fixed ${ofOpen(uncommitted.length)} in the working tree. Look over the fixes and commit the ones you keep, then review again: that round checks each fix and closes it.`,
+      fixList(uncommitted),
     )
+  if (committed.length > 0)
+    lines.push(`The review's fixes for ${ofOpen(committed.length)} are committed since round ${n}. Review again: that round checks each fix and closes it.`, fixList(committed))
   if (waiting.length > 0)
     lines.push(
-      `${applied.length > 0 ? `The other ${waiting.length} need${waiting.length === 1 ? 's' : ''} your answer` : `${waiting.length} finding${waiting.length === 1 ? '' : 's'} open`}. Answer each one: fix it and commit, then review again (the next round checks the fix); or dismiss it with the reason it can stay.`,
-      ...waiting.map(findingText),
+      `${waiting.length < open.length ? `The other ${waiting.length} need${waiting.length === 1 ? 's' : ''} your answer` : `${waiting.length} finding${waiting.length === 1 ? '' : 's'} open`}. Answer each one: fix it and commit, then review again (the next round checks the fix); or dismiss it with the reason it can stay.`,
+      ...waiting.map(finding => findingText(finding, state(finding) === 'gone')),
     )
   const closed = ledger.findings.filter(finding => finding.closedRound === n)
   if (closed.length > 0) lines.push(`Found fixed this round: ${closed.map(finding => `${finding.id} (${finding.title})`).join('; ')}.`)
-  if (round.raised > round.kept) {
-    const again = round.raised - round.kept
+  const nits = round.nitsLeft ?? 0
+  const skippedOut = round.skippedOut ?? 0
+  const again = round.raised - round.kept - nits - skippedOut
+  if (again > 0)
     lines.push(`${again} finding${again === 1 ? '' : 's'} the review reported ${again === 1 ? 'was' : 'were'} on the record already, so ${again === 1 ? 'it was' : 'they were'} not raised again.`)
-  }
+  if (nits > 0) lines.push(`${nits} more nit${nits === 1 ? ' was' : 's were'} left out: a round raises at most ${NIT_CAP}.`)
+  if (skippedOut > 0) lines.push(`${skippedOut} finding${skippedOut === 1 ? ' was' : 's were'} in files REVIEW.md skips, so ${skippedOut === 1 ? 'it was' : 'they were'} left out.`)
   if (isCapped(round)) lines.push(`The review reported ${round.raised}, as many findings as /code-review ${round.level} lets it, so the next round reviews the whole branch again.`)
   if (open.length === 0) {
     const approval =

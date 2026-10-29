@@ -1,7 +1,7 @@
 import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import type { Activity, Finding, Ledger, Repo, Run } from '../types'
 import { short } from './git'
-import { ROUND_CAP, aboutOf, duration, isApplied, isCapped, openFindings, riskNow, spent, streak } from './ledger'
+import { ROUND_CAP, aboutOf, duration, fixState, isCapped, openFindings, riskNow, spent, streak } from './ledger'
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
@@ -63,9 +63,13 @@ export function band(
     )
   }
   const open = openFindings(ledger)
-  // Fixes the review left in the working tree wait for a commit; the rest wait for an answer.
-  const applied = open.filter(isApplied)
-  const waiting = open.filter(finding => !isApplied(finding))
+  // Fixes the review left in the working tree wait for a commit, committed ones for a round; the
+  // rest, and fixes since undone, wait for an answer.
+  const state = (finding: Finding) => fixState(ledger, finding, repo)
+  const applied = open.filter(finding => state(finding) === 'uncommitted')
+  const committed = open.filter(finding => state(finding) === 'committed')
+  const waiting = open.filter(finding => state(finding) === undefined || state(finding) === 'gone')
+  const ids = (list: readonly Finding[]) => list.map(finding => finding.id).join(' ')
   const isCurrent = ledger.reviewed === repo.head
   const risk = riskNow(ledger)
   const needsYou = isCurrent && open.length === 0 && risk?.tier === 'high' && ledger.approved?.sha !== repo.head
@@ -74,13 +78,19 @@ export function band(
       {label}
       {applied.length > 0 && (
         <Text color="suggestion">
-          ◐ {applied.length} fixed, not committed: {applied.map(finding => finding.id).join(' ')}
+          ◐ {applied.length} fixed, not committed: {ids(applied)}
         </Text>
       )}
       {applied.length > 0 && <Text dimColor> · commit, then review again</Text>}
+      {committed.length > 0 && (
+        <Text color="suggestion">
+          {applied.length > 0 ? ' · ' : ''}◐ {committed.length} fixed and committed: {ids(committed)}
+        </Text>
+      )}
+      {committed.length > 0 && <Text dimColor> · review again to confirm</Text>}
       {waiting.length > 0 && (
         <Text color="error">
-          {applied.length > 0 ? ' · ' : ''}✗ {waiting.length} open: {waiting.map(finding => finding.id).join(' ')}
+          {applied.length + committed.length > 0 ? ' · ' : ''}✗ {waiting.length} open: {ids(waiting)}
         </Text>
       )}
       {waiting.length > 0 && <Text dimColor> · fix and commit, or dismiss with a reason</Text>}
@@ -92,16 +102,16 @@ export function band(
   )
 }
 
-function mark(finding: Finding) {
-  if (isApplied(finding)) return { glyph: '◐', color: 'suggestion' as const }
+function mark(finding: Finding, state: ReturnType<typeof fixState>) {
+  if (state === 'uncommitted' || state === 'committed') return { glyph: '◐', color: 'suggestion' as const }
   if (finding.status === 'fixed') return { glyph: '✓', color: 'success' as const }
   if (finding.status === 'dismissed') return { glyph: '–', color: 'inactive' as const }
   if (finding.severity === 'nit') return { glyph: '✗', color: 'warning' as const }
   return { glyph: '✗', color: finding.severity === 'pre-existing' ? ('warning' as const) : ('error' as const) }
 }
 
-// Findings that need an answer first, then fixes waiting for a commit, then the answered.
-const order = (finding: Finding) => (isApplied(finding) ? 1 : { open: 0, dismissed: 2, fixed: 3 }[finding.status])
+// Findings that need an answer first, then the review's fixes, then the answered.
+const ORDER: Record<Finding['status'], number> = { open: 0, dismissed: 2, fixed: 3 }
 
 /**
  * A round as a card in the chat: what it covered, each finding it raised or looked at again with
@@ -112,12 +122,19 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
   if (round === undefined) return undefined
   const { Box, Text } = $.ui.resolve(e)
   const isLast = ledger.rounds[ledger.rounds.length - 1]?.n === n
+  const tree = repo !== null && repo.branch === ledger.branch ? repo : undefined
+  const stateOf = (finding: Finding) => fixState(ledger, finding, tree)
+  const orderOf = (finding: Finding) => {
+    const state = stateOf(finding)
+    return state === 'uncommitted' || state === 'committed' ? 1 : ORDER[finding.status]
+  }
   const rows = ledger.findings
     .filter(finding => finding.round === n || finding.closedRound === n || (isLast && finding.round < n && finding.status === 'open'))
-    .sort((a, b) => order(a) - order(b))
+    .sort((a, b) => orderOf(a) - orderOf(b))
   const open = openFindings(ledger)
-  const applied = open.filter(isApplied)
-  const waiting = open.length - applied.length
+  const applied = open.filter(finding => stateOf(finding) === 'uncommitted')
+  const committed = open.filter(finding => stateOf(finding) === 'committed')
+  const waiting = open.length - applied.length - committed.length
   const risk = riskNow(ledger) ?? round.risk
   const moved = isLast && repo !== null && repo.branch === ledger.branch && repo.head !== round.head
   const cost = [spent(round), round.calls === undefined ? '' : plural(round.calls, 'call')].filter(part => part !== '').join(' · ')
@@ -136,7 +153,8 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
         {risk.why.length > 0 ? `: ${risk.why.join('; ')}` : ''}
       </Text>
       {rows.map(finding => {
-        const { glyph, color } = mark(finding)
+        const state = stateOf(finding)
+        const { glyph, color } = mark(finding, state)
         const about = aboutOf(finding)
         return (
           <Box key={finding.id} flexDirection="column" marginTop={1}>
@@ -155,7 +173,9 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
               <Text dimColor={finding.status !== 'open'}>{finding.title}</Text>
               {finding.status === 'dismissed' && <Text dimColor>dismissed: {finding.answer ?? ''}</Text>}
               {finding.status === 'fixed' && <Text dimColor>{finding.answer ?? 'fixed'}</Text>}
-              {isApplied(finding) && <Text color="suggestion">fixed in the working tree, not committed{finding.fix?.why ? `: ${finding.fix.why}` : ''}</Text>}
+              {state === 'uncommitted' && <Text color="suggestion">fixed in the working tree, not committed{finding.fix?.why ? `: ${finding.fix.why}` : ''}</Text>}
+              {state === 'committed' && <Text color="suggestion">fixed and committed, not reviewed yet{finding.fix?.why ? `: ${finding.fix.why}` : ''}</Text>}
+              {state === 'gone' && <Text dimColor>the review's fix is no longer in the working tree</Text>}
               {finding.status === 'open' && finding.fix?.applied === false && finding.fix.why !== '' && <Text dimColor>the review left it: {finding.fix.why}</Text>}
             </Box>
           </Box>
@@ -166,6 +186,11 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
         {applied.length > 0 && (
           <Text>
             <Text color="suggestion">{applied.length === 1 ? '1 fix' : `${applied.length} fixes`} in the working tree.</Text> Commit the ones you keep, then review again to close them.
+          </Text>
+        )}
+        {committed.length > 0 && (
+          <Text>
+            <Text color="suggestion">{committed.length === 1 ? '1 fix' : `${committed.length} fixes`} committed.</Text> Review again to close them.
           </Text>
         )}
         {waiting > 0 && (

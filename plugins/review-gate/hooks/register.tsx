@@ -1,10 +1,10 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput } from 'claude-code'
 import type { Ledger, Level } from '../types'
-import { branches, firstCommit, locate, short } from './git'
+import { branches, firstCommit, locate, short, uncommitted } from './git'
 import type { Place } from './git'
 import { opensOrMerges } from './guard'
-import { LEVELS, ROUND_CAP, emptyLedger, newFindings, openFindings, recordKey, recordPrefix, riskNow, toLedger } from './ledger'
+import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, openFindings, recordKey, recordPrefix, riskNow, sortOut, toLedger, whereOf } from './ledger'
 import { RECORD, capOf, readFixes, readRecord, reviewSection } from './prompts'
 import { SKILL, isLevel, mailbox, runRound, summary } from './review'
 import type { Pending, RoundAsk } from './review'
@@ -244,7 +244,8 @@ async function show($: EngineInterface, place: Place | string) {
   }
   await prune($, place).catch(() => undefined)
   const isDefault = place.branch === place.main
-  await update($, repo, () => ({ branch: place.branch, head: place.head, main: place.main, isDefault, ahead: place.ahead }))
+  const isDirty = (await uncommitted(place.git).catch(() => [])).length > 0
+  await update($, repo, () => ({ branch: place.branch, head: place.head, main: place.main, isDefault, ahead: place.ahead, isDirty }))
   const record = isDefault ? null : await load($, place)
   await update($, ledgerState, () => record)
 }
@@ -343,8 +344,11 @@ async function mergePullRequest($: EngineInterface, place: Place, input: Input):
 const mail = mailbox()
 const desk: { pending?: Pending } = {}
 const others = new Set<string>()
-// The review agents rounds have run: their task notifications repeat what the round reported.
+// The review agents rounds have run: their task notifications repeat what the round reported, and
+// none of them is a later round's review.
 const reviews = new Set<string>()
+// The agents the session had when the round began, none of which is its review.
+let before = new Set<string>()
 let activeRoot: string | undefined
 let busy = false
 
@@ -358,6 +362,7 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
   busy = true
   activeRoot = place.root
   others.clear()
+  before = new Set((await $.agent.list().catch(() => [])).map(agent => agent.id))
   try {
     const now = await $.clock.now()
     return await runRound($, {
@@ -384,6 +389,17 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
 }
 
 /**
+ * Whether an agent may be the round's review before the Skill tool has named it: one that began
+ * during the round, that this plugin started or that no agent and no other plugin did. A review of
+ * an earlier round, still running, is not; nor is an agent the review handed part of its work to.
+ */
+function mayBeTheReview(agent: { id: string; parentId?: string; spawnedBy?: string }) {
+  if (before.has(agent.id) || reviews.has(agent.id)) return false
+  if (agent.spawnedBy === PLUGIN) return true
+  return agent.spawnedBy === undefined && agent.parentId === undefined
+}
+
+/**
  * Whether an agent is the round's review: the /code-review agent this plugin started. A tool call of
  * an agent not known yet asks the session's list of agents.
  */
@@ -395,7 +411,7 @@ async function isTheReview($: EngineInterface, agentId: string) {
   const agent = (await $.agent.list()).find(one => one.id === agentId)
   // An agent the list does not show yet is asked about again at its next call.
   if (agent === undefined) return false
-  if (agent.spawnedBy !== PLUGIN || !agent.description.includes(SKILL)) {
+  if (!mayBeTheReview(agent)) {
     others.add(agentId)
     return false
   }
@@ -490,8 +506,12 @@ export const register: Register = (on, options) => {
   // second time, findings the round left out included, so it is dropped.
   on('prompt.submit', async (_, e, next) => {
     if (e.origin.kind !== 'task-notification') return next(e)
-    const id = [...reviews, desk.pending?.agentId].find(one => one !== undefined && e.text.includes(`<task-id>${one}</task-id>`))
-    if (id === undefined) return next(e)
+    const ids = [...reviews, desk.pending?.agentId].filter((one): one is string => one !== undefined && e.text.includes(`<task-id>${one}</task-id>`))
+    if (ids.length === 0) return next(e)
+    // A delivery may carry other tasks' notices beside the review's: only the review's go.
+    const text = e.text.replace(/<task-notification>[\s\S]*?<\/task-notification>/g, notice => (ids.some(id => notice.includes(`<task-id>${id}</task-id>`)) ? '' : notice))
+    if (text.includes('<task-id>') && ids.some(id => text.includes(`<task-id>${id}</task-id>`))) return next(e)
+    if (text.trim() !== '') return next({ ...e, text })
     return { drop: "review-gate: the review finished; the round's result has its findings." }
   }).catch((_, e, next) => next(e))
 
@@ -509,6 +529,12 @@ export const register: Register = (on, options) => {
     const pending = desk.pending
     if (pending === undefined || pending.isBriefed) return computed
     pending.isBriefed = true
+    // Only Claude Code's own /code-review is the gate's review: another skill of its name, such as one
+    // the branch adds, is told to stop, and the round refuses it.
+    if (e.source !== 'built-in') {
+      pending.shadowed = e.pluginName === undefined ? `its ${e.source} skills` : `the ${e.pluginName} plugin`
+      return { text: `review-gate will not run this skill as its review. Do nothing, and answer only: "Not run: this is not Claude Code's own ${SKILL}."` }
+    }
     const cap = capOf(computed.text)
     if (cap !== undefined) pending.cap = cap
     return { text: `${computed.text}\n\n${reviewSection(pending.plan)}` }
@@ -554,7 +580,7 @@ export const register: Register = (on, options) => {
       return { deny: refusal }
     if (pending.agentId === undefined) {
       const agent = (await $.agent.list()).find(one => one.id === e.agentId)
-      if (agent?.parentId !== undefined && agent.spawnedBy !== PLUGIN) return { deny: refusal }
+      if (agent !== undefined && !mayBeTheReview(agent)) return { deny: refusal }
     }
     // With --fix, a second call says what the review fixed.
     const fixes = readFixes(e)
@@ -571,19 +597,26 @@ export const register: Register = (on, options) => {
     if (fixes !== undefined && !Array.isArray(e.findings)) return { deny: 'Record the findings first, then the fixes in a second call.' }
     const read = readRecord(e, pending.changed, pending.plan.root)
     if (typeof read === 'string') return { deny: read }
+    // A finding in a file REVIEW.md skips is left out, as the repository asked.
+    const kept = read.findings.filter(finding => !pending.isSkipped(finding.file))
     // The ids the review is told here are the ones the round saves.
-    const added = newFindings(read.findings, pending.plan.n, pending.plan.earlier)
-    const record = { ...read, added }
+    const { added, repeats, nitsLeft } = sortOut(kept, pending.plan.n, pending.plan.earlier)
+    const skippedOut = read.findings.length - kept.length
+    const record = { raised: read.findings.length, rechecked: read.rechecked, added, repeats, nitsLeft, skippedOut }
     pending.record = record
     if (pending.agentId === undefined) {
       pending.agentId = e.agentId
       await update($, run, current => (current === null ? current : { ...current, agentId: e.agentId }))
     }
-    const again = record.findings.length - added.length
+    const left = [
+      repeats > 0 ? `${repeats} the branch has had before` : '',
+      nitsLeft > 0 ? `${nitsLeft} nit${nitsLeft === 1 ? '' : 's'} past the ${NIT_CAP} a round raises` : '',
+      skippedOut > 0 ? `${skippedOut} in files REVIEW.md skips` : '',
+    ].filter(part => part !== '')
     return {
       result: `Recorded round ${pending.plan.n}: ${
-        added.length === 0 ? 'no new findings' : added.map(finding => `${finding.id} ${finding.file}:${finding.line} ${finding.title}`).join('; ')
-      }.${again > 0 ? ` ${again} the branch had already ${again === 1 ? 'was' : 'were'} left out.` : ''} ${
+        added.length === 0 ? 'no new findings' : added.map(finding => `${finding.id} ${whereOf(finding)} ${finding.title}`).join('; ')
+      }.${left.length > 0 ? ` Left out: ${left.join(', ')}.` : ''} ${
         pending.plan.fix ? 'Now fix them, then record the fixes as your instructions say.' : 'Finish as your instructions say.'
       }`,
     }
@@ -659,7 +692,8 @@ export const register: Register = (on, options) => {
     if (verb === 'status') {
       if (place.branch === '' || place.branch === place.main) return { text: `${place.branch || 'HEAD'} is not a branch to review.` }
       if (last === undefined) return { text: `${place.branch} has not been reviewed: ${place.ahead} commit${place.ahead === 1 ? '' : 's'} past ${place.main}.` }
-      return { text: summary(ledger, last.n) }
+      const isDirty = (await uncommitted(place.git).catch(() => undefined))?.length
+      return { text: summary(ledger, last.n, { head: place.head, ...(isDirty === undefined ? {} : { isDirty: isDirty > 0 }) }) }
     }
     if (verb === 'more' || verb === 'reset') {
       if (!isPerson) return { text: `Only the person at the keyboard can run /review-gate ${verb}.` }

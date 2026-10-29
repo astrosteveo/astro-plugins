@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { atMost, emptyLedger, globTest, isCapped, kindOf, levelFor, newFindings, parseGuide, severityOf, spent, streak, toLedger } from '../hooks/ledger'
+import { NIT_CAP, atMost, emptyLedger, globTest, isCapped, kindOf, levelFor, newFindings, parseGuide, sameDefect, severityOf, sortOut, spent, streak, toLedger } from '../hooks/ledger'
 import type { Reported } from '../hooks/ledger'
 import { capOf, lastJson, readRecord, readRisk, reviewSection } from '../hooks/prompts'
 import type { Plan } from '../hooks/prompts'
@@ -189,6 +189,15 @@ test("a finding's grade is read from the review's whole word for it, not a word 
   expect(['access-control', 'privilege-escalation', 'authorisation', 'information-disclosure', 'sandbox-escape', 'rce'].map(graded).map(([, kind]) => kind)).toEqual(
     Array(6).fill('security'),
   )
+  // A word that names a thing as well as a hole counts only with the hole named.
+  expect(['tree-traversal', 'graph-traversal', 'permission-prompt', 'sandbox-setup', 'permissions', 'permission-bypass'].map(graded).map(([, kind]) => kind)).toEqual([
+    'bug',
+    'bug',
+    'bug',
+    'bug',
+    'security',
+    'security',
+  ])
   expect(['secret-leak', 'data-leak', 'sql-injection', 'auth', 'broken-authorization', 'oauth-state', 'path-traversal'].map(graded)).toEqual([
     ['secret-leak', 'security', 'important'],
     ['data-leak', 'security', 'important'],
@@ -277,4 +286,18 @@ test("the section a round adds to /code-review names its scope, the branch's fin
   expect(fixing).toContain('before you change any file or write your answer')
   expect(fixing.includes('Change no file.')).toBe(false)
   expect(fixing).toContain('- rechecked: an empty list.')
+})
+
+test('a round raises a few nits at most, and says how many it left out and how many were repeats', () => {
+  const nits = Array.from({ length: 5 }, (_, at) => reported({ summary: `Helper ${at} is copied from util${at}`, category: 'reuse', line: 100 + at * 20 }))
+  const sorted = sortOut([...nits, reported({ summary: 'The last page is skipped', line: 12 })], 2, [])
+  expect(sorted.added.map(one => one.severity)).toEqual(['important', ...Array(NIT_CAP).fill('nit')])
+  expect([sorted.nitsLeft, sorted.repeats]).toEqual([5 - NIT_CAP, 0])
+})
+
+test('two findings a few lines apart that share only common words are two defects', () => {
+  const a = { file: 'src/app.ts', line: 12, title: 'The loop stops when the page is the last one', detail: '' }
+  const b = { file: 'src/app.ts', line: 14, title: 'The cache is read when the key is stale and the lock is not held', detail: '' }
+  expect(sameDefect(a, b)).toBe(false)
+  expect(sameDefect(a, { ...a, line: 13, title: 'The loop stops at the last page' })).toBe(true)
 })

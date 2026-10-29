@@ -35,7 +35,7 @@ type World = {
   guide?: string
   /** The commit whose tree holds the REVIEW.md `guide` is: the base, unless the branch added it. */
   guideAt?: string
-  agents?: { id: string; type: string }[]
+  agents?: { id: string; type: string; description?: string; spawnedBy?: string }[]
   /** What the person picks when the gate asks. */
   answer?: string
   /** The risk classifier's reply; undefined for no answer at all. */
@@ -52,6 +52,14 @@ type World = {
   failDiff?: boolean
   /** The clock, which the test moves. */
   now: number
+  /** Files git does not track. */
+  untracked?: string[]
+  /** Where the skill named code-review comes from; left out, Claude Code itself. */
+  skillSource?: string
+  /** How the Skill tool answers instead of the review's result: an error, or a fork that did not succeed. */
+  skillFails?: 'error' | 'unsuccessful'
+  /** Whether the sleep program cannot run. */
+  noSleep?: boolean
 }
 
 /** A run of /code-review the round started: what it was asked, and the hand that ends it. */
@@ -113,6 +121,7 @@ function engine(on: On, repo: World) {
     if (sub === 'log') return rest.includes('--format=%aI %ae') ? ran(0, `${FIRST}\n`) : ran(0, '1111111 Add the app\n\nIt pages through results.\n\0')
     if (sub === 'for-each-ref') return ran(0, (repo.branches ?? ['main', 'feat/app']).map(name => `${name}\n`).join(''))
     if (sub === 'push') return ran(0)
+    if (sub === 'ls-files') return ran(0, (repo.untracked ?? []).map(path => `${path}\0`).join(''))
     const guided = repo.guide !== undefined && (rest.includes(repo.guideAt ?? BASE) || rest[0] === `${repo.guideAt ?? BASE}:REVIEW.md`)
     if (sub === 'ls-tree') return ran(0, guided ? 'REVIEW.md\0src/app.ts\0' : 'src/app.ts\0')
     if (sub === 'show') return guided ? ran(0, repo.guide ?? '') : ran(128)
@@ -142,7 +151,7 @@ function engine(on: On, repo: World) {
   // The session's agents: the test's own, and each /code-review the plugin started, as the engine lists a forked skill.
   on('agent.list', () => ({
     value: [
-      ...(repo.agents ?? []).map(agent => ({ ...agent, description: 'an agent', status: 'running' as const })),
+      ...(repo.agents ?? []).map(agent => ({ ...agent, description: agent.description ?? 'an agent', status: 'running' as const })),
       ...reviews.map(review => ({ id: review.id, type: 'general-purpose', description: '/code-review', status: 'running' as const, spawnedBy: 'review-gate' })),
     ],
   }))
@@ -184,6 +193,7 @@ function engine(on: On, repo: World) {
     if (argv[0] === 'gh') return gh(argv.slice(1))
     // A sleep takes a moment, so a wait is no busy loop, and moves the clock a tenth of its length.
     if (argv[0] === 'sleep') {
+      if (repo.noSleep === true) return ran(127)
       await new Promise<void>(resolve => setTimeout(resolve, 1))
       repo.now += Number(argv[1]) * 100
     }
@@ -195,7 +205,7 @@ function engine(on: On, repo: World) {
       if (repo.skillDeny !== undefined) return { deny: repo.skillDeny }
       // The engine expands the skill's prompt, through the plugins' hooks, for the agent it forks: a
       // call a hook's own $ does not carry, so the test's engine makes it.
-      const { text } = await (session as Engine).skill.prompt({ skill: call.skill, text: repo.skillText ?? SKILL_TEXT })
+      const { text } = await (session as Engine).skill.prompt({ skill: call.skill, text: repo.skillText ?? SKILL_TEXT, ...(repo.skillSource === undefined ? {} : { source: repo.skillSource }) })
       let finish: (answer: string) => void = () => undefined
       const answered = new Promise<string>(resolve => {
         finish = resolve
@@ -204,9 +214,12 @@ function engine(on: On, repo: World) {
       reviews.push({ id, args: call.args ?? '', prompt: text, token: /- round: "([^"]+)"/.exec(text)?.[1] ?? '', finish })
       // In the background the call answers at once with word of the start, and the agent's reply comes later.
       if (repo.background === true) {
-        return { result: { success: true, commandName: call.skill, status: 'forked', agentId: id, result: 'Started in the background.', background: true } } as never
+        const isStarted = repo.skillFails !== 'unsuccessful'
+        return { result: { success: isStarted, commandName: call.skill, status: 'forked', agentId: id, result: isStarted ? 'Started in the background.' : 'could not start: no model', background: true } } as never
       }
       const result = await answered
+      // A call that fails once the review has recorded, as an error after it does.
+      if (repo.skillFails === 'error') return { deny: 'API error while it wrote its answer' }
       return { result: { success: true, commandName: call.skill, status: 'forked', agentId: id, result } } as never
     }
     if (e.tool === 'TaskStop') {
@@ -385,7 +398,7 @@ test('the next round reads only the new commits, closes what the review finds fi
   expect(one.prompt).toContain(`- Review only the commits since 1111111, which round 1 reviewed: \`git diff ${ONE} ${TWO}\`.`)
   expect(one.prompt).toContain('- R1-1 [open] src/app.ts:12 The last page is skipped')
   expect(one.prompt).toContain('- R1-1 src/app.ts:12 The last page is skipped. The loop stops one page early.')
-  expect(recorded).toBe('Recorded round 2: no new findings. 1 the branch had already was left out. Finish as your instructions say.')
+  expect(recorded).toBe('Recorded round 2: no new findings. Left out: 1 the branch has had before. Finish as your instructions say.')
 
   const text = String((await call).result)
   expect(text.split('\n')[0]).toBe(
@@ -1050,4 +1063,165 @@ test('a row that is not a round, or a refused review, draws as the engine draws 
   })
   expect((await row.findAll({ type: 'Text' })).map(text => text.text)).toEqual(['engine'])
   await row.unmount()
+})
+
+const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+
+async function bandText($: Engine) {
+  const band = await $.ui.mount({ plugin: 'review-gate', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props: BAND_PROPS })
+  const said = (await band.findAll({ type: 'Text' })).map(text => text.text).join('')
+  await band.unmount()
+  return said
+}
+
+test("a review's fix shows as uncommitted while it is in the working tree, committed once a commit holds it, and open again once undone", async ($, on) => {
+  const repo = world({ dirty: ['src/app.ts'] })
+  const { store } = engine(on, repo)
+  seed(store, { rounds: [round(1, ONE, 1)], findings: [finding({ fix: { round: 1, applied: true, why: 'the loop runs to pages' } })], reviewed: ONE })
+  await start($)
+  expect(await bandText($)).toContain('◐ 1 fixed, not committed: R1-1')
+  const status = async () => String((await $.command.run({ command: 'review-gate', args: 'status', ...person })).text)
+  expect(await status()).toContain('The review fixed the open finding in the working tree.')
+
+  repo.dirty = []
+  repo.history = [BASE, ONE, TWO]
+  repo.changes[TWO] = ['src/app.ts']
+  repo.head = TWO
+  expect(await status()).toContain("The review's fixes for the open finding are committed since round 1. Review again")
+  expect(await bandText($)).toContain('◐ 1 fixed and committed: R1-1')
+
+  repo.history = [BASE, ONE]
+  repo.head = ONE
+  const undone = await status()
+  expect(undone).toContain('1 finding open.')
+  expect(undone).toContain("The review's fix for it is no longer in the working tree.")
+  expect(await bandText($)).toContain('✗ 1 open: R1-1')
+})
+
+test("only Claude Code's own /code-review is the gate's review: another skill of its name is told to stop, and the round refuses it", async ($, on) => {
+  const { store, reviews, stops } = engine(on, world({ skillSource: 'projectSettings' }))
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  expect(one.prompt.includes('## review-gate')).toBe(false)
+  expect(one.prompt).toContain('review-gate will not run this skill as its review.')
+  one.finish('Not run.')
+  expect(String((await call).deny)).toContain("The skill named code-review here comes from its projectSettings skills, not Claude Code, so review-gate did not run it as its review")
+  expect(stops).toEqual([one.id])
+  expect(store.has(KEY)).toBe(false)
+})
+
+test('a review of an earlier round still running is not this round’s review, and cannot record for it', async ($, on) => {
+  const repo = world({ background: true })
+  const { reviews } = engine(on, repo)
+  await start($)
+  // An earlier review, still running, that the session lists as review-gate's /code-review.
+  repo.agents = [{ id: 'old-review', type: 'general-purpose', description: '/code-review', spawnedBy: 'review-gate' }]
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  await $.tool.call({ tool: 'Read', agentId: 'old-review', file_path: '/repo/src/app.ts' })
+  expect(String((await $.tool.call({ tool: RECORD, agentId: 'old-review', round: one.token, findings: [] })).deny)).toContain('record takes the findings')
+  expect(String((await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })).result)).toContain('Recorded round 1')
+  await reply($, one.id, 'Done.')
+  expect(String((await call).result)).toContain('R1-1')
+})
+
+test('with --fix, a file the review creates counts as a fix, and a review that commits its fixes is said to have moved the branch', async ($, on) => {
+  const repo = world({ untracked: ['notes.txt'] })
+  const { store, reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW, fix: true })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
+  // The fix is a new test file, and notes.txt was there before the round.
+  repo.untracked = ['notes.txt', 'src/app.test.ts']
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, fixes: [{ id: 'R1-1', applied: true, why: 'a test pins the last page' }] })
+  await reply($, one.id, 'Done.')
+  one.finish('Done.')
+  const text = String((await call).result)
+  expect(text).toContain("The review's changes, in the working tree and not committed: src/app.test.ts.")
+  expect(ledgerOf(store).findings[0]?.fix?.applied).toBe(true)
+
+  // The next review commits its fix.
+  repo.untracked = []
+  repo.history = [BASE, ONE, TWO]
+  repo.changes[TWO] = ['src/app.ts']
+  repo.head = TWO
+  const again = $.command.run({ command: 'review-gate', args: '--fix', ...person })
+  await until($, 'the review', () => reviews.length === 2)
+  const two = reviews[1] as Review
+  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [OVERLAP] })
+  repo.history.push('3'.repeat(40))
+  repo.changes['3'.repeat(40)] = ['src/app.ts']
+  repo.head = '3'.repeat(40)
+  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, fixes: [{ id: 'R2-1', applied: true, why: 'pages no longer meet' }] })
+  await reply($, two.id, 'Done.')
+  two.finish('Done.')
+  const said = String((await again).text)
+  expect(said).toContain('The review moved feat/app from 2222222 to 3333333. This round covers 2222222; review again to cover the review\'s commits.')
+  expect(said).toContain("The review's changes: src/app.ts.")
+  expect(ledgerOf(store).reviewed).toBe(TWO)
+})
+
+test('a review that recorded, then failed, keeps its record; one that failed to start is not waited for', async ($, on) => {
+  const repo = world({ skillFails: 'error' })
+  const { store, reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
+  const text = String((await call).result)
+  expect(text).toContain('The review recorded its findings, then failed: API error while it wrote its answer')
+  expect(ledgerOf(store).findings.map(one => one.id)).toEqual(['R1-1'])
+
+  repo.skillFails = 'unsuccessful'
+  repo.background = true
+  const now = repo.now
+  const failed = $.command.run({ command: 'review-gate', args: '', ...person })
+  expect(String((await failed).text)).toContain('/code-review ended without recording its findings, and it failed: could not start: no model')
+  // No thirty-minute wait: the clock moved by the few sleeps of the risk check at most.
+  expect(repo.now - now < 60_000).toBe(true)
+})
+
+test('where sleep cannot run, the round stops waiting for a background review at once and says why', async ($, on) => {
+  const repo = world({ background: true, noSleep: true })
+  const { reviews, stops } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  // No spin and no half-hour wait: the round ends at the first sleep that fails.
+  expect(String((await call).deny)).toBe(
+    '/code-review ended without recording its findings, so the round has nothing to stand on. review-gate could not wait for the review, since the `sleep` program could not run here, so it stopped the review. Nothing was recorded; review again.',
+  )
+  expect(stops).toEqual([one.id])
+})
+
+test("a delivery that carries a review's notice and another task's keeps the other", async ($, on) => {
+  const { reviews } = engine(on, world({ background: true }))
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  const { one } = await act($, reviews, 0)
+  await call
+  const other = '<task-notification><task-id>build-7</task-id><status>completed</status></task-notification>'
+  const mine = `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`
+  const passed = await $.prompt.submit({ text: `${mine}\n${other}`, wait: false, origin: { kind: 'task-notification' } })
+  expect(passed.text?.trim()).toBe(other)
+})
+
+test('open findings are looked at again when the new commits change only skipped files, and findings in skipped files are left out', async ($, on) => {
+  const repo = world({ guide: '## Skip\n- generated/\n', history: [BASE, ONE, TWO], head: TWO, changes: { [ONE]: ['src/app.ts'], [TWO]: ['generated/api.ts'] } })
+  const { store, reviews } = engine(on, repo)
+  seed(store, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  const generated = { ...OVERLAP, file: 'generated/api.ts', line: 812, short_summary: 'Unused import' }
+  const { recorded } = await act($, reviews, 0, { findings: [generated], rechecked: [{ id: 'R1-1', fixed: true, why: 'the generator now pages' }] })
+  expect(recorded).toContain('Left out: 1 in files REVIEW.md skips.')
+  const text = String((await call).result)
+  expect(text).toContain('Found fixed this round: R1-1')
+  expect(text).toContain('1 finding was in files REVIEW.md skips, so it was left out.')
+  expect(ledgerOf(store).findings.map(one => [one.id, one.status])).toEqual([['R1-1', 'fixed']])
 })

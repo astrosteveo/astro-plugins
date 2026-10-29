@@ -111,6 +111,12 @@ export async function uncommitted(git: Git) {
     .map(entry => entry.slice(3))
 }
 
+/** Files git does not track and does not ignore, such as one just made. */
+export async function untracked(git: Git) {
+  const out = must(await git(['ls-files', '--others', '--exclude-standard', '-z']), 'list the untracked files')
+  return out.split('\0').filter(path => path !== '')
+}
+
 /** The files a diff from `from` to `to` touches, deleted ones included. */
 export async function changedFiles(git: Git, from: string, to: string) {
   const out = must(await git(['diff', '--name-only', '--no-renames', '--no-ext-diff', '-z', from, to]), 'list the changed files')

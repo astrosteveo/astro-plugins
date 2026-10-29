@@ -57,6 +57,10 @@ export type Round = {
   cap?: number
   /** Findings the round added. */
   kept: number
+  /** Nits the round left out past the cap of a few a round. */
+  nitsLeft?: number
+  /** Findings the review reported in files REVIEW.md skips, which the round left out. */
+  skippedOut?: number
   /** Earlier findings this round found fixed. */
   fixed: number
   /** Findings open when the round ended, earlier ones included. */
@@ -111,7 +115,15 @@ export type Run = {
 export type Activity = { calls: number; doing: string }
 
 /** Where the session's repository stands, for the band. */
-export type Repo = { branch: string; head: string; main: string; isDefault: boolean; ahead: number }
+export type Repo = {
+  branch: string
+  head: string
+  main: string
+  isDefault: boolean
+  ahead: number
+  /** Whether tracked files have changes no commit holds; left out, not known. */
+  isDirty?: boolean
+}
 
 declare module 'claude-code' {
   interface PluginState {

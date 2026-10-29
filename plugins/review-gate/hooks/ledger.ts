@@ -34,6 +34,22 @@ export const openFindings = (ledger: Ledger) => ledger.findings.filter(finding =
 /** Whether a review run with --fix fixed an open finding in the working tree, not committed yet. */
 export const isApplied = (finding: Finding) => finding.status === 'open' && finding.fix?.applied === true
 
+/** Where the repository stands now: its commit, and whether tracked files have changes. */
+export type Tree = { head: string; isDirty?: boolean }
+
+/**
+ * Where a fix a --fix review made stands: still in the working tree, committed since its round, or
+ * gone, its changes undone. Undefined for a finding with no fix. With no tree to look at, as when the
+ * round has just ended, the fix is in the working tree.
+ */
+export function fixState(ledger: Ledger, finding: Finding, tree?: Tree): 'uncommitted' | 'committed' | 'gone' | undefined {
+  if (!isApplied(finding)) return undefined
+  if (tree === undefined) return 'uncommitted'
+  const head = ledger.rounds.find(round => round.n === finding.fix?.round)?.head
+  if (head !== undefined && tree.head !== head) return 'committed'
+  return tree.isDirty === false ? 'gone' : 'uncommitted'
+}
+
 /** Rounds in a row, counted back from the last, that ended with findings open: what the cap reads. */
 export function streak(ledger: Ledger) {
   let count = 0
@@ -108,9 +124,11 @@ const CLEANUP =
 
 // The review's words for a security hole. A memory or resource leak, dependency or fault injection
 // and an author are not one; a leak or disclosure of data, a secret or a token is, and so is a hole
-// in access control, privileges, permissions or a sandbox.
+// in access control, privileges, permissions or a sandbox. A word that names a thing as well as a
+// hole, such as a permission prompt, a sandbox's setup or a tree's traversal, counts only with the
+// hole named: a permission bypass, a sandbox escape, a path traversal.
 const SECURITY =
-  /secur|(?<!(?:dependency|fault)[-_ ])inject|(?:^|[-_ ])o?auth(?:n|z|entication|ori[sz]ation)?(?:[-_ ]|$)|secret|credential|privilege|permission|access[-_ ]control|sandbox|(?:^|[-_ ])rce(?:[-_ ]|$)|code[-_ ]execution|(?:data|info|information|pii|token|key|password)s?[-_ ](?:leak|disclosure|exposure)|xss|ssrf|csrf|traversal/
+  /secur|(?<!(?:dependency|fault)[-_ ])inject|(?:^|[-_ ])o?auth(?:n|z|entication|ori[sz]ation)?(?:[-_ ]|$)|secret|credential|privilege|^permissions?$|permissions?[-_ ](?:bypass|check|escalation)|access[-_ ]control|sandbox[-_ ](?:escape|bypass)|(?:^|[-_ ])rce(?:[-_ ]|$)|code[-_ ]execution|(?:data|info|information|pii|token|key|password)s?[-_ ](?:leak|disclosure|exposure)|xss|ssrf|csrf|(?:path|directory|file)[-_ ]traversal/
 
 export function kindOf(reported: Reported): FindingKind {
   if (reported.security || SECURITY.test(reported.category)) return 'security'
@@ -122,7 +140,14 @@ export function severityOf(reported: Reported): Severity {
   return CLEANUP.test(reported.category) ? 'nit' : 'important'
 }
 
-const words = (text: string) => new Set(text.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? [])
+// Words that say nothing of a defect, so two findings that share only these are not alike.
+const STOP = new Set(
+  'the and are but for not nor its was were has had have this that these those then than when what which while with from into onto over under once only also each every any all one two can may will would could should does did doing been being their there they them his her our out off own same some such too very just more most other about after before again'.split(
+    ' ',
+  ),
+)
+
+const words = (text: string) => new Set((text.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? []).filter(word => !STOP.has(word)))
 
 /** How much two texts share, by their words: 0 for nothing, 1 for the same words. */
 export function overlap(a: string, b: string) {
@@ -146,17 +171,37 @@ export function sameDefect(a: Located, b: Located) {
   return (Math.abs(a.line - b.line) <= 3 && alike >= 0.15) || alike >= 0.45
 }
 
+/** Where a finding is, as `src/app.ts:12`, or the file alone when it names no line. */
+export const whereOf = (finding: { file: string; line: number }) => (finding.line > 0 ? `${finding.file}:${finding.line}` : finding.file)
+
 /** What the review called a finding, as `correctness, confirmed`; empty when it said nothing. */
 export const aboutOf = (finding: Finding) => [finding.category, finding.verdict].filter(word => word !== undefined && word !== '').join(', ')
 
 const RANK: Record<Severity, number> = { important: 0, 'pre-existing': 1, nit: 2 }
 
+/** The most nits a round raises: each one raised needs an answer before the pull request. */
+export const NIT_CAP = 3
+
 /**
  * Round `n`'s new findings, gravest first and security first among equals, leaving out those the
- * branch has had before in any state, so a round never raises a finding twice. The review's own list
- * is kept whole: it has merged its repeats already, and two findings a few lines apart can differ.
+ * branch has had before in any state, so a round never raises a finding twice, and the nits past
+ * NIT_CAP. The review's list is otherwise kept whole: it has merged its repeats already, and two
+ * findings a few lines apart can differ. Gives how many were repeats and how many nits were left out.
  */
-export function newFindings(reported: readonly Reported[], n: number, earlier: readonly Finding[]): Finding[] {
+export function sortOut(reported: readonly Reported[], n: number, earlier: readonly Finding[]) {
+  const fresh = graded(reported, n, earlier)
+  const added = fresh.filter((finding, at) => finding.severity !== 'nit' || fresh.slice(0, at).filter(one => one.severity === 'nit').length < NIT_CAP)
+  return {
+    added: added.map((finding, index) => ({ id: `R${n}-${index + 1}`, ...finding })),
+    repeats: reported.length - fresh.length,
+    nitsLeft: fresh.length - added.length,
+  }
+}
+
+/** Round `n`'s new findings, as sortOut keeps them. */
+export const newFindings = (reported: readonly Reported[], n: number, earlier: readonly Finding[]): Finding[] => sortOut(reported, n, earlier).added
+
+function graded(reported: readonly Reported[], n: number, earlier: readonly Finding[]): Omit<Finding, 'id'>[] {
   const kept: Omit<Finding, 'id'>[] = []
   for (const one of reported) {
     const title = (one.shortSummary || one.summary).slice(0, 200)
@@ -175,9 +220,7 @@ export function newFindings(reported: readonly Reported[], n: number, earlier: r
     }
     if (!earlier.some(other => sameDefect(other, finding))) kept.push(finding)
   }
-  return kept
-    .sort((a, b) => RANK[a.severity] - RANK[b.severity] || Number(b.kind === 'security') - Number(a.kind === 'security'))
-    .map((finding, index) => ({ id: `R${n}-${index + 1}`, ...finding }))
+  return kept.sort((a, b) => RANK[a.severity] - RANK[b.severity] || Number(b.kind === 'security') - Number(a.kind === 'security'))
 }
 
 /**
