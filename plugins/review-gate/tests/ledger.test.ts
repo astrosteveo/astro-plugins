@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { DEPTHS, decided, emptyLedger, excludes, fixedIds, fresh, globTest, merge, parseGuide, parseLedger, rank, spent, streak, tally } from '../hooks/ledger'
+import { DEPTHS, decided, emptyLedger, excludes, fixedIds, fresh, globTest, merge, parseGuide, rank, spent, streak, tally, toLedger } from '../hooks/ledger'
 import type { Candidate, CheckerReply, Kept } from '../hooks/ledger'
 import { lastJson, readFindings, readRisk, readVerdicts } from '../hooks/prompts'
 
@@ -189,11 +189,11 @@ test('the cap counts the rounds in a row that ended with findings open, from whe
 })
 
 test('a record in another shape reads as none', () => {
-  expect(parseLedger(undefined, 'feat/x')).toEqual(emptyLedger('feat/x'))
-  expect(parseLedger('not json', 'feat/x')).toEqual(emptyLedger('feat/x'))
-  expect(parseLedger('{"version": 2, "rounds": [], "findings": []}', 'feat/x')).toEqual(emptyLedger('feat/x'))
+  expect(toLedger(undefined, 'feat/x')).toEqual(emptyLedger('feat/x'))
+  expect(toLedger('not a record', 'feat/x')).toEqual(emptyLedger('feat/x'))
+  expect(toLedger({ version: 2, rounds: [], findings: [] }, 'feat/x')).toEqual(emptyLedger('feat/x'))
   const stored = { ...emptyLedger('feat/x'), reviewed: 'a'.repeat(40), rounds: [round(1, 0)] }
-  expect(parseLedger(JSON.stringify(stored), 'feat/x')).toEqual(stored)
+  expect(toLedger(stored, 'feat/x')).toEqual(stored)
 })
 
 test("an agent's reply is read from its last json block, or its last object", () => {

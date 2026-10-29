@@ -21,10 +21,7 @@ export const depthFor = (risk: Risk): Depth => (risk.tier === 'low' ? 'quick' : 
 
 export const emptyLedger = (branch: string): Ledger => ({ version: 1, branch, rounds: [], findings: [], streakFrom: 0 })
 
-/** Where a record lived before it moved into the plugin's store: read once, to bring it across. */
-export const ledgerFile = (store: string, branch: string) => `${store}/${encodeURIComponent(branch)}.json`
-
-/** A branch's record in the plugin's own store, under its repository's git folder. */
+/** A branch's key in the plugin's own store, named by its repository's git folder and the branch. */
 export const recordPrefix = (store: string) => `record:${store}:`
 export const recordKey = (store: string, branch: string) => `${recordPrefix(store)}${branch}`
 
@@ -34,15 +31,6 @@ export function toLedger(value: unknown, branch: string): Ledger {
   const record = value as Partial<Ledger>
   if (record.version !== 1 || !Array.isArray(record.rounds) || !Array.isArray(record.findings)) return emptyLedger(branch)
   return { ...emptyLedger(branch), ...record, branch }
-}
-
-export function parseLedger(text: unknown, branch: string): Ledger {
-  if (typeof text !== 'string') return emptyLedger(branch)
-  try {
-    return toLedger(JSON.parse(text), branch)
-  } catch {
-    return emptyLedger(branch)
-  }
 }
 
 export const openFindings = (ledger: Ledger) => ledger.findings.filter(finding => finding.status === 'open')

@@ -191,7 +191,6 @@ function engine(on: On, repo: World) {
       repo.now += Number(argv[1]) * 100
       if (argv[1] !== '1') log.push(`sleep ${argv[1]}`)
     }
-    if (argv[0] === 'rm') files.delete(argv[3] ?? '')
     return ran(0)
   })
   on('tool.call', (_, e) => {
@@ -610,18 +609,15 @@ test('a dismissal needs an open finding and a reason', async ($, on) => {
   expect(ledgerOf(store).findings[0]?.status).toBe('open')
 })
 
-test('a record a file held before the store did is brought across once, and the file removed', async ($, on) => {
-  const { store, files } = engine(on, world())
-  const file = `${ROOT}/.git/review-gate/feat%2Fapp.json`
-  files.set(
-    file,
-    JSON.stringify({ ...emptyLedger('feat/app'), rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE, approved: { sha: ONE, at: 5 } }),
-  )
+test('a record written as a file in the git folder vouches for nothing: only the plugin keeps records', async ($, on) => {
+  const { store, files, argvs } = engine(on, world())
+  files.set(`${ROOT}/.git/review-gate/feat%2Fapp.json`, JSON.stringify({ ...emptyLedger('feat/app'), rounds: [round(1, ONE, 0)], reviewed: ONE }))
   await start($)
-  expect(ledgerOf(store).findings.map(one => one.id)).toEqual(['R1-1'])
-  // An approval is given in the dialog, never read from a file.
-  expect(ledgerOf(store).approved).toBe(undefined)
-  expect(files.has(file)).toBe(false)
+  expect((await $.tool.call(open())).deny).toBe(
+    'Review first: feat/app at 1111111 has not been reviewed. Call mcp__review-gate__review with what the change is for, answer each finding, then try again.',
+  )
+  expect(store.has(KEY)).toBe(false)
+  expect(argvs.some(argv => argv[0] === 'gh' || argv[1] === 'push')).toBe(false)
 })
 
 test('a record begun by another branch of the same name reads as none, and records of deleted branches go', async ($, on) => {

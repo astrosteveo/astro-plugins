@@ -30,7 +30,10 @@ function must(ran: Ran, what: string) {
 export type Place = {
   root: string
   git: Git
-  /** The folder the branches' review records live in, inside the repository's git folder. */
+  /**
+   * What names the repository's review records in the plugin's store: a path in its git folder,
+   * which all its worktrees share. Nothing is written there.
+   */
   store: string
   /** The checked-out branch; empty when HEAD is detached. */
   branch: string

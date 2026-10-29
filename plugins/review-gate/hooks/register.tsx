@@ -5,7 +5,7 @@ import { branches, firstCommit, locate, short } from './git'
 import type { Place } from './git'
 import { RAW_PR, gitArgsRefusal, gitArgv, gitGrepArgv, rgArgv } from './guard'
 import type { Search } from './guard'
-import { ROUND_CAP, emptyLedger, ledgerFile, openFindings, parseLedger, recordKey, recordPrefix, riskNow, toLedger } from './ledger'
+import { ROUND_CAP, emptyLedger, openFindings, recordKey, recordPrefix, riskNow, toLedger } from './ledger'
 import { CHECKER, REVIEWER } from './prompts'
 import { CHECKER_TYPE, REVIEWER_TYPE, mailbox, runRound, summary } from './review'
 import type { RoundAsk } from './review'
@@ -154,23 +154,12 @@ async function identity(place: Place, sha: string) {
 }
 
 /**
- * A branch's record, from the plugin's own store. One a file held before the store did is brought
- * across once, and its file removed. A record begun by another commit than the branch's first was
- * left by an earlier branch of the same name, and reads as none.
+ * A branch's record, from the plugin's own store and nowhere else: a file in the repository is
+ * Claude's to write. A record begun by another commit than the branch's first was left by an
+ * earlier branch of the same name, and reads as none.
  */
 async function load($: EngineInterface, place: Place, branch = place.branch, sha = place.head) {
-  const key = recordKey(place.store, branch)
-  let stored: unknown = await $.store.get(key)
-  if (stored === undefined) {
-    const file = ledgerFile(place.store, branch)
-    const text = await $.fs.read(file).catch(() => undefined)
-    if (typeof text === 'string') {
-      stored = { ...parseLedger(text, branch), approved: undefined }
-      await $.store.set(key, stored)
-      await runIn($, ['rm', '-f', '--', file], place.root, 10_000)
-    }
-  }
-  const ledger = toLedger(stored, branch)
+  const ledger = toLedger(await $.store.get(recordKey(place.store, branch)), branch)
   if (ledger.first === undefined) return ledger
   // A head this clone cannot place (a pull request not fetched) keeps its record: its review is
   // still matched to the exact commit.

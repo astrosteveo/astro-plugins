@@ -71,7 +71,7 @@ export type AgentStat = { label: string; ms: number; calls: number; state: 'done
 /** Tokens a round spent. `input` counts what was sent at full price, cache writes included. */
 export type Tokens = { input: number; output: number; cached: number }
 
-/** A branch's review record, kept in the repository's git folder. */
+/** A branch's review record, kept in the plugin's own store, outside the repository. */
 export type Ledger = {
   version: 1
   branch: string
