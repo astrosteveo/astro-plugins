@@ -200,13 +200,14 @@ async function headOf($: EngineInterface, dir: string) {
   return { sha: sha!, message: (message ?? '').trim() }
 }
 
-// Commits by hash, author time (seconds) and message: `git log` over a range, each record split on
-// a byte no message holds. Only commits first written at or after `since` are kept: a commit
-// pulled, checked out or made before the session is not Claude's, and a rebase, amend or
-// cherry-pick keeps a commit's author time. A message git wrote from another commit's is not
-// Claude's either.
-async function commitsIn($: EngineInterface, dir: string, range: readonly string[], since: number) {
-  const out = await output($, ['git', 'log', '--format=%H%x00%at%x00%B%x1e', '--max-count=50', ...range], dir)
+// Commits by hash, time (seconds) and message: `git log` over a range, each record split on a byte
+// no message holds. Only commits whose time is at or after `since` are kept. `clock` says which
+// time: the author's, which a rebase, amend or cherry-pick keeps, tells a commit first written in
+// the session; the committer's tells one written or rewritten by the command just run. A message
+// git wrote from another commit's is not Claude's.
+async function commitsIn($: EngineInterface, dir: string, range: readonly string[], since: number, clock: 'author' | 'committer' = 'author') {
+  const format = clock === 'author' ? '--format=%H%x00%at%x00%B%x1e' : '--format=%H%x00%ct%x00%B%x1e'
+  const out = await output($, ['git', 'log', format, '--max-count=50', ...range], dir)
   return (out ?? '')
     .split('\x1e')
     .map(r => r.trim())
@@ -218,18 +219,27 @@ async function commitsIn($: EngineInterface, dir: string, range: readonly string
     .filter(c => !(c.time < since) && !isGenerated(c.message))
 }
 
+// The messages of the commits before `sha`, so a rewrite that kept its message is known.
+async function messagesBefore($: EngineInterface, dir: string, sha: string) {
+  const out = await output($, ['git', 'log', '--format=%B%x1e', '--max-count=200', sha], dir)
+  return new Set((out ?? '').split('\x1e').map(m => m.trim()))
+}
+
 // What a finished shell command published that has Claudisms, as notes for the model to act on. A
 // commit is found by comparing the session's repository before and after a git commit, merge or
-// rebase, keeping the commits first written in this session, and by the line git prints for it,
-// so a quiet commit and one made elsewhere are both read. A commit that keeps an existing message
-// (`--no-edit`, `-C`, a fixup) is not Claude's text to answer for.
+// rebase, keeping the commits the command wrote (by committer time) whose message is new (a rebase
+// or an amend that kept its message is not), and by the line git prints for it, so a quiet commit
+// and one made elsewhere are both read. A commit that keeps an existing message (`--no-edit`, `-C`,
+// a fixup) is not Claude's text to answer for.
 async function afterShell($: EngineInterface, command: string, text: string, cwd: string, since: number, before?: { sha: string; message: string }) {
   const items = published(command, text)
   if (before !== undefined && !reusesMessage(command)) {
     const after = await headOf($, cwd)
-    if (after !== undefined && after.sha !== before.sha)
-      for (const c of (await commitsIn($, cwd, [`${before.sha}..${after.sha}`], since)).reverse())
-        if (!items.some(i => i.kind === 'commit' && c.sha.startsWith(i.sha))) items.push({ kind: 'commit', sha: c.sha.slice(0, 7) })
+    if (after !== undefined && after.sha !== before.sha) {
+      const seen = await messagesBefore($, cwd, before.sha)
+      for (const c of (await commitsIn($, cwd, [`${before.sha}..${after.sha}`], since, 'committer')).reverse())
+        if (!seen.has(c.message) && !items.some(i => i.kind === 'commit' && c.sha.startsWith(i.sha))) items.push({ kind: 'commit', sha: c.sha.slice(0, 7) })
+    }
   }
   if (items.length === 0) return []
   const dirs = directories(command, cwd, await $.env.get('HOME'))
@@ -261,22 +271,34 @@ async function repoRoot($: EngineInterface, path: string) {
   return undefined
 }
 
-// Each session's start, by its id, kept across restarts so a resumed session keeps its own.
-const STARTS = 'sessionStarts'
+// Each session's start, under a key of its own, kept across restarts so a resumed session keeps
+// its own; two sessions writing at once never drop each other's.
+const START = 'start:'
 const MONTH = 30 * 24 * 60 * 60
+// How far back a session the mod meets part-way through is taken to have started.
+const UNKNOWN_START = 12 * 60 * 60
 
-// When the session started, in seconds, as git counts commit times. A session the mod first sees
-// part-way through starts when it is first asked; starts older than a month are dropped.
-async function sessionStart($: EngineInterface) {
-  const id = await $.session.id()
-  const stored: unknown = await $.store.get(STARTS)
-  const starts = typeof stored === 'object' && stored !== null ? (stored as Record<string, unknown>) : {}
-  const known = starts[id]
+// When the session started, in seconds, as git counts commit times. At the session's start it is
+// now; a session with no start stored (the mod enabled part-way through) is taken to have started
+// twelve hours ago, so its earlier commits are still checked.
+async function sessionStart($: EngineInterface, starting = false) {
+  const key = `${START}${await $.session.id()}`
+  const known: unknown = await $.store.get(key)
   if (typeof known === 'number') return known
   const now = Math.floor(Date.now() / 1000)
-  const kept = Object.fromEntries(Object.entries(starts).filter(([, t]) => typeof t === 'number' && t > now - MONTH))
-  await $.store.set(STARTS, { ...kept, [id]: now })
-  return now
+  const start = starting ? now : now - UNKNOWN_START
+  await $.store.set(key, start)
+  return start
+}
+
+// Starts older than a month are dropped.
+async function pruneStarts($: EngineInterface) {
+  const old = Math.floor(Date.now() / 1000) - MONTH
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith(START)) continue
+    const t: unknown = await $.store.get(key)
+    if (typeof t !== 'number' || t < old) await $.store.delete(key)
+  }
 }
 
 // The check of a push: every commit it would send that no remote has yet and that was first
@@ -292,10 +314,12 @@ async function checkPush($: EngineInterface, memory: Memory, dir: string, refs: 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.tool.register(SCAN_TOOL)
-    // The first start only: a reload or a resumed session keeps the time the session began.
-    await sessionStart($)
+    // The first start only: a reload or a resumed session keeps the time the session began. A store
+    // that fails leaves the start to be set when a push first asks.
+    await sessionStart($, true).catch(() => undefined)
+    await pruneStarts($).catch(() => undefined)
     return next(e)
-  })
+  }).catch((_, e, next) => next(e))
 
   // Every agent the session starts writes under the style too. The style is forced while the mod is
   // on, so no setting is checked. A hook that fails leaves the spawn as it was, so a fault here

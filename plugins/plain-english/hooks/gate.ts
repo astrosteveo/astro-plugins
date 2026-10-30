@@ -123,11 +123,21 @@ const unquoted = (s: string) => s.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""')
 // `git commit` itself. A line with one such commit and one new message is still read.
 export function reusesMessage(command: string) {
   const found = [...unquoted(command).matchAll(new RegExp(`${GIT}commit\\b([^;&|\\n]*)`, 'g'))]
-  return found.length > 0 && found.every(m => /(?:^|\s)(?:--no-edit|-[cC]|--reuse-message|--reedit-message|--fixup|--squash)(?=[\s=]|$)/.test(m[2]!))
+  const has = (args: string, options: string) => new RegExp(`(?:^|\\s)(?:${options})(?=[\\s=]|$)`).test(args)
+  // A fixup or squash given its own -m or -F carries Claude's words after git's subject.
+  const reuses = (args: string) =>
+    has(args, '--no-edit|-[cC]|--reuse-message|--reedit-message') || (has(args, '--fixup|--squash') && !has(args, '-m|-F|--message|--file'))
+  return found.length > 0 && found.every(m => reuses(m[2]!))
 }
 
-// A message git writes from another commit's: a fixup, a squash, a revert or a merge of a branch.
-export const isGenerated = (message: string) => /^(?:fixup!|squash!|amend!|Revert "|Merge (?:branch|remote-tracking branch|pull request|tag) )/.test(message)
+// A message git writes from another commit's: a fixup, a squash, a revert or a merge of a branch,
+// as git words it, with no body of Claude's below the subject.
+export function isGenerated(message: string) {
+  const [subject = '', ...rest] = message.trim().split('\n')
+  const body = rest.join('\n').trim()
+  if (!/^(?:fixup!|squash!|amend!|Revert "|Merge (?:branch|remote-tracking branch|pull request|tag) )/.test(subject)) return false
+  return body === '' || /^This reverts commit [0-9a-f]{7,40}\.?$/.test(body)
+}
 
 // git prints `[branch abc1234] subject` for each commit it makes, unless told to be quiet; the
 // session's repository is compared before and after as well. gh prints the URL of what it made on

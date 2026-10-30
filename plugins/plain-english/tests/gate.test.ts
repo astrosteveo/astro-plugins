@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
-import { directories, gh, isTestPath, pieces, published, pushedRefs, pushes, resolvePath, reusesMessage } from '../hooks/gate'
+import { directories, gh, isGenerated, isTestPath, pieces, published, pushedRefs, pushes, resolvePath, reusesMessage } from '../hooks/gate'
 import { parseFindings } from '../hooks/judge'
 
 const STYLE = '---\nname: Plain English\ndescription: Plain words\n---\n\n# Plain English\n\nWrite plainly.\n'
@@ -32,6 +32,8 @@ type World = {
   missing: string[]
   // The mod's store, kept across sessions.
   store: Map<string, unknown>
+  // The messages in the history before a command.
+  history: string[]
 }
 
 const world = (over: Partial<World> = {}): World => ({
@@ -49,6 +51,7 @@ const world = (over: Partial<World> = {}): World => ({
   unpushed: [],
   missing: [],
   store: new Map(),
+  history: [],
   ...over,
 })
 
@@ -61,6 +64,11 @@ function engine(on: On, w: World) {
   on('store.get', (_, e) => ({ value: w.store.get(e.key) }) as never)
   on('store.set', (_, e) => {
     w.store.set(e.key, e.value)
+    return { value: undefined } as never
+  })
+  on('store.keys', () => ({ value: [...w.store.keys()] }) as never)
+  on('store.delete', (_, e) => {
+    w.store.delete(e.key)
     return { value: undefined } as never
   })
   on('env.get', () => ({ value: '/home/u' }))
@@ -94,10 +102,12 @@ function engine(on: On, w: World) {
         const head = w.heads.shift()
         return head === undefined ? ran(128, '') : ran(0, `${head.sha}\0${head.message}\n`)
       }
-      if (argv.includes('--format=%H%x00%at%x00%B%x1e')) {
+      if (argv.includes('--format=%H%x00%at%x00%B%x1e') || argv.includes('--format=%H%x00%ct%x00%B%x1e')) {
         const range = argv.includes('--remotes') ? w.unpushed : w.between
         return ran(0, range.map(c => `${c.sha}\0${c.time ?? Math.floor(Date.now() / 1000)}\0${c.message}\n\x1e`).join(''))
       }
+      // The messages already in the history before a command.
+      if (argv.includes('--format=%B%x1e')) return ran(0, w.history.map(m => `${m}\n\x1e`).join(''))
       const commit = w.commits.get(argv.at(-1)!)
       return commit === undefined || commit.dir !== e.init?.cwd ? ran(128, '') : ran(0, `${commit.message}\n`)
     }
@@ -586,11 +596,58 @@ test('a doc in a test folder not made yet is found by the nearest folder that ex
 })
 
 test('the session start is kept by session id, so a resumed session keeps its own', async ($, on) => {
-  const w = world({ unpushed: [{ ...NEW, time: 1000 }], store: new Map([['sessionStarts', { s1: 500 }]]) })
+  const now = Math.floor(Date.now() / 1000)
+  const w = world({ unpushed: [{ ...NEW, time: now - 3600 }], store: new Map([['start:s1', now - 7200]]) })
   engine(on, w)
   on('tool.register', (_, e) => ({ value: { tool: `mcp__plain-english__${e.name}` } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
-  expect(w.store.get('sessionStarts')).toEqual({ s1: 500 })
+  expect(w.store.get('start:s1')).toBe(now - 7200)
   expect(refusal(await call($, 'Bash', { command: 'git push' }))).toContain('commit b000000')
+})
+
+// The fixes of review round 6
+
+test('a session with no start stored is taken to have begun hours ago, not at the push', async ($, on) => {
+  const w = world({ unpushed: [{ ...NEW, time: Math.floor(Date.now() / 1000) - 3600 }] })
+  engine(on, w)
+  expect(refusal(await call($, 'Bash', { command: 'git push' }))).toContain('commit b000000')
+  expect(w.store.get('start:s1')).toBeLessThan(Math.floor(Date.now() / 1000) - 3600)
+})
+
+test('a quiet amend that gives an earlier commit a new message is read back; one that kept it is not', async ($, on) => {
+  const amended = { sha: `c${'0'.repeat(39)}`, message: 'fix: a robust, seamless fix' }
+  const w = world({ heads: [OLD, amended], between: [amended], history: [OLD.message] })
+  engine(on, w)
+  w.commits.set('c000000', { dir: '/work', message: amended.message })
+  expect(notes(await call($, 'Bash', { command: 'git commit --amend -q -m "fix: a robust, seamless fix"' }))).toContain('"robust"')
+  // A rebase replays commits whose messages were already there.
+  w.heads.push(OLD, amended)
+  w.history.push(amended.message)
+  expect(notes(await call($, 'Bash', { command: 'git rebase main' }))).toBe('')
+})
+
+test('a generated subject with a body of Claude’s own is read', async ($, on) => {
+  const merge = { sha: `d${'0'.repeat(39)}`, message: "Merge branch 'feat'\n\nThis seamlessly unlocks a robust flow." }
+  const w = world({ heads: [OLD, merge], between: [merge] })
+  engine(on, w)
+  w.commits.set('d000000', { dir: '/work', message: merge.message })
+  expect(notes(await call($, 'Bash', { command: 'git merge --no-ff feat -m "Merge branch \'feat\'" -m "This seamlessly unlocks a robust flow."' }))).toContain('"robust"')
+})
+
+test('a squash with its own message is Claude’s text; a revert as git words it is not', () => {
+  expect(reusesMessage('git commit --squash=abc -m "A robust body"')).toBe(false)
+  expect(reusesMessage('git commit --fixup=abc')).toBe(true)
+  expect(isGenerated('Revert "feat: x"\n\nThis reverts commit 1a2b3c4d.')).toBe(true)
+  expect(isGenerated('Revert "feat: x"\n\nIt was robust.')).toBe(false)
+})
+
+test('a store that fails does not break the session start', async ($, on) => {
+  const w = world()
+  engine(on, w)
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__plain-english__${e.name}` } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  w.store = { get: () => undefined, set: () => { throw new Error('disk full') }, keys: () => [], delete: () => true } as never
+  const r = await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
+  expect(r).toEqual({ cwd: '/work' })
 })
