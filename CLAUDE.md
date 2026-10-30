@@ -9,8 +9,6 @@ claude plugin validate plugins/<name>
 claude plugin test plugins/<name>
 ```
 
-Tests prove the logic. They do not prove what a person sees: how a pane, band or transcript row actually draws in a terminal. For that, drive a real session in tmux.
-
 ## Drive your work with tmux
 
 Run a second Claude Code session in a detached tmux session with the plugin loaded, drive it with keys, and read the screen back. Never drive the user's own session.
