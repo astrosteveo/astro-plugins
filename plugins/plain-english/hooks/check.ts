@@ -70,18 +70,22 @@ export async function problems($: EngineInterface, given: string, options: Optio
   const hits = added(scan(text), before)
   const found: Problem[] = hits.filter(h => h.tier === 'rewrite').map(h => ({ quote: h.text, why: h.why }))
   const read = forModel(strip(options.judged ?? given))
-  if (proseWords(read) < JUDGED_WORDS) return found
+  const candidates = hits.filter(h => h.tier === 'check')
+  // A short text goes to the model only when the scan left words for a reader to decide.
+  if (proseWords(read) < JUDGED_WORDS && candidates.length === 0) return found
   const style = await rules($)
   if (style === undefined) return found
-  const candidates = hits.filter(h => h.tier === 'check')
   const judged = await judge($, style, read.slice(0, JUDGED_CHARS), candidates).catch(() => undefined)
   if (judged === undefined) return found
   const old = flat(before)
+  const now = flat(text)
+  const count = (s: string, q: string) => s.split(q).length - 1
   // A finding inside words the scan already reported adds nothing; one that holds them says more.
   const covered = (q: string) => found.some(p => flat(p.quote).includes(q))
   for (const f of judged) {
     const q = flat(f.quote)
-    if ((old !== '' && old.includes(q)) || covered(q)) continue
+    // Words the text had before are not the write's, unless it adds another of them.
+    if ((old !== '' && count(old, q) >= Math.max(1, count(now, q))) || covered(q)) continue
     found.push({ quote: f.quote, why: f.why, fix: f.fix })
   }
   return found

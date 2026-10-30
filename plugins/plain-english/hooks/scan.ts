@@ -99,7 +99,7 @@ const RULES: readonly Rule[] = [
   check(/\bnuanced?\b/gi, 'vague word. Say what the distinction is.'),
 
   // Negative parallelism, the most cited AI form.
-  rewrite(/\b(?:it|this|that)(?:['’]s| is| was) not (?:just|only|merely|simply) [^.!?]{1,80}?[,;:—–]\s*(?:it|this|that)(?:['’]s| is| was)\b/gi, 'negative parallelism ("not just X, it\'s Y"). Say Y.'),
+  rewrite(/\b(?:it|this|that)(?:['’]s not| is not| was not| isn['’]t| wasn['’]t) (?:just|only|merely|simply) [^.!?]{1,80}?[,;:—–]\s*(?:it|this|that)(?:['’]s| is| was)\b/gi, 'negative parallelism ("not just X, it\'s Y"). Say Y.'),
   rewrite(/\bnot only\b[^.!?]{1,80}?\bbut(?: also)?\b/gi, 'negative parallelism ("not only X but Y"). Say both plainly.'),
   rewrite(/\bNo [^.!?]{1,40}\. No [^.!?]{1,40}\. Just\b/g, 'staccato negation ("No X. No Y. Just Z."). Say Z.'),
   check(/\b(?:it|this|that) (?:isn['’]t|is not|wasn['’]t|was not) (?:about )?[^.!?]{1,60}?[.;,:—–]\s*(?:it|this|that)(?:['’]s| is| was)\b/gi, 'may be negative parallelism ("this isn\'t X. It\'s Y."). If so, say Y.'),

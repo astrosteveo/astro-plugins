@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { list, problems } from './check'
-import { type Piece, gh, pieces } from './gate'
+import { type Piece, type Published, directories, gh, pieces, published, resolvePath } from './gate'
 import { report, scan } from './scan'
 import { STYLE_FILE, hasRules, parseStyle, withRules } from './style'
 
@@ -100,13 +100,28 @@ async function scanFor($: EngineInterface, e: { path?: unknown; text?: unknown; 
   return { result: await judged($, 'your last reply', value) }
 }
 
+// A short hash of a text (cyrb53), so what the gate remembers stays small.
+function hash(text: string) {
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    h1 = Math.imul(h1 ^ c, 2654435761)
+    h2 = Math.imul(h2 ^ c, 1597334677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
+}
+
 type Memory = {
   // The calls the gate refused, by what they carry. The same call made again goes through: the
   // model read the findings and judged them wrong, as for a word used literally. A pass is kept
   // until the call runs, so a call another hook refuses keeps it.
   held: Set<string>
-  // Texts that passed, so the gh that review-gate runs for a pull request already checked here
-  // costs no second model call.
+  // Texts that passed, each with what it is and what it replaced, so the gh that review-gate runs
+  // for a pull request already checked here costs no second model call. A text cleared in one
+  // place is checked again in another.
   cleared: Set<string>
 }
 
@@ -114,17 +129,18 @@ type Memory = {
 async function gate($: EngineInterface, { held, cleared }: Memory, kind: string, found: readonly Piece[]) {
   const ready = (await Promise.all(found.map(p => prepare($, p)))).map((p, i) => (p === undefined ? undefined : { ...p, what: found[i]!.what }))
   const known = ready.filter(p => p !== undefined)
-  const key = `${kind}|${known.map(p => `${p.what}\u0000${flat(p.text)}`).join('\u0001')}`
+  const key = hash(`${kind}\u0000${known.map(p => `${p.what}\u0000${flat(p.text)}`).join('\u0001')}`)
+  const clearKey = (p: (typeof known)[number]) => hash(`${p.what}\u0000${p.scanned}\u0000${p.before}`)
   if (known.length === 0) return { key }
   if (held.has(key)) {
-    for (const p of known) cleared.add(flat(p.text))
+    for (const p of known) cleared.add(clearKey(p))
     return { key, passed: true }
   }
   const refusals: string[] = []
   for (const p of known) {
-    if (cleared.has(flat(p.text))) continue
+    if (cleared.has(clearKey(p))) continue
     const problem = await problems($, p.scanned, { before: p.before, judged: p.judged })
-    if (problem.length === 0) cleared.add(flat(p.text))
+    if (problem.length === 0) cleared.add(clearKey(p))
     else refusals.push(`In ${p.what}:\n${list(problem)}`)
   }
   if (refusals.length === 0) return { key }
@@ -133,6 +149,60 @@ async function gate($: EngineInterface, { held, cleared }: Memory, kind: string,
     key,
     deny: `plain-english held this call: its prose has Claudisms. Rewrite them in plain English and make the call again.\n\n${refusals.join('\n\n')}\n\nIf a finding is wrong, such as a word used literally, make the same call again unchanged and it goes through.`,
   }
+}
+
+// A command's output, or undefined where it failed.
+async function output($: EngineInterface, argv: string[], cwd: string) {
+  const ran = await $.process.run(argv, { cwd, timeoutMs: 20_000 }).catch(() => undefined)
+  return ran === undefined || ran.exitCode !== 0 ? undefined : ran.stdout
+}
+
+const parsed = (json: string | undefined): Record<string, unknown> => {
+  try {
+    const value: unknown = JSON.parse(json ?? '')
+    return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+// The text a shell command published, read back as it now stands, with how to fix it. A commit is
+// looked for in each directory the command may have made it in.
+async function readBack($: EngineInterface, item: Published, dirs: readonly string[]) {
+  if (item.kind === 'commit') {
+    for (const dir of dirs) {
+      const text = await output($, ['git', 'log', '-1', '--format=%B', item.sha], dir)
+      if (text !== undefined)
+        return { what: `the message of commit ${item.sha}`, text: text.trim(), fix: 'If it is the last commit, amend it with git commit --amend and a rewritten -m or -F; if not, leave it.' }
+    }
+    return undefined
+  }
+  if (item.kind === 'comment') {
+    const json = parsed(await output($, ['gh', 'api', `repos/${item.repo}/issues/comments/${item.id}`], dirs[0]!))
+    const text = asText(json.body)
+    return text === '' ? undefined : { what: `the comment ${item.url}`, text, fix: `Rewrite it with gh api -X PATCH repos/${item.repo}/issues/comments/${item.id} -F body=@FILE.` }
+  }
+  const json = parsed(await output($, ['gh', item.kind, 'view', item.url, '--json', 'title,body'], dirs[0]!))
+  const text = [asText(json.title), asText(json.body)].filter(t => t !== '').join('\n\n')
+  const what = item.kind === 'pr' ? 'pull request' : 'issue'
+  return text === '' ? undefined : { what: `the ${what} ${item.url}`, text, fix: `Rewrite it with gh ${item.kind} edit ${item.url} --title and --body-file.` }
+}
+
+// What a finished shell command published that has Claudisms, as notes for the model to act on.
+async function afterShell($: EngineInterface, command: string, text: string) {
+  const items = published(command, text)
+  if (items.length === 0) return []
+  const cwd = await $.session.cwd()
+  const dirs = directories(command, cwd, await $.env.get('HOME'))
+  const notes: string[] = []
+  for (const item of items) {
+    const back = await readBack($, item, dirs)
+    if (back === undefined) continue
+    const problem = await problems($, back.text)
+    if (problem.length > 0)
+      notes.push(`plain-english: ${back.what} has Claudisms. ${back.fix} Fix these, unless a finding is wrong (such as a word used literally):\n${list(problem)}`)
+  }
+  return notes
 }
 
 export const register: Register = on => {
@@ -169,11 +239,19 @@ export const register: Register = on => {
 
   const memory: Memory = { held: new Set(), cleared: new Set() }
 
-  // A commit message, a pull request or issue, or a prose file is checked before it is written,
-  // and a call that would publish Claudisms is refused with the list to fix. A check that fails
-  // lets the call through.
+  // A prose file, or a pull request or issue opened through a tool, is checked before it is
+  // written, and a call that would publish Claudisms is refused with the list to fix. A shell
+  // command is checked once it has run: what it published (a commit's message, a pull request,
+  // issue or comment) is read back, and Claude is told to fix any Claudisms in it. A check that
+  // fails lets the call through.
   on('tool.call', async ($, e, next) => {
-    const found = pieces(e.tool, e as unknown as Record<string, unknown>, await $.session.cwd())
+    if (e.tool === 'Bash') {
+      const result = await next(e)
+      if (result.deny !== undefined || result.isError === true) return result
+      const notes = await afterShell($, asText(e.command), result.text ?? '')
+      return notes.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...notes] }
+    }
+    const found = pieces(e.tool, e as unknown as Record<string, unknown>, await $.session.cwd(), await $.env.get('HOME'))
     if (found.length === 0) return next(e)
     const checked = await gate($, memory, e.tool, found)
     if (checked.deny !== undefined) return { deny: checked.deny }
@@ -188,7 +266,7 @@ export const register: Register = on => {
     const program = e.argv[0] ?? ''
     if (program !== 'gh' && !program.endsWith('/gh')) return next(e)
     const cwd = await $.session.cwd()
-    const dir = e.init?.cwd === undefined ? cwd : e.init.cwd.startsWith('/') ? e.init.cwd : `${cwd}/${e.init.cwd}`
+    const dir = e.init?.cwd === undefined ? cwd : resolvePath(cwd, e.init.cwd)
     const found = gh(['gh', ...e.argv.slice(1)], dir, e.init?.stdin)
     if (found.length === 0) return next(e)
     const checked = await gate($, memory, 'gh', found)
