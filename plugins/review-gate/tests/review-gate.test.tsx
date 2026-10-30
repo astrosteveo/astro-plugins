@@ -111,6 +111,8 @@ function engine(on: On, repo: World) {
   const asked: string[] = []
   // The agents stopped.
   const stops: string[] = []
+  // The sleeps a round held while it waited, by their length in seconds.
+  const sleeps: number[] = []
   // What the risk classifier was asked, and every program run, by its argv.
   const judged: { model: string; prompt: string; cached: boolean }[] = []
   const argvs: string[][] = []
@@ -239,13 +241,15 @@ function engine(on: On, repo: World) {
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
   })
-  // A sleep the round holds while it waits: it takes a moment and moves the clock a tenth of its length.
+  // A sleep the round holds while it waits: two milliseconds a second, and the clock moves by its length.
   on('process.spawn', async function* (_, e) {
     const argv = e.argv.map(String)
     if (argv[0] !== 'sleep') return { value: { code: 0, signal: null } }
+    sleeps.push(Number(argv[1]))
     if (repo.noSleep === true) return { value: { code: 127, signal: null } }
-    await new Promise<void>(resolve => setTimeout(resolve, 1))
-    repo.now += Number(argv[1]) * 100
+    // Real time in step with its length, so a longer sleep can be woken before it ends.
+    await new Promise<void>(resolve => setTimeout(resolve, Number(argv[1]) * 2))
+    repo.now += Number(argv[1]) * 1000
     return { value: { code: 0, signal: null } }
   })
   on('process.run', async (_, e) => {
@@ -302,7 +306,7 @@ function engine(on: On, repo: World) {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  return { store, files, reviews, asked, judged, argvs, stops, ended }
+  return { store, files, reviews, asked, judged, argvs, stops, ended, sleeps }
 }
 
 // The test's engine, for the calls only it makes.
@@ -1732,7 +1736,7 @@ test("an origin HEAD that names a branch pruned from origin but kept here compar
   expect(argvs.find(argv => argv[0] === 'gh' && argv[2] === 'create')).toContain('develop')
 })
 
-test('an idle review that has not recorded may be waiting on a notice, so it is waited for; one that stays so is stopped', async ($, on) => {
+test('an idle review that has not recorded may be waiting on a notice, so it is waited for; one that stays so for minutes is stopped', async ($, on) => {
   const repo = world({ background: true, endsAs: 'idle' })
   const { reviews, stops } = engine(on, repo)
   await start($)
@@ -1753,7 +1757,7 @@ test('an idle review that has not recorded may be waiting on a notice, so it is 
   expect(String((await call).result)).toContain('R1-1 · important')
   expect(stops).toEqual([one.id])
 
-  // One that stays idle and never records is given up on after a minute, and stopped.
+  // One that stays idle and never records is given up on after five minutes, and stopped.
   const again = $.command.run({ command: 'review-gate', args: '', ...person })
   await until($, 'the second review', () => reviews.length === 2)
   const two = reviews[1] as Review
@@ -1777,4 +1781,48 @@ test('a background review that has handed back all the round asks ends the wait 
   expect(String((await call).result)).toContain('R1-1 · important')
   // Both stopped, so neither runs on unseen.
   expect([...stops].sort()).toEqual(['angle-1', one.id].sort())
+})
+
+test("a foreground review's reply already in hand is taken with no sleep", async ($, on) => {
+  const { reviews, sleeps } = engine(on, world())
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
+  await call
+  expect(sleeps).toEqual([])
+})
+
+test("a reply from before the record is not taken for the review's closing words, and every turn's cost counts", async ($, on) => {
+  const repo = world({ background: true })
+  const { store, reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  repo.pauses = true
+  await reply($, one.id, 'Waiting for the tests to run.')
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
+  let finished = false
+  void call.then(() => {
+    finished = true
+  })
+  for (let wait = 0; wait < 10; wait++) await tick($)
+  expect(finished).toBe(false)
+  await reply($, one.id, 'Done.')
+  await call
+  // The classifier's turn and both of the review's.
+  expect(ledgerOf(store).rounds[0]?.tokens).toEqual({ input: 2001, output: 201, cached: 1000 })
+})
+
+test('a --fix round with nothing to fix ends once the findings are in, and the review is told so', async ($, on) => {
+  const repo = world({ background: true, pauses: true })
+  const { reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW, fix: true })
+  const { recorded } = await act($, reviews, 0)
+  expect(recorded).toContain('There is nothing to fix: finish as your instructions say.')
+  const now = repo.now
+  expect(String((await call).result)).toContain('Review round 1')
+  // No wait for idle minutes: the clock moved by the few sleeps of the risk check at most.
+  expect(repo.now - now < 60_000).toBe(true)
 })

@@ -6,7 +6,7 @@ import type { Place } from './git'
 import { opensOrMerges } from './guard'
 import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, nothingOpen, openFindings, recordKey, recordPrefix, rereadWhy, sortOut, standing, toLedger, whereOf } from './ledger'
 import { RECORD, capOf, readFixes, readRecord, reviewSection } from './prompts'
-import { SKILL, bell, isLevel, mailbox, plus, runRound, summary, teamOf } from './review'
+import { SKILL, bell, isLevel, mailbox, owesFixes, plus, runRound, summary, teamOf } from './review'
 import type { Pending, RoundAsk } from './review'
 import { band, card } from './views'
 
@@ -644,6 +644,7 @@ export const register: Register = (on, options) => {
       const unknown = fixes.filter(one => !known.has(one.id)).map(one => one.id)
       if (unknown.length > 0) return { deny: `Round ${pending.plan.n} has no open finding ${unknown.join(', ')}: give the ids its first reply named.` }
       pending.fixes = fixes
+      mail.forget(e.agentId)
       doorbell.ring()
       const applied = fixes.filter(one => one.applied).length
       return { result: `Recorded ${applied} fix${applied === 1 ? '' : 'es'} in the working tree. End with two or three sentences: review-gate shows the findings and fixes itself.` }
@@ -658,6 +659,8 @@ export const register: Register = (on, options) => {
     const skippedOut = read.findings.length - kept.length
     const record = { raised: read.findings.length, rechecked: read.rechecked, added, repeats, nitsLeft, skippedOut }
     pending.record = record
+    // The review's closing words come in a turn's end after this call: one before it is stale.
+    mail.forget(e.agentId)
     doorbell.ring()
     const left = [
       repeats > 0 ? `${repeats} the branch has had before` : '',
@@ -668,7 +671,7 @@ export const register: Register = (on, options) => {
       result: `Recorded round ${pending.plan.n}: ${
         added.length === 0 ? 'no new findings' : added.map(finding => `${finding.id} ${whereOf(finding)} ${finding.title}`).join('; ')
       }.${left.length > 0 ? ` Left out: ${left.join(', ')}.` : ''} ${
-        pending.plan.fix ? 'Now fix them, then record the fixes as your instructions say.' : 'Finish as your instructions say.'
+        owesFixes(pending) ? 'Now fix them, then record the fixes as your instructions say.' : pending.plan.fix ? 'There is nothing to fix: finish as your instructions say.' : 'Finish as your instructions say.'
       }`,
     }
   }).catch(() => ({ deny: 'review-gate: the findings could not be recorded.' }))

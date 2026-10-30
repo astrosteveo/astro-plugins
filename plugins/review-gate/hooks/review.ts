@@ -13,6 +13,13 @@ export const SKILL = 'code-review'
 /** How long a round waits for the reply of a review that ran in the foreground, which has landed by then as a rule. */
 const REPLY_LIMIT_MS = 5_000
 
+/**
+ * How long a round waits, once a background review has handed back all it owes, for the turn's end
+ * that carries its closing words and the turn's cost, such as /code-review's final answer, before it
+ * stops the review all the same.
+ */
+const CLOSING_LIMIT_MS = 90_000
+
 const NONE: Tokens = { input: 0, output: 0, cached: 0 }
 
 /** Tokens with one call's usage added: input at full price (cache writes included), output, and cache reads. */
@@ -38,6 +45,8 @@ export type Mailbox = {
   settle: (agentId: string, answer: string, usage?: ModelUsage) => void
   take: (agentId: string) => Promise<Reply>
   drop: (agentId: string) => void
+  /** Forgets a reply that came before now, so only a later turn's end answers `take`. */
+  forget: (agentId: string) => void
 }
 
 export function mailbox(): Mailbox {
@@ -69,6 +78,9 @@ export function mailbox(): Mailbox {
     },
     drop(agentId) {
       waiting.delete(agentId)
+    },
+    forget(agentId) {
+      early.delete(agentId)
     },
   }
 }
@@ -260,11 +272,16 @@ async function pause($: EngineInterface, woken: Promise<unknown>, signal: AbortS
   }
 }
 
-// Whether a promise has settled already, read without waiting on it.
+// Whether a promise has settled already, read without waiting on it: a settled promise runs its
+// callback within a few microtasks.
 async function isSettled(promise: Promise<unknown>) {
-  const NOT_YET = Symbol('not yet')
-  const first = await Promise.race([promise.then(() => true, () => true), Promise.resolve(NOT_YET)])
-  return first !== NOT_YET
+  let isDone = false
+  promise.then(
+    () => (isDone = true),
+    () => (isDone = true),
+  )
+  for (let ticks = 0; ticks < 3 && !isDone; ticks++) await Promise.resolve()
+  return isDone
 }
 
 /**
@@ -392,12 +409,17 @@ async function untilDone($: EngineInterface, ask: RoundAsk, agentId: string): Pr
 const CHECK_EVERY_S = 15
 
 /** How long a review that has not handed back all the round asks must stay idle before it has ended. */
-const QUIET_MS = 60_000
+const QUIET_MS = 5 * 60_000
 
 // Whether the review has handed back all the round asks of it: its findings, and with --fix its fixes.
 function isHandedBack(ask: RoundAsk) {
   const pending = ask.desk.pending
-  return pending?.record !== undefined && (!pending.plan.fix || pending.fixes !== undefined)
+  return pending?.record !== undefined && (!owesFixes(pending) || pending.fixes !== undefined)
+}
+
+/** Whether a review that has recorded owes its fixes too: with --fix, when it has a finding to fix. */
+export function owesFixes(pending: Pending) {
+  return pending.plan.fix && (pending.record?.added.length !== 0 || pending.plan.earlier.some(finding => finding.status === 'open'))
 }
 
 /**
@@ -427,7 +449,7 @@ async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<
     await stop($, ask, run.agentId)
     return { stuck: ended.stuck }
   }
-  const got = await waitFor($, ask.mail.take(run.agentId), ask.signal, REPLY_LIMIT_MS)
+  const got = await waitFor($, ask.mail.take(run.agentId), ask.signal, run.background === true ? CLOSING_LIMIT_MS : REPLY_LIMIT_MS)
   if (got.value === undefined) ask.mail.drop(run.agentId)
   // A stopped round stops the review itself, once.
   if (run.background === true && !ask.signal.aborted) await stop($, ask, run.agentId)
