@@ -5,9 +5,12 @@ import type { Finding, Ledger, Round, Run } from '../types'
 import { emptyLedger, globTest } from '../hooks/ledger'
 import { liveBand } from '../hooks/views'
 import { parseRun } from '../hooks/register'
+import { owesFixes } from '../hooks/review'
+import type { Pending } from '../hooks/review'
 
 // The test runtime has timers, though the hooks' own environment does not.
 declare function setTimeout(callback: () => void, ms: number): unknown
+declare function clearTimeout(timer: unknown): void
 
 const ROOT = '/repo'
 const KEY = 'record:/repo/.git/review-gate:feat/app'
@@ -77,6 +80,8 @@ type World = {
   forkFails?: string
   /** How many TaskStop calls from now the session refuses, as it does right after the person presses Esc. */
   stopRefusals?: number
+  /** Real milliseconds a fake sleep takes per second of its length; left out, 2. */
+  msPerSecond?: number
   /** A local branch besides main, which origin may no longer have. */
   localBranch?: string
   /** The branch origin's HEAD names, which may no longer be on origin; left out, origin has no HEAD. */
@@ -241,14 +246,21 @@ function engine(on: On, repo: World) {
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
   })
-  // A sleep the round holds while it waits: two milliseconds a second, and the clock moves by its length.
-  on('process.spawn', async function* (_, e) {
+    // A sleep the round holds while it waits: real time in step with its length, so a longer sleep can
+  // be woken before it ends. One the round ends early stops there and moves the clock no further.
+  on('process.spawn', async function* (_, e, next) {
     const argv = e.argv.map(String)
     if (argv[0] !== 'sleep') return { value: { code: 0, signal: null } }
     sleeps.push(Number(argv[1]))
     if (repo.noSleep === true) return { value: { code: 127, signal: null } }
-    // Real time in step with its length, so a longer sleep can be woken before it ends.
-    await new Promise<void>(resolve => setTimeout(resolve, Number(argv[1]) * 2))
+    const isEnded = await new Promise<boolean>(resolve => {
+      const timer = setTimeout(() => resolve(false), Number(argv[1]) * (repo.msPerSecond ?? 2))
+      next.signal.addEventListener('abort', () => {
+        clearTimeout(timer)
+        resolve(true)
+      })
+    })
+    if (isEnded) return { value: { code: null, signal: 'SIGTERM' } }
     repo.now += Number(argv[1]) * 1000
     return { value: { code: 0, signal: null } }
   })
@@ -257,12 +269,6 @@ function engine(on: On, repo: World) {
     argvs.push(argv)
     if (argv[0] === 'git') return git(argv.slice(1), e.init?.cwd ?? ROOT)
     if (argv[0] === 'gh') return gh(argv.slice(1))
-    // A sleep takes a moment, so a wait is no busy loop, and moves the clock a tenth of its length.
-    if (argv[0] === 'sleep') {
-      if (repo.noSleep === true) return ran(127)
-      await new Promise<void>(resolve => setTimeout(resolve, 1))
-      repo.now += Number(argv[1]) * 100
-    }
     return ran(0)
   })
   on('tool.call', async (_, e) => {
@@ -1793,7 +1799,8 @@ test("a foreground review's reply already in hand is taken with no sleep", async
 })
 
 test("a reply from before the record is not taken for the review's closing words, and every turn's cost counts", async ($, on) => {
-  const repo = world({ background: true })
+  // Slow sleeps, so the ticks below finish well inside the 90 seconds the round waits for closing words.
+  const repo = world({ background: true, msPerSecond: 50 })
   const { store, reviews } = engine(on, repo)
   await start($)
   const call = $.tool.call({ tool: REVIEW })
@@ -1825,4 +1832,43 @@ test('a --fix round with nothing to fix ends once the findings are in, and the r
   expect(String((await call).result)).toContain('Review round 1')
   // No wait for idle minutes: the clock moved by the few sleeps of the risk check at most.
   expect(repo.now - now < 60_000).toBe(true)
+})
+
+test('a background review whose record is refused for drift ends the wait at once, not after idle minutes', async ($, on) => {
+  const repo = world({ background: true, pauses: true })
+  const { reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  repo.dirty = ['src/app.ts']
+  const refused = await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
+  expect(String(refused.deny)).toContain('Finish without recording')
+  const now = repo.now
+  await reply($, one.id, 'Not recorded.')
+  expect(String((await call).deny)).toContain('Files changed while the round ran: src/app.ts.')
+  expect(repo.now - now < 60_000).toBe(true)
+})
+
+test('a sleep the round ends early moves the clock no further', async ($, on) => {
+  const repo = world({ background: true, pauses: true })
+  const { reviews, sleeps } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [] })
+  // The round now waits up to 90 seconds for the closing words; they come at once.
+  await until($, 'the closing wait', () => sleeps.includes(90))
+  const now = repo.now
+  await reply($, one.id, 'Done.')
+  await call
+  await new Promise<void>(resolve => setTimeout(resolve, 300))
+  expect(repo.now - now).toBe(0)
+})
+
+test('owesFixes says nothing is owed before the review records', () => {
+  const pending = { plan: { fix: true, earlier: [] } } as unknown as Pending
+  expect(owesFixes(pending)).toBe(false)
+  expect(owesFixes({ ...pending, record: { added: [finding({})] } } as unknown as Pending)).toBe(true)
 })

@@ -619,6 +619,10 @@ export const register: Register = (on, options) => {
     const refusal = "record takes the findings of review-gate's own review round, from its review, with the round its instructions name."
     if (pending === undefined || e.agentId === undefined || asText(e.round).trim() !== pending.plan.token) return { deny: refusal }
     const scope = await scopeOf($, e.agentId)
+    if (scope !== 'review' && pending.untagged.has(e.agentId)) {
+      pending.isUnplaced = true
+      doorbell.ring()
+    }
     if (scope !== 'review')
       return {
         deny:
@@ -632,6 +636,7 @@ export const register: Register = (on, options) => {
       const drifted = await pending.drift()
       if (drifted !== undefined) {
         pending.drifted = drifted
+        doorbell.ring()
         return { deny: 'The repository changed while you read it, so this round records nothing. Finish without recording.' }
       }
     }

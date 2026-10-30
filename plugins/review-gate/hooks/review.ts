@@ -47,6 +47,8 @@ export type Mailbox = {
   drop: (agentId: string) => void
   /** Forgets a reply that came before now, so only a later turn's end answers `take`. */
   forget: (agentId: string) => void
+  /** Whether an agent's reply is in hand, so `take` answers at once. */
+  has: (agentId: string) => boolean
 }
 
 export function mailbox(): Mailbox {
@@ -82,6 +84,7 @@ export function mailbox(): Mailbox {
     forget(agentId) {
       early.delete(agentId)
     },
+    has: agentId => early.has(agentId),
   }
 }
 
@@ -116,6 +119,8 @@ export type Pending = {
   drift: () => Promise<string | undefined>
   /** What the record call's drift said, so the round records nothing. */
   drifted?: string
+  /** Set when a record call came from an untagged agent the gate could not place as the review. */
+  isUnplaced?: boolean
   /** Whether a file is one REVIEW.md skips, so a finding in it is left out. */
   isSkipped: (file: string) => boolean
   /**
@@ -222,31 +227,39 @@ function forked(value: unknown): Forked | undefined {
  * What wakes a round's wait: the hooks ring it on each event that may have ended the review, such as
  * a turn's end in the review or an agent of its, and the round waits on it. `next` is the next ring.
  */
-export type Bell = { ring: () => void; next: () => Promise<void> }
+export type Bell = { ring: () => void; next: () => Wake }
+
+/** Something a wait may be woken by: a promise that settles then, and whether it has come already. */
+export type Wake = { promise: Promise<unknown>; isReady: () => boolean }
 
 export function bell(): Bell {
-  let ring = () => undefined as void
-  let next = new Promise<void>(resolve => (ring = resolve))
+  let current = fresh()
+  function fresh() {
+    let isRung = false
+    let resolve = () => undefined as void
+    const promise = new Promise<void>(done => (resolve = done))
+    return { promise, isReady: () => isRung, ring: () => ((isRung = true), resolve()) }
+  }
   return {
     ring() {
-      const rung = ring
-      next = new Promise<void>(resolve => (ring = resolve))
-      rung()
+      const rung = current
+      current = fresh()
+      rung.ring()
     },
-    next: () => next,
+    next: () => ({ promise: current.promise, isReady: current.isReady }),
   }
 }
 
 /**
- * Waits until `woken` settles, the round is stopped, or `seconds` pass, with one `sleep` in flight
+ * Waits until `wake` comes, the round is stopped, or `seconds` pass, with one `sleep` in flight
  * all the while: a hook's own clock runs while no call of its is in flight, and what it waits for
  * comes through other hooks' events. The sleep is ended as soon as the wait is woken, so the wait
  * costs one child however long it lasts. False when `sleep` cannot run; the hook's own sleep would
  * spend its clock, so the caller stops waiting rather than spin or time out.
  */
-async function pause($: EngineInterface, woken: Promise<unknown>, signal: AbortSignal, seconds: number) {
+async function pause($: EngineInterface, wake: Wake, signal: AbortSignal, seconds: number) {
   // A round already stopped, or a wait already woken, has nothing to wait for.
-  if (signal.aborted || (await isSettled(woken))) return true
+  if (signal.aborted || wake.isReady()) return true
   let child: ReturnType<EngineInterface['process']['spawn']>
   try {
     child = $.process.spawn({ argv: ['sleep', String(seconds)] })
@@ -263,7 +276,7 @@ async function pause($: EngineInterface, woken: Promise<unknown>, signal: AbortS
     signal.addEventListener('abort', onAbort, { once: true })
   })
   try {
-    const ended = await Promise.race([slept, woken.then(() => 'woken' as const), stopped])
+    const ended = await Promise.race([slept, wake.promise.then(() => 'woken' as const), stopped])
     if (ended !== 'woken') return ended || signal.aborted
     await child.return({ code: null, signal: null }).catch(() => undefined)
     return true
@@ -272,28 +285,18 @@ async function pause($: EngineInterface, woken: Promise<unknown>, signal: AbortS
   }
 }
 
-// Whether a promise has settled already, read without waiting on it: a settled promise runs its
-// callback within a few microtasks.
-async function isSettled(promise: Promise<unknown>) {
-  let isDone = false
-  promise.then(
-    () => (isDone = true),
-    () => (isDone = true),
-  )
-  for (let ticks = 0; ticks < 3 && !isDone; ticks++) await Promise.resolve()
-  return isDone
-}
-
 /**
  * Waits for `promise`, or until the round is stopped or `limitMs` passes, when it gives no value.
  * Where `sleep` cannot run the wait ends at once, and says so.
  */
-async function waitFor<T>($: EngineInterface, promise: Promise<T>, signal: AbortSignal, limitMs: number): Promise<{ value?: T; isStuck: boolean }> {
+async function waitFor<T>($: EngineInterface, promise: Promise<T>, isReady: () => boolean, signal: AbortSignal, limitMs: number): Promise<{ value?: T; isStuck: boolean }> {
   let value: T | undefined
   void promise.then(got => {
     value = got
   })
-  const isRunning = await pause($, promise, signal, Math.ceil(limitMs / 1000))
+  const isRunning = await pause($, { promise, isReady }, signal, Math.ceil(limitMs / 1000))
+  // A reply in hand when the wait began has settled by now.
+  if (isReady()) await promise
   return value === undefined ? { isStuck: !isRunning } : { value, isStuck: false }
 }
 
@@ -387,7 +390,7 @@ const LIST_TRIES = 10
  */
 async function untilDone($: EngineInterface, ask: RoundAsk, agentId: string): Promise<{ stuck?: string; status?: string }> {
   let quietSince: number | undefined
-  for (let misses = 0; !ask.signal.aborted && !isHandedBack(ask); ) {
+  for (let misses = 0; !ask.signal.aborted && !isHandedBack(ask) && !cannotRecord(ask); ) {
     // The ring is taken before the list is read, so one that comes while it is read still wakes the wait.
     const woken = ask.bell.next()
     const agents = await $.agent.list().catch(() => undefined)
@@ -417,9 +420,17 @@ function isHandedBack(ask: RoundAsk) {
   return pending?.record !== undefined && (!owesFixes(pending) || pending.fixes !== undefined)
 }
 
-/** Whether a review that has recorded owes its fixes too: with --fix, when it has a finding to fix. */
+/** Whether a review that has recorded owes its fixes too: with --fix, when it has a finding to fix. False before it records. */
 export function owesFixes(pending: Pending) {
-  return pending.plan.fix && (pending.record?.added.length !== 0 || pending.plan.earlier.some(finding => finding.status === 'open'))
+  const record = pending.record
+  return record !== undefined && pending.plan.fix && (record.added.length > 0 || pending.plan.earlier.some(finding => finding.status === 'open'))
+}
+
+// Whether the review can no longer record: its record was refused because the repository changed, or
+// because the agent list did not name review-gate as its starter. Waiting on it has no point.
+function cannotRecord(ask: RoundAsk) {
+  const pending = ask.desk.pending
+  return pending?.drifted !== undefined || pending?.isUnplaced === true
 }
 
 /**
@@ -440,7 +451,7 @@ function stateOf(agents: readonly { id: string; parentId?: string; status: strin
 /**
  * The review's last reply, and how it ended. One that ran in the foreground has replied by the time
  * the Skill tool answers; one the Skill tool started in the background is waited for until it is done,
- * then given a moment for its closing words, then stopped with its agents: the round has what it
+ * then given up to CLOSING_LIMIT_MS for its closing words, then stopped with its agents: the round has what it
  * needs, and a review left running could change files no round records.
  */
 async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<{ reply?: Reply; stuck?: string; status?: string }> {
@@ -449,7 +460,8 @@ async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<
     await stop($, ask, run.agentId)
     return { stuck: ended.stuck }
   }
-  const got = await waitFor($, ask.mail.take(run.agentId), ask.signal, run.background === true ? CLOSING_LIMIT_MS : REPLY_LIMIT_MS)
+  const isReady = ask.mail.has(run.agentId)
+  const got = await waitFor($, ask.mail.take(run.agentId), () => isReady, ask.signal, run.background === true ? CLOSING_LIMIT_MS : REPLY_LIMIT_MS)
   if (got.value === undefined) ask.mail.drop(run.agentId)
   // A stopped round stops the review itself, once.
   if (run.background === true && !ask.signal.aborted) await stop($, ask, run.agentId)
