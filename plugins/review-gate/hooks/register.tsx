@@ -346,8 +346,8 @@ async function mergePullRequest($: EngineInterface, place: Place, input: Input):
 // session's, kept here.
 const mail = mailbox()
 const desk: { pending?: Pending } = {}
-// The review agents rounds have run: their task notifications repeat what the round reported, none
-// of them is a later round's review, and none answers at the gate.
+// The review agents rounds have run, and the agents of theirs a round stopped: their task
+// notifications repeat what the round reported, and none of them is a later round's review.
 const reviews = new Set<string>()
 // Agents the round has found are not its review, so it does not ask about them again.
 const others = new Set<string>()
@@ -381,6 +381,9 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
         await update($, run, change)
       },
       bind: agentId => bind($, agentId),
+      quiet: agentIds => {
+        for (const id of agentIds) reviews.add(id)
+      },
       edit: change => edit($, place, change),
     })
   } finally {

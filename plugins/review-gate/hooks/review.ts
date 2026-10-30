@@ -143,6 +143,8 @@ export type RoundAsk = {
   progress: (change: (run: Run | null) => Run | null) => Promise<void>
   /** Takes an agent as the round's review, on proof such as the Skill tool naming it. */
   bind: (agentId: string) => Promise<void>
+  /** Marks agents the round stopped as its own, so their notices stay out of the conversation. */
+  quiet: (agentIds: readonly string[]) => void
 
   /**
    * Changes the branch's record as it stands when the round ends: `change` gives the new record, or
@@ -227,6 +229,8 @@ async function pause($: EngineInterface) {
 
 const STUCK = 'review-gate could not wait for the review, since the `sleep` program could not run here, so it stopped the review.'
 
+const UNLISTED = 'review-gate could not read the agent list to see whether the review had ended, so it stopped the review.'
+
 /**
  * Why the round records nothing, as the person reads it, or undefined while the repository is as the
  * round found it: HEAD where it was, and, with `files`, no file changed. The tree was clean when the
@@ -245,46 +249,85 @@ async function driftOf(git: Place['git'], place: Place, files: boolean) {
   return `Files changed while the round ran: ${listed(changed)}. The review may have read them, so nothing was recorded. Commit or undo them, then review again.`
 }
 
-// Ends a review the round no longer waits for, so it spends nothing more. Best effort: one that has
-// ended already, or a session that will not stop it, is left as it is.
-async function stop($: EngineInterface, agentId: string) {
-  await $.tool.call({ tool: 'TaskStop', task_id: agentId }).catch(() => undefined)
+/** An agent and every agent under it, as the agent list's parents say. */
+export function teamOf(agents: readonly { id: string; parentId?: string }[], root: string): Set<string> {
+  const team = new Set([root])
+  for (let isGrowing = true; isGrowing; ) {
+    isGrowing = false
+    for (const agent of agents)
+      if (agent.parentId !== undefined && team.has(agent.parentId) && !team.has(agent.id)) {
+        team.add(agent.id)
+        isGrowing = true
+      }
+  }
+  return team
 }
 
 // What the agent list says of an agent that has ended.
 const ENDED = new Set(['completed', 'failed', 'killed'])
 
 /**
+ * Ends a review the round no longer waits for, and every agent it started, as /code-review max starts
+ * its angles, so none spends more, changes a file or posts its report into the conversation. Those
+ * stopped are the round's, so their notices are dropped as the review's are. Best effort: one that
+ * has ended already, or a session that will not stop it, is left as it is.
+ */
+async function stop($: EngineInterface, ask: RoundAsk, agentId: string) {
+  const agents = await $.agent.list().catch(() => undefined)
+  const team = agents === undefined ? new Set([agentId]) : teamOf(agents, agentId)
+  ask.quiet([...team])
+  for (const id of team) {
+    if (ENDED.has(agents?.find(one => one.id === id)?.status ?? '')) continue
+    await $.tool.call({ tool: 'TaskStop', task_id: id }).catch(() => undefined)
+  }
+}
+
+/** How many reads of the agent list in a row may fail before the round stops waiting on it. */
+const LIST_TRIES = 10
+
+/**
  * Waits until a review the Skill tool started in the background has ended, as long as that takes, as
  * /code-review run by hand does: a pause between its turns, such as while agents of its own work, is
- * not its end. Gives whether the wait could not run, as where `sleep` cannot.
+ * not its end. Gives how it ended, as the agent list says, and whether the wait could not go on: where
+ * `sleep` cannot run, or the agent list cannot be read.
  */
-async function untilEnded($: EngineInterface, agentId: string, signal: AbortSignal): Promise<{ isStuck: boolean }> {
-  while (!signal.aborted) {
-    const agent = (await $.agent.list().catch(() => [])).find(one => one.id === agentId)
-    if (agent === undefined || ENDED.has(agent.status)) return { isStuck: false }
-    if (!(await pause($))) return { isStuck: true }
+async function untilEnded($: EngineInterface, agentId: string, signal: AbortSignal): Promise<{ stuck?: string; status?: string }> {
+  for (let misses = 0; !signal.aborted; ) {
+    const agents = await $.agent.list().catch(() => undefined)
+    // A list that could not be read says nothing of the review: it is read again.
+    misses = agents === undefined ? misses + 1 : 0
+    if (misses >= LIST_TRIES) return { stuck: UNLISTED }
+    const agent = agents?.find(one => one.id === agentId)
+    // An agent the list no longer shows has ended.
+    if (agents !== undefined && agent === undefined) return {}
+    if (agent !== undefined && ENDED.has(agent.status)) return { status: agent.status }
+    if (!(await pause($))) return { stuck: STUCK }
   }
-  return { isStuck: false }
+  return {}
 }
 
 /**
- * The review's last reply. One that ran in the foreground has replied by the time the Skill tool
- * answers; one the Skill tool started in the background is waited for until it has ended.
+ * The review's last reply, and how it ended. One that ran in the foreground has replied by the time
+ * the Skill tool answers; one the Skill tool started in the background is waited for until it has
+ * ended. A background review the round did not hear from is stopped, with its agents, so it does not
+ * run on unseen.
  */
-async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<{ reply?: Reply; isStuck: boolean }> {
-  if (run.background === true) {
-    const ended = await untilEnded($, run.agentId, ask.signal)
-    if (ended.isStuck) {
-      await stop($, run.agentId)
-      return { isStuck: true }
-    }
+async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<{ reply?: Reply; stuck?: string; status?: string }> {
+  const ended = run.background === true ? await untilEnded($, run.agentId, ask.signal) : {}
+  if (ended.stuck !== undefined) {
+    await stop($, ask, run.agentId)
+    return { stuck: ended.stuck }
   }
   const got = await waitFor($, ask.mail.take(run.agentId), ask.signal, REPLY_LIMIT_MS)
-  if (got.value !== undefined) return { reply: got.value, isStuck: false }
+  if (got.value !== undefined) return { ...ended, reply: got.value }
   ask.mail.drop(run.agentId)
-  return { isStuck: false }
+  if (run.background === true) await stop($, ask, run.agentId)
+  return ended
 }
+
+// Why the agent list says a review ended, when it did not end as it should.
+const endedBadly = (status: string | undefined) =>
+  status === 'failed' ? 'the agent list shows its agent failed' : status === 'killed' ? 'the agent list shows its agent was stopped' : undefined
 
 /**
  * Runs one round of review on the branch's latest commit and records what it found. A git read that
@@ -385,7 +428,8 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   let cap: number | undefined
   let calls: number | undefined
   let report = ''
-  let isStuck = false
+  // Why the round could not wait for the review to end, when it could not.
+  let stuck: string | undefined
   // Why the review did not succeed, in its words or a stand-in.
   let failed: string | undefined
   // Files the review left changed, new ones included: its fixes with --fix, and changes it was asked
@@ -415,15 +459,16 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     // The Skill tool names the review's agent: known from here, whatever happens next, so its notices
     // are the round's and the band follows it.
     if (run !== undefined) await ask.bind(run.agentId)
-    if (ask.signal.aborted) {
-      // A review the round started runs on once the round stops: stopped, it spends nothing more and
-      // changes no file after the person has said stop.
+    // A review the round started runs on once the round stops: stopped, it spends nothing more and
+    // changes no file after the person has said stop.
+    const halt = async () => {
       const orphan = run?.agentId ?? pending.agentId
-      if (orphan !== undefined) await stop($, orphan)
+      if (orphan !== undefined) await stop($, ask, orphan)
       return refuse(STOPPED)
     }
+    if (ask.signal.aborted) return halt()
     if (pending.shadowed !== undefined) {
-      if (run !== undefined) await stop($, run.agentId)
+      if (run !== undefined) await stop($, ask, run.agentId)
       return refuse(
         `The skill named ${SKILL} here comes from ${pending.shadowed}, not Claude Code, so review-gate did not run it as its review: a branch could make it say anything. Rename that skill, or remove it, then review again. Nothing was recorded.`,
       )
@@ -436,17 +481,18 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       // One that did not succeed, or did not start, is not waited for.
       if (run.success === false) {
         failed = run.result.trim() || 'it gave no reason'
-        if (run.background === true) await stop($, run.agentId)
+        if (run.background === true) await stop($, ask, run.agentId)
       } else {
         const got = await replyOf($, ask, run)
         // A review in the background hands back word of its start, not its result.
         report = (got.reply?.answer ?? (run.background === true ? '' : run.result)).trim()
-        isStuck = got.isStuck
+        stuck = got.stuck
+        failed = endedBadly(got.status) ?? failed
       }
       tokens = sum(tokens, pending.tokens)
       calls = pending.calls
     }
-    if (ask.signal.aborted) return refuse(STOPPED)
+    if (ask.signal.aborted) return halt()
     // A round's findings are about the commit it began at. When HEAD moved, or files changed before the
     // review recorded, or at all without --fix, when the review changes none, the round cannot say what
     // the review read, and records nothing. With --fix, files changed after the record are its fixes.
@@ -460,7 +506,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
             : `/code-review ended without recording its findings${
                 run === undefined ? ', and it ran in no agent of its own' : failed !== undefined ? `, and it failed: ${failed}` : ''
               }, so the round has nothing to stand on.`
-        }${isStuck ? ` ${STUCK}` : ''} Nothing was recorded; review again.`,
+        }${stuck === undefined ? '' : ` ${stuck}`} Nothing was recorded; review again.`,
       )
     record = pending.record
     cap = pending.cap
@@ -528,7 +574,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   })
   if (typeof saved === 'string') return refuse(saved)
   const notes: string[] = []
-  if (isStuck) notes.push(`${STUCK} It had recorded its findings before that.`)
+  if (stuck !== undefined) notes.push(`${stuck} It had recorded its findings before that.`)
   if (failed !== undefined) notes.push(`The review recorded its findings, then failed: ${failed}`)
   // A review that said what it fixed is shown by the summary; one that did not is quoted.
   const quoted = report === '' ? '' : ` Its report:\n\n${report}`

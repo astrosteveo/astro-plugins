@@ -69,6 +69,10 @@ type World = {
   pauses?: boolean
   /** Whether git finds no commit the branch shares with main, as in a shallow clone. */
   noBase?: boolean
+  /** How a review that has ended shows in the agent list; left out, completed. */
+  endsAs?: 'failed' | 'killed'
+  /** How many reads of the agent list from now fail. */
+  listFails?: number
 }
 
 /** A run of /code-review the round started: what it was asked, and the hand that ends it. */
@@ -162,18 +166,24 @@ function engine(on: On, repo: World) {
   on('tool.register', (_, e) => ({ value: { tool: `mcp__review-gate__${e.name}` } }))
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   // The session's agents: the test's own, and each /code-review the plugin started, as the engine lists a forked skill.
-  on('agent.list', () => ({
+  on('agent.list', () => {
+    if ((repo.listFails ?? 0) > 0) {
+      repo.listFails = (repo.listFails ?? 0) - 1
+      throw new Error('the agent list is not available')
+    }
+    return {
     value: [
       ...(repo.agents ?? []).map(agent => ({ ...agent, description: agent.description ?? 'an agent', status: 'running' as const })),
       ...reviews.map(review => ({
         id: review.id,
         type: 'general-purpose',
         description: '/code-review',
-        status: ended.has(review.id) ? ('completed' as const) : ('running' as const),
+        status: ended.has(review.id) ? (repo.endsAs ?? ('completed' as const)) : ('running' as const),
         ...(repo.untagged === true ? {} : { spawnedBy: 'review-gate' }),
       })),
     ],
-  }))
+    }
+  })
   // A skill's prompt as the engine computes it, before any plugin adds to it.
   on('skill.prompt', (_, e) => ({ text: e.text }))
   // A review's turn end is its end, unless the test says it pauses.
@@ -262,7 +272,7 @@ function engine(on: On, repo: World) {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  return { store, files, reviews, asked, judged, argvs, stops }
+  return { store, files, reviews, asked, judged, argvs, stops, ended }
 }
 
 // The test's engine, for the calls only it makes.
@@ -1272,6 +1282,59 @@ test('a review that recorded, then failed, keeps its record; one that failed to 
   expect(String((await failed).text)).toContain('/code-review ended without recording its findings, and it failed: could not start: no model')
   // No thirty-minute wait: the clock moved by the few sleeps of the risk check at most.
   expect(repo.now - now < 60_000).toBe(true)
+})
+
+test('a background review the round does not hear from is stopped, with the agents it started, and their notices stay out', async ($, on) => {
+  const repo = world({ background: true })
+  const { store, reviews, stops, ended } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
+  // It ends with no reply the round hears, while an angle agent it started still runs.
+  repo.agents = [{ id: 'angle-1', type: 'general-purpose', parentId: one.id }, { id: 'helper', type: 'general-purpose' }]
+  ended.add(one.id)
+  expect(String((await call).result)).toContain('R1-1 · important · src/app.ts:12')
+  expect(stops).toEqual(['angle-1'])
+  expect(ledgerOf(store).findings.map(finding => finding.id)).toEqual(['R1-1'])
+  const notice = (id: string) => `<task-notification><task-id>${id}</task-id><result>[raw]</result></task-notification>`
+  const submitted = await $.prompt.submit({ text: `${notice('angle-1')}\n${notice('helper')}`, wait: false, origin: { kind: 'task-notification' } })
+  expect(submitted.text?.trim()).toBe(notice('helper'))
+})
+
+test('a background review that failed or was stopped after it recorded is reported as such', async ($, on) => {
+  const repo = world({ background: true, endsAs: 'failed' })
+  const { reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
+  expect(String((await call).result)).toContain('The review recorded its findings, then failed: the agent list shows its agent failed')
+  repo.endsAs = 'killed'
+  const again = $.command.run({ command: 'review-gate', args: '', ...person })
+  await act($, reviews, 1, { record: false })
+  expect(String((await again).text)).toContain('/code-review ended without recording its findings, and it failed: the agent list shows its agent was stopped')
+})
+
+test('an agent list that cannot be read is read again, not taken for the end of the review', async ($, on) => {
+  const repo = world({ background: true })
+  const { reviews, stops } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
+  repo.listFails = 3
+  await until($, 'the list to be read again', () => repo.listFails === 0)
+  await reply($, one.id, 'Done.')
+  expect(String((await call).result)).toContain('R1-1 · important')
+  expect(stops).toEqual([])
+  // A list that never reads stops the wait, and the review with it.
+  const again = $.command.run({ command: 'review-gate', args: '', ...person })
+  await until($, 'the second review', () => reviews.length === 2)
+  repo.listFails = 1_000
+  expect(String((await again).text)).toContain('review-gate could not read the agent list to see whether the review had ended, so it stopped the review.')
+  expect(stops).toEqual([(reviews[1] as Review).id])
 })
 
 test('where sleep cannot run, the round stops waiting for a background review at once and says why', async ($, on) => {
