@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
-import { directories, gh, isTestPath, pieces, published, pushedRef, pushes, resolvePath } from '../hooks/gate'
+import { directories, gh, isTestPath, pieces, published, pushedRefs, pushes, resolvePath, reusesMessage } from '../hooks/gate'
 import { parseFindings } from '../hooks/judge'
 
 const STYLE = '---\nname: Plain English\ndescription: Plain words\n---\n\n# Plain English\n\nWrite plainly.\n'
@@ -28,6 +28,10 @@ type World = {
   between: { sha: string; message: string; time?: number }[]
   unpushed: { sha: string; message: string; time?: number }[]
   root?: string
+  // Folders that do not exist yet: git cannot run in them.
+  missing: string[]
+  // The mod's store, kept across sessions.
+  store: Map<string, unknown>
 }
 
 const world = (over: Partial<World> = {}): World => ({
@@ -43,6 +47,8 @@ const world = (over: Partial<World> = {}): World => ({
   heads: [],
   between: [],
   unpushed: [],
+  missing: [],
+  store: new Map(),
   ...over,
 })
 
@@ -51,6 +57,12 @@ const ran = (exitCode: number, stdout: string) => ({ value: { exitCode, stdout, 
 // Each hook stands for the engine beneath the plugin.
 function engine(on: On, w: World) {
   on('session.cwd', () => ({ value: '/work' }))
+  on('session.id', () => ({ value: 's1' }))
+  on('store.get', (_, e) => ({ value: w.store.get(e.key) }) as never)
+  on('store.set', (_, e) => {
+    w.store.set(e.key, e.value)
+    return { value: undefined } as never
+  })
   on('env.get', () => ({ value: '/home/u' }))
   // The person's rules for reading a file; every other call is allowed.
   on('tool.check', (_, e) => ({ decision: e.tool === 'Read' ? w.verdict : 'allow' }))
@@ -74,6 +86,7 @@ function engine(on: On, w: World) {
   on('process.run', (_, e) => {
     const argv = e.argv
     w.runs.push(argv.join(' '))
+    if (w.missing.includes(e.init?.cwd ?? '')) throw new Error(`ENOENT: ${e.init?.cwd}`)
     if (argv[0] === 'git' && argv[1] === 'rev-parse') return w.root === undefined ? ran(128, '') : ran(0, `${w.root}\n`)
     if (argv[0] === 'git' && argv[1] === 'log') {
       // HEAD before and after a command, then the commits between, then one commit's message.
@@ -81,7 +94,7 @@ function engine(on: On, w: World) {
         const head = w.heads.shift()
         return head === undefined ? ran(128, '') : ran(0, `${head.sha}\0${head.message}\n`)
       }
-      if (argv.includes('--format=%H%x00%ct%x00%B%x1e')) {
+      if (argv.includes('--format=%H%x00%at%x00%B%x1e')) {
         const range = argv.includes('--remotes') ? w.unpushed : w.between
         return ran(0, range.map(c => `${c.sha}\0${c.time ?? Math.floor(Date.now() / 1000)}\0${c.message}\n\x1e`).join(''))
       }
@@ -427,9 +440,9 @@ test('a push that would send a commit with Claudisms is refused, and goes throug
 })
 
 test('a push sends what its refspec names', () => {
-  expect(pushedRef(['git', 'push', '-u', 'origin', 'abc123:refs/heads/feat'])).toBe('abc123')
-  expect(pushedRef(['git', 'push'])).toBe('HEAD')
-  expect(pushedRef(['git', 'push', 'origin', '+main'])).toBe('main')
+  expect(pushedRefs(['git', 'push', '-u', 'origin', 'abc123:refs/heads/feat'])).toEqual(['abc123'])
+  expect(pushedRefs(['git', 'push'])).toEqual(['HEAD'])
+  expect(pushedRefs(['git', 'push', 'origin', '+main'])).toEqual(['main'])
 })
 
 test('a doc in its project test folder is not checked, wherever the shell is', async ($, on) => {
@@ -488,17 +501,17 @@ test('push counts only as git push, in the directory and for the ref it names', 
   expect(pushes('git stash push -m wip', '/w')).toEqual([])
   expect(pushes('git commit -m "push the fix"', '/w')).toEqual([])
   expect(pushes('git log | grep push', '/w')).toEqual([])
-  expect(pushes('git push', '/w')).toEqual([{ dir: '/w', ref: 'HEAD' }])
-  expect(pushes('cd ../lib && git push origin feature', '/w/a')).toEqual([{ dir: '/w/lib', ref: 'feature' }])
-  expect(pushes('git -C ../lib push -u origin HEAD', '/w/a')).toEqual([{ dir: '/w/lib', ref: 'HEAD' }])
+  expect(pushes('git push', '/w')).toEqual([{ dir: '/w', refs: ['HEAD'] }])
+  expect(pushes('cd ../lib && git push origin feature', '/w/a')).toEqual([{ dir: '/w/lib', refs: ['feature'] }])
+  expect(pushes('git -C ../lib push -u origin HEAD', '/w/a')).toEqual([{ dir: '/w/lib', refs: ['HEAD'] }])
 })
 
 test('a push option value is not taken for the remote; a delete or tags push sends no commits', () => {
-  expect(pushedRef(['git', 'push', '-o', 'ci.skip', 'origin', 'main'])).toBe('main')
-  expect(pushedRef(['git', 'push', '--repo', 'origin', 'origin', 'dev'])).toBe('dev')
-  expect(pushedRef(['git', 'push', 'origin', '--delete', 'old'])).toBeUndefined()
-  expect(pushedRef(['git', 'push', 'origin', ':old'])).toBeUndefined()
-  expect(pushedRef(['git', 'push', '--tags'])).toBeUndefined()
+  expect(pushedRefs(['git', 'push', '-o', 'ci.skip', 'origin', 'main'])).toEqual(['main'])
+  expect(pushedRefs(['git', 'push', '--repo', 'origin', 'origin', 'dev'])).toEqual(['dev'])
+  expect(pushedRefs(['git', 'push', 'origin', '--delete', 'old'])).toEqual([])
+  expect(pushedRefs(['git', 'push', 'origin', ':old'])).toEqual([])
+  expect(pushedRefs(['git', 'push', '--tags'])).toEqual([])
 })
 
 test('a push checks only commits made in this session', async ($, on) => {
@@ -518,4 +531,66 @@ test('a gh URL followed by more output is still read back', () => {
 test('a file outside any project is never a test file', () => {
   expect(isTestPath('/tmp/test/README.md')).toBe(false)
   expect(isTestPath('/r/tests/README.md', '/r')).toBe(true)
+})
+
+// The fixes of review round 5
+
+test('a commit first written before the session is not charged, however it was rewritten', async ($, on) => {
+  // A rebase gives the person's old commit a new hash and committer time but keeps its author time.
+  const w = world({ unpushed: [{ ...NEW, time: 1000 }], heads: [OLD, NEW], between: [{ ...NEW, time: 1000 }] })
+  engine(on, w)
+  w.commits.set('b000000', { dir: '/work', message: NEW.message })
+  expect(notes(await call($, 'Bash', { command: 'git rebase main' }))).toBe('')
+  await call($, 'Bash', { command: 'git push' })
+  expect(w.ran).toEqual(['Bash', 'Bash'])
+})
+
+test('a merge or rebase that writes a new message is read back', async ($, on) => {
+  const merge = { sha: `d${'0'.repeat(39)}`, message: 'Merge feat: a seamless handoff' }
+  const w = world({ heads: [OLD, merge], between: [merge] })
+  engine(on, w)
+  w.commits.set('d000000', { dir: '/work', message: merge.message })
+  expect(notes(await call($, 'Bash', { command: 'git merge --no-ff -m "Merge feat: a seamless handoff" feat' }))).toContain('"seamless"')
+})
+
+test('messages git writes from another commit are not charged', async ($, on) => {
+  const fixup = { sha: `e${'0'.repeat(39)}`, message: 'fixup! feat: a robust parser' }
+  const w = world({ heads: [OLD, fixup], between: [fixup], unpushed: [fixup, { ...NEW, sha: `f${'0'.repeat(39)}`, message: 'Revert "feat: a robust parser"' }] })
+  engine(on, w)
+  w.commits.set('e000000', { dir: '/work', message: fixup.message })
+  w.output = `[main e000000] ${fixup.message}`
+  expect(notes(await call($, 'Bash', { command: 'git commit --fixup=abc123' }))).toBe('')
+  await call($, 'Bash', { command: 'git push' })
+  expect(w.ran).toEqual(['Bash', 'Bash'])
+})
+
+test('an option named inside a message is not taken for one, and one reused message does not excuse the rest', () => {
+  expect(reusesMessage('git commit -m "fix: handle the -c option"')).toBe(false)
+  expect(reusesMessage('git commit --amend --no-edit && git commit -m "feat: new words"')).toBe(false)
+  expect(reusesMessage('git commit --amend --no-edit')).toBe(true)
+  expect(reusesMessage('git commit --squash=abc')).toBe(true)
+})
+
+test('a push sends every refspec it names, all branches for --all, and a branch alongside --tags', () => {
+  expect(pushedRefs(['git', 'push', 'origin', 'feat-a', 'feat-b'])).toEqual(['feat-a', 'feat-b'])
+  expect(pushedRefs(['git', 'push', '--all', 'origin'])).toEqual(['--branches'])
+  expect(pushedRefs(['git', 'push', 'origin', 'main', '--tags'])).toEqual(['main'])
+  expect(pushedRefs(['git', 'push', '--prune', 'origin', 'main'])).toEqual(['main'])
+})
+
+test('a doc in a test folder not made yet is found by the nearest folder that exists', async ($, on) => {
+  const w = world({ root: '/w', missing: ['/w/tests/fixtures/claudisms'] })
+  engine(on, w)
+  await call($, 'Write', { file_path: '/w/tests/fixtures/claudisms/README.md', content: 'A robust, seamless parser.' })
+  expect(w.ran).toEqual(['Write'])
+})
+
+test('the session start is kept by session id, so a resumed session keeps its own', async ($, on) => {
+  const w = world({ unpushed: [{ ...NEW, time: 1000 }], store: new Map([['sessionStarts', { s1: 500 }]]) })
+  engine(on, w)
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__plain-english__${e.name}` } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
+  expect(w.store.get('sessionStarts')).toEqual({ s1: 500 })
+  expect(refusal(await call($, 'Bash', { command: 'git push' }))).toContain('commit b000000')
 })

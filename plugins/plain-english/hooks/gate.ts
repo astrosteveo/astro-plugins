@@ -112,15 +112,22 @@ export type Published =
 // git and its global options, before a subcommand: `git -C dir -c k=v --no-pager`.
 const GIT = String.raw`\bgit((?:\s+(?:-[cC]\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)|--?[\w-]+(?:=[^\s;&|]+)?))*)\s+`
 
-// Whether a command runs `git commit`, the subcommand, not the word.
-export const commits = (command: string) => new RegExp(`${GIT}commit\\b`).test(command)
+// Whether a command runs a git subcommand that writes commit messages: commit, merge or rebase.
+export const commits = (command: string) => new RegExp(`${GIT}(?:commit|merge|rebase)\\b`).test(command)
 
-// Whether a command's commit takes its message from an existing one, which is not Claude's text:
-// an option of `git commit` itself, not of git before it.
-export const reusesMessage = (command: string) =>
-  [...command.matchAll(new RegExp(`${GIT}commit\\b([^;&|\\n]*)`, 'g'))].some(m =>
-    /(?:^|\s)(?:--no-edit|-[cC]|--reuse-message|--reedit-message)(?=[\s=]|$)/.test(m[2]!),
-  )
+// Quoted text blanked out, so a message that mentions an option is not taken for it.
+const unquoted = (s: string) => s.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""')
+
+// Whether every `git commit` in a command takes its message from an existing commit, which is not
+// Claude's text: `--no-edit`, `-C`, `-c`, `--fixup`, `--squash` and the like, as options of
+// `git commit` itself. A line with one such commit and one new message is still read.
+export function reusesMessage(command: string) {
+  const found = [...unquoted(command).matchAll(new RegExp(`${GIT}commit\\b([^;&|\\n]*)`, 'g'))]
+  return found.length > 0 && found.every(m => /(?:^|\s)(?:--no-edit|-[cC]|--reuse-message|--reedit-message|--fixup|--squash)(?=[\s=]|$)/.test(m[2]!))
+}
+
+// A message git writes from another commit's: a fixup, a squash, a revert or a merge of a branch.
+export const isGenerated = (message: string) => /^(?:fixup!|squash!|amend!|Revert "|Merge (?:branch|remote-tracking branch|pull request|tag) )/.test(message)
 
 // git prints `[branch abc1234] subject` for each commit it makes, unless told to be quiet; the
 // session's repository is compared before and after as well. gh prints the URL of what it made on
@@ -129,7 +136,7 @@ export const reusesMessage = (command: string) =>
 // publish, never parsed.
 export function published(command: string, output: string): Published[] {
   const found: Published[] = []
-  if (commits(command) && !reusesMessage(command))
+  if (new RegExp(`${GIT}commit\\b`).test(command) && !reusesMessage(command))
     for (const m of output.matchAll(/^\[[^\]\n]*? ([0-9a-f]{7,40})\] /gm)) found.push({ kind: 'commit', sha: m[1]! })
   if (/\bgh\b/.test(command) && /\b(?:pr|issue)\b/.test(command) && /\b(?:create|comment)\b/.test(command)) {
     const urls = [...output.matchAll(/^\s*https:\/\/([\w.-]+)\/([\w.-]+\/[\w.-]+)\/(pull|issues)\/\d+(?:#issuecomment-(\d+))?\s*$/gm)]
@@ -158,37 +165,43 @@ export function directories(command: string, cwd: string, home?: string): string
 // git push's options that take their value as the next word.
 const PUSH_VALUED = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec'])
 
-// The refspec's source of a `git push`: what it sends, `HEAD` when none is named, or undefined for
-// a push that sends no commits (a delete, or tags alone).
-export function pushedRef(argv: readonly string[]): string | undefined {
+// What a `git push` sends, as revisions for `git log`: each refspec's source, `HEAD` when none is
+// named, every local branch for `--all` or `--mirror`, and nothing for a delete or for tags alone.
+export function pushedRefs(argv: readonly string[]): string[] {
   const words = argv.slice(argv.indexOf('push') + 1)
   const args: string[] = []
+  let all = false
+  let tagsOnly = false
   for (let i = 0; i < words.length; i++) {
     const w = words[i]!
-    if (['--delete', '-d', '--tags', '--prune'].includes(w)) return undefined
-    if (PUSH_VALUED.has(w)) i++
+    if (w === '--delete' || w === '-d') return []
+    if (w === '--all' || w === '--mirror' || w === '--branches') all = true
+    else if (w === '--tags') tagsOnly = true
+    else if (PUSH_VALUED.has(w)) i++
     else if (!w.startsWith('-')) args.push(w)
   }
-  const spec = args[1]
-  if (spec === undefined) return 'HEAD'
-  if (spec.startsWith(':')) return undefined
-  const source = spec.replace(/^\+/, '').split(':')[0]!
-  return source === '' ? 'HEAD' : source
+  if (all) return ['--branches']
+  const specs = args.slice(1)
+  if (specs.length === 0) return tagsOnly ? [] : ['HEAD']
+  return specs
+    .filter(s => !s.startsWith(':'))
+    .map(s => s.replace(/^\+/, '').split(':')[0]!)
+    .map(s => (s === '' ? 'HEAD' : s))
 }
 
 const unquote = (w: string) => w.replace(/^(["'])(.*)\1$/, '$2')
 
 // Each `git push` in a shell line: the directory it runs in (its `-C`, else the last `cd` before
-// it) and what it sends (undefined when it sends no commits). `push` counts only as git's
+// it) and what it sends (none for a push that sends no commits). `push` counts only as git's
 // subcommand, so `git stash push` and a message that says push are not pushes.
-export function pushes(command: string, cwd: string, home?: string): { dir: string; ref?: string }[] {
-  const found: { dir: string; ref?: string }[] = []
+export function pushes(command: string, cwd: string, home?: string): { dir: string; refs: string[] }[] {
+  const found: { dir: string; refs: string[] }[] = []
   for (const m of command.matchAll(new RegExp(`${GIT}push\\b([^;&|\\n]*)`, 'g'))) {
     let dir = cwd
     for (const c of command.slice(0, m.index).matchAll(/\bcd\s+("[^"]*"|'[^']*'|[^\s;&|]+)/g)) dir = resolvePath(dir, unquote(c[1]!), home)
     for (const c of m[1]!.matchAll(/-C\s+("[^"]*"|'[^']*'|[^\s;&|]+)/g)) dir = resolvePath(dir, unquote(c[1]!), home)
     const args = (m[2]!.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map(unquote)
-    found.push({ dir, ref: pushedRef(['git', 'push', ...args]) })
+    found.push({ dir, refs: pushedRefs(['git', 'push', ...args]) })
   }
   return found
 }

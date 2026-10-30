@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { list, problems } from './check'
-import { type Piece, type Published, commits, directories, gh, isTestPath, pieces, published, pushedRef, pushes, resolvePath, reusesMessage } from './gate'
+import { type Piece, type Published, commits, directories, gh, isGenerated, isTestPath, pieces, published, pushedRefs, pushes, resolvePath, reusesMessage } from './gate'
 import { report, scan } from './scan'
 import { STYLE_FILE, hasRules, parseStyle, withRules } from './style'
 
@@ -200,11 +200,13 @@ async function headOf($: EngineInterface, dir: string) {
   return { sha: sha!, message: (message ?? '').trim() }
 }
 
-// Commits by hash, commit time (seconds) and message: `git log` over a range, each record split on
-// a byte no message holds. Only commits made at or after `since` are kept: a commit pulled, checked
-// out or made before the session is not Claude's.
+// Commits by hash, author time (seconds) and message: `git log` over a range, each record split on
+// a byte no message holds. Only commits first written at or after `since` are kept: a commit
+// pulled, checked out or made before the session is not Claude's, and a rebase, amend or
+// cherry-pick keeps a commit's author time. A message git wrote from another commit's is not
+// Claude's either.
 async function commitsIn($: EngineInterface, dir: string, range: readonly string[], since: number) {
-  const out = await output($, ['git', 'log', '--format=%H%x00%ct%x00%B%x1e', '--max-count=50', ...range], dir)
+  const out = await output($, ['git', 'log', '--format=%H%x00%at%x00%B%x1e', '--max-count=50', ...range], dir)
   return (out ?? '')
     .split('\x1e')
     .map(r => r.trim())
@@ -213,20 +215,20 @@ async function commitsIn($: EngineInterface, dir: string, range: readonly string
       const [sha, time, message] = r.split('\0')
       return { sha: sha!, time: Number(time), message: (message ?? '').trim() }
     })
-    .filter(c => !(c.time < since))
+    .filter(c => !(c.time < since) && !isGenerated(c.message))
 }
 
 // What a finished shell command published that has Claudisms, as notes for the model to act on. A
-// commit is found by comparing the session's repository before and after a `git commit`, keeping
-// the commits made since the command started, and by the line git prints for it, so a quiet commit
-// and one made elsewhere are both read. A commit that keeps an existing message (`--no-edit`, `-C`)
-// is not Claude's text to answer for.
-async function afterShell($: EngineInterface, command: string, text: string, cwd: string, started: number, before?: { sha: string; message: string }) {
+// commit is found by comparing the session's repository before and after a git commit, merge or
+// rebase, keeping the commits first written in this session, and by the line git prints for it,
+// so a quiet commit and one made elsewhere are both read. A commit that keeps an existing message
+// (`--no-edit`, `-C`, a fixup) is not Claude's text to answer for.
+async function afterShell($: EngineInterface, command: string, text: string, cwd: string, since: number, before?: { sha: string; message: string }) {
   const items = published(command, text)
   if (before !== undefined && !reusesMessage(command)) {
     const after = await headOf($, cwd)
     if (after !== undefined && after.sha !== before.sha)
-      for (const c of (await commitsIn($, cwd, [`${before.sha}..${after.sha}`], started)).reverse())
+      for (const c of (await commitsIn($, cwd, [`${before.sha}..${after.sha}`], since)).reverse())
         if (!items.some(i => i.kind === 'commit' && c.sha.startsWith(i.sha))) items.push({ kind: 'commit', sha: c.sha.slice(0, 7) })
   }
   if (items.length === 0) return []
@@ -234,7 +236,8 @@ async function afterShell($: EngineInterface, command: string, text: string, cwd
   const notes: string[] = []
   for (const item of items) {
     const back = await readBack($, item, dirs)
-    if (back === undefined || (item.kind === 'commit' && before !== undefined && back.text === before.message)) continue
+    if (back === undefined) continue
+    if (item.kind === 'commit' && ((before !== undefined && back.text === before.message) || isGenerated(back.text))) continue
     const problem = await problems($, back.text)
     if (problem.length > 0)
       notes.push(`plain-english: ${back.what} has Claudisms. ${back.fix} Fix these, unless a finding is wrong (such as a word used literally):\n${list(problem)}`)
@@ -245,18 +248,43 @@ async function afterShell($: EngineInterface, command: string, text: string, cwd
 const REWORD =
   'Reword those commits in plain English before you push: amend the last with git commit --amend, and reword an older one with git rebase -i using GIT_SEQUENCE_EDITOR and GIT_EDITOR set to commands that make the change, since no editor can be opened. Then push again.'
 
-const SESSION_START = { plugin: 'plain-english', key: 'sessionStart' } as const
-
-// When the session started, in seconds, as git counts commit times.
-async function sessionStart($: EngineInterface) {
-  return (await $.state.get(SESSION_START)).value ?? 0
+// The root of the git repository a file is in, or undefined outside one. The file's folder may not
+// exist yet, so git is asked from the nearest folder above it that does.
+async function repoRoot($: EngineInterface, path: string) {
+  let dir = path.slice(0, path.lastIndexOf('/')) || '/'
+  for (let i = 0; i < 12; i++) {
+    const ran = await $.process.run(['git', 'rev-parse', '--show-toplevel'], { cwd: dir, timeoutMs: 10_000 }).catch(() => undefined)
+    if (ran !== undefined) return ran.exitCode === 0 ? ran.stdout.trim() || undefined : undefined
+    if (dir === '/') return undefined
+    dir = dir.slice(0, dir.lastIndexOf('/')) || '/'
+  }
+  return undefined
 }
 
-// The check of a push: every commit it would send that no remote has yet and that was made in this
-// session, each message checked. `ref` is what the push sends. A commit from before the session is
-// not Claude's to reword, and a first push to a new remote is not charged with the whole history.
-async function checkPush($: EngineInterface, memory: Memory, dir: string, ref: string) {
-  const commits = await commitsIn($, dir, [ref, '--not', '--remotes'], await sessionStart($))
+// Each session's start, by its id, kept across restarts so a resumed session keeps its own.
+const STARTS = 'sessionStarts'
+const MONTH = 30 * 24 * 60 * 60
+
+// When the session started, in seconds, as git counts commit times. A session the mod first sees
+// part-way through starts when it is first asked; starts older than a month are dropped.
+async function sessionStart($: EngineInterface) {
+  const id = await $.session.id()
+  const stored: unknown = await $.store.get(STARTS)
+  const starts = typeof stored === 'object' && stored !== null ? (stored as Record<string, unknown>) : {}
+  const known = starts[id]
+  if (typeof known === 'number') return known
+  const now = Math.floor(Date.now() / 1000)
+  const kept = Object.fromEntries(Object.entries(starts).filter(([, t]) => typeof t === 'number' && t > now - MONTH))
+  await $.store.set(STARTS, { ...kept, [id]: now })
+  return now
+}
+
+// The check of a push: every commit it would send that no remote has yet and that was first
+// written in this session, each message checked. `refs` is what the push sends. A commit from
+// before the session is not Claude's to reword, and a first push to a new remote is not charged
+// with the whole history.
+async function checkPush($: EngineInterface, memory: Memory, dir: string, refs: readonly string[]) {
+  const commits = refs.length === 0 ? [] : await commitsIn($, dir, [...refs, '--not', '--remotes'], await sessionStart($))
   const found = commits.reverse().map(c => ({ what: `the message of commit ${c.sha.slice(0, 7)}`, text: c.message }))
   return gate($, memory, `push\u0000${dir}`, found, REWORD)
 }
@@ -265,7 +293,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.tool.register(SCAN_TOOL)
     // The first start only: a reload or a resumed session keeps the time the session began.
-    if ((await $.state.get(SESSION_START)).value === undefined) await $.state.set(SESSION_START, Math.floor(Date.now() / 1000))
+    await sessionStart($)
     return next(e)
   })
 
@@ -309,7 +337,7 @@ export const register: Register = on => {
       const cwd = await $.session.cwd()
       const home = await $.env.get('HOME')
       const checks = []
-      for (const p of pushes(command, cwd, home)) if (p.ref !== undefined) checks.push(await checkPush($, memory, p.dir, p.ref))
+      for (const p of pushes(command, cwd, home)) if (p.refs.length > 0) checks.push(await checkPush($, memory, p.dir, p.refs))
       const refused = checks.find(c => c.deny !== undefined)
       if (refused !== undefined) return { deny: refused.deny! }
       // A second's slack: git counts commit times in whole seconds.
@@ -327,8 +355,7 @@ export const register: Register = on => {
     // A doc in its project's test folders may hold Claudisms on purpose.
     if (e.tool === 'Write' || e.tool === 'Edit') {
       const path = found[0]!.what
-      const root = (await output($, ['git', 'rev-parse', '--show-toplevel'], path.slice(0, path.lastIndexOf('/')) || '/'))?.trim() || undefined
-      if (isTestPath(path, root)) return next(e)
+      if (isTestPath(path, await repoRoot($, path))) return next(e)
     }
     const checked = await gate($, memory, e.tool, found)
     if (checked.deny !== undefined) return { deny: checked.deny }
@@ -348,9 +375,9 @@ export const register: Register = on => {
     const cwd = await $.session.cwd()
     const dir = e.init?.cwd === undefined ? cwd : resolvePath(cwd, e.init.cwd)
     if (isGit) {
-      const ref = pushedRef(e.argv)
-      if (ref === undefined) return next(e)
-      const push = await checkPush($, memory, dir, ref)
+      const refs = pushedRefs(e.argv)
+      if (refs.length === 0) return next(e)
+      const push = await checkPush($, memory, dir, refs)
       if (push.deny !== undefined) return { deny: push.deny }
       const result = await next(e)
       if (push.passed === true) memory.held.delete(push.key)
