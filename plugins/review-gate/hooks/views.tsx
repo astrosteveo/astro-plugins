@@ -86,7 +86,7 @@ export function band(
       {open.length > 0 && streak(ledger) >= ROUND_CAP && <Text color="warning"> · {ROUND_CAP} rounds without converging: step back</Text>}
       {stand.kind === 'unreviewed' && <Text color="warning">{open.length > 0 ? ' · ' : ''}○ new commits since {short(ledger.reviewed ?? '')}</Text>}
       {(stand.kind === 'ready' || stand.kind === 'approval') && <Text color="success">✓ {short(repo.head)} reviewed, ready for a pull request</Text>}
-      {stand.kind === 'reread' && <Text color="warning">○ review once more at /code-review {stand.level}: the last round hit its finding limit</Text>}
+      {stand.kind === 'reread' && <Text color="warning">○ review once more at /code-review {stand.level}: a round over it hit its finding limit</Text>}
       {stand.kind === 'approval' && <Text color="warning"> · high risk: you approve it at the gate</Text>}
     </Box>
   )
@@ -184,7 +184,7 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
         {now?.kind === 'approval' && <Text color="warning">High risk: the gate asks you to approve it.</Text>}
         {now?.kind === 'reread' && (
           <Text>
-            <Text color="warning">Nothing open, but review once more before the pull request.</Text> The last round hit its finding limit, so one more round at
+            <Text color="warning">Nothing open, but review once more before the pull request.</Text> A round over this commit hit its finding limit, so one more round at
             /code-review {now.level} settles it.
           </Text>
         )}

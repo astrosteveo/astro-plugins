@@ -50,29 +50,24 @@ export type Place = {
   ahead: number
 }
 
-// The default branch: the one origin's HEAD names where the clone has it, else the first of the
-// usual names that exists here or on origin. origin's HEAD outlives the branch it names when that
-// branch is renamed on origin and pruned here.
-async function defaultBranch(git: Git) {
+// The default branch, and what a pull request compares against: origin's copy of it where there is
+// one, since that is what the pull request merges into, else the local one. The branch is the one
+// origin's HEAD names where the clone has it, else the first of the usual names that exists here or
+// on origin. origin's HEAD outlives the branch it names when that branch is renamed on origin and
+// pruned here.
+async function defaultBranch(git: Git): Promise<{ main: string; ref: string }> {
   const remote = await git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
   const named = remote.ok && remote.out.trim().startsWith('origin/') ? remote.out.trim().slice('origin/'.length) : ''
-  if (named !== '' && (await git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${named}`])).ok) return named
+  if (named !== '' && (await git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${named}`])).ok) return { main: named, ref: `origin/${named}` }
   for (const name of ['main', 'master', 'trunk']) {
     const [local, onOrigin] = await Promise.all([
       git(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]),
       git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${name}`]),
     ])
-    if (local.ok || onOrigin.ok) return name
+    if (onOrigin.ok) return { main: name, ref: `origin/${name}` }
+    if (local.ok) return { main: name, ref: name }
   }
-  return ''
-}
-
-// What a pull request compares against: origin's copy of the default branch where there is one,
-// since that is what the pull request merges into, else the local one.
-async function mainRef(git: Git, main: string) {
-  if (main === '') return ''
-  if ((await git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${main}`])).ok) return `origin/${main}`
-  return (await git(['rev-parse', '--verify', '--quiet', `refs/heads/${main}`])).ok ? main : ''
+  return { main: '', ref: '' }
 }
 
 /** The repository `cwd` is in, or why there is none to review. */
@@ -88,8 +83,7 @@ export async function locate($: EngineInterface, cwd: string): Promise<Place | s
   ])
   if (!head.ok) return `${root} has no commits yet.`
   if (!common.ok) return `git could not say where ${root} keeps its data: ${common.err}`
-  const main = await defaultBranch(git)
-  const ref = await mainRef(git, main)
+  const { main, ref } = await defaultBranch(git)
   const fork = ref === '' ? undefined : await git(['merge-base', 'HEAD', ref])
   const base = fork?.ok === true ? fork.out.trim() : ''
   // git merge-base fails with no words when the two share no history, and says why otherwise.

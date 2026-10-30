@@ -275,32 +275,32 @@ const ENDED = new Set(['completed', 'failed', 'killed'])
  * has ended already, or a session that will not stop it, is left as it is.
  */
 async function stop($: EngineInterface, ask: RoundAsk, agentId: string) {
-  const agents = await $.agent.list().catch(() => undefined)
-  const team = agents === undefined ? new Set([agentId]) : teamOf(agents, agentId)
-  ask.quiet([...team])
-  for (const id of team) {
-    if (ENDED.has(agents?.find(one => one.id === id)?.status ?? '')) continue
-    if (await isRefused($, id)) stopLater($, id, STOP_TRIES)
-  }
+  if (await isRefused($, ask, agentId)) stopLater($, ask, agentId, STOP_TRIES)
 }
 
 /** How long a refused stop waits before it asks again, and how many times it asks in all. */
 const STOP_AGAIN_MS = 1_000
 const STOP_TRIES = 3
 
-// Whether the session refused to stop an agent. One that has ended already answers with an error,
-// which is no refusal.
-async function isRefused($: EngineInterface, agentId: string) {
-  const answer: unknown = await $.tool.call({ tool: 'TaskStop', task_id: agentId }).catch(() => undefined)
-  return typeof answer === 'object' && answer !== null && 'deny' in answer
+// Asks the session to stop an agent and every agent under it that has not ended, as the agent list
+// shows them now, and gives whether it refused any. One that has ended already answers with an
+// error, which is no refusal.
+async function isRefused($: EngineInterface, ask: RoundAsk, agentId: string) {
+  const agents = await $.agent.list().catch(() => undefined)
+  const team = agents === undefined ? new Set([agentId]) : teamOf(agents, agentId)
+  ask.quiet([...team])
+  const live = [...team].filter(id => !ENDED.has(agents?.find(one => one.id === id)?.status ?? ''))
+  const answers: unknown[] = await Promise.all(live.map(id => $.tool.call({ tool: 'TaskStop', task_id: id }).catch(() => undefined)))
+  return answers.some(answer => typeof answer === 'object' && answer !== null && 'deny' in answer)
 }
 
 // Right after the person presses Esc, the session refuses every tool call, the round's TaskStop
-// included, and the review runs on. A moment later, from a timer outside the round, it does not.
-function stopLater($: EngineInterface, agentId: string, tries: number) {
+// included, and the review runs on, and may start agents meanwhile. A moment later, from a timer
+// outside the round, it does not: the list is read again, so those agents are stopped too.
+function stopLater($: EngineInterface, ask: RoundAsk, agentId: string, tries: number) {
   $.clock.after(STOP_AGAIN_MS, () => {
-    void isRefused($, agentId).then(refused => {
-      if (refused && tries > 1) stopLater($, agentId, tries - 1)
+    void isRefused($, ask, agentId).then(refused => {
+      if (refused && tries > 1) stopLater($, ask, agentId, tries - 1)
     })
   })
 }
@@ -344,7 +344,8 @@ async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<
   const got = await waitFor($, ask.mail.take(run.agentId), ask.signal, REPLY_LIMIT_MS)
   if (got.value !== undefined) return { ...ended, reply: got.value }
   ask.mail.drop(run.agentId)
-  if (run.background === true) await stop($, ask, run.agentId)
+  // A stopped round stops the review itself, once.
+  if (run.background === true && !ask.signal.aborted) await stop($, ask, run.agentId)
   return ended
 }
 
@@ -391,10 +392,12 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
 
   const last = ledger.rounds[ledger.rounds.length - 1]
   const open = openFindings(ledger)
-  // A commit is read again only by the person, or once after a round that hit its finding limit, at
-  // that round's level at least: a shallower read may miss what the deeper one left out.
-  const owed = ledger.reviewed === place.head ? rereadLevel(ledger) : undefined
-  if (!ask.force && last !== undefined && ledger.reviewed === place.head && owed === undefined) {
+  // A commit is read again only by the person, or once after a round that hit its finding limit. That
+  // read, or a round over commits since, reads the whole branch at that round's level at least: a
+  // shallower read may miss what the deeper one left out.
+  const reread = rereadLevel(ledger)
+  const owed = reread ?? (isCapped(last) ? last?.level : undefined)
+  if (!ask.force && last !== undefined && ledger.reviewed === place.head && reread === undefined) {
     return { ok: true, ledger, round: last.n, text: `${summary(ledger, last.n)}\n\nThis commit was reviewed already; nothing was run again.` }
   }
   if (!ask.force && streak(ledger) >= ROUND_CAP && open.length > 0) return refuse(stepBack(ledger))
@@ -409,11 +412,11 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   const kept = (list: readonly string[]) => list.filter(file => !skipped.some(test => test(file)))
 
   // After the first round, a round reads only the commits since the last one, as long as they build
-  // on it; a rebase or an amend sends it back over the whole branch, and so does a last review that
-  // reported as many findings as its level lets it, since it may have left some out.
+  // on it; a rebase or an amend sends it back over the whole branch, and so does a read owed after a
+  // review that reported as many findings as its level lets it, since it may have left some out.
   const reviewed = ledger.reviewed
   const isDelta =
-    reviewed !== undefined && reviewed !== place.head && last !== undefined && !isCapped(last) && (await isAncestor(git, reviewed, place.head))
+    reviewed !== undefined && reviewed !== place.head && last !== undefined && owed === undefined && (await isAncestor(git, reviewed, place.head))
   const from = isDelta && reviewed !== undefined ? reviewed : place.base
   const span = isDelta ? await changedFiles(git, from, place.head) : files
   const roundFiles = kept(span)

@@ -1600,9 +1600,9 @@ test('a round that hits its finding limit is read once more before the gate vouc
   await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
   await first
   const dismissed = String((await $.tool.call({ tool: DISMISS, ids: ['R1-1'], reason: 'The caller never passes the last page index.' })).result)
-  expect(dismissed).toContain('Nothing is open, but the last round reported as many findings as /code-review high allows, so it may have left some out.')
+  expect(dismissed).toContain('Nothing is open, but a round over this commit reported as many findings as /code-review high allows, so it may have left some out.')
   expect(String((await $.tool.call(open())).deny)).toBe(
-    'Review again: the last round reported as many findings as /code-review high allows, so it may have left some out. Call mcp__review-gate__review once more; it reads 1111111 at /code-review high, and that round settles it.',
+    'Review again: a round over this commit reported as many findings as /code-review high allows, so it may have left some out. Call mcp__review-gate__review once more; it reads 1111111 at /code-review high, and that round settles it.',
   )
   // The card and the band say the pull request waits for that round.
   const row = await $.ui.mount({
@@ -1618,7 +1618,7 @@ test('a round that hits its finding limit is read once more before the gate vouc
   await row.unmount()
   const props = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} }
   const band = await $.ui.mount({ plugin: 'review-gate', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props })
-  expect((await band.findAll({ type: 'Text' })).map(text => text.text).join('')).toContain('○ review once more at /code-review high: the last round hit its finding limit')
+  expect((await band.findAll({ type: 'Text' })).map(text => text.text).join('')).toContain('○ review once more at /code-review high: a round over it hit its finding limit')
   await band.unmount()
   // The model's next call runs the promised round over the same commit, and that one settles it.
   const second = $.tool.call({ tool: REVIEW })

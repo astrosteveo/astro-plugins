@@ -97,7 +97,7 @@ export function standing(ledger: Ledger, head: string): Standing {
 }
 
 /** Why a commit wants a second read, as the gate and the views say it. */
-export const rereadWhy = (level: Level) => `the last round reported as many findings as /code-review ${level} allows, so it may have left some out`
+export const rereadWhy = (level: Level) => `a round over this commit reported as many findings as /code-review ${level} allows, so it may have left some out`
 
 /** What the branch at `head` waits for once nothing is open, as the model and the person read it. */
 export function nothingOpen(ledger: Ledger, head: string) {

@@ -358,9 +358,10 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
   activeRoot = place.root
   others.clear()
   before = new Set((await $.agent.list().catch(() => [])).map(agent => agent.id))
+  let isSaved = false
   try {
     const now = await $.clock.now()
-    return await runRound($, {
+    const outcome = await runRound($, {
       ...wishes,
       ...settings,
       place,
@@ -377,6 +378,8 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
       },
       edit: change => edit($, place, change),
     })
+    isSaved = outcome.ok
+    return outcome
   } finally {
     busy = false
     activeRoot = undefined
@@ -384,9 +387,9 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
     const shown = (await read($, run).catch(() => null))?.agentId
     if (shown !== undefined) await update($, memberOf(activity, { requestId: shown }), () => null).catch(() => undefined)
     await update($, run, () => null).catch(() => undefined)
-    // A stopped round changed no record, and right after Esc git cannot run, so the band would read
-    // as no repository at all: it keeps what it showed.
-    if (!wishes.signal.aborted) await refresh($).catch(() => undefined)
+    // A round stopped before it saved changed no record, and right after Esc git cannot run, so the
+    // band would read as no repository at all: it keeps what it showed. One that saved is shown.
+    if (isSaved || !wishes.signal.aborted) await refresh($).catch(() => undefined)
   }
 }
 
