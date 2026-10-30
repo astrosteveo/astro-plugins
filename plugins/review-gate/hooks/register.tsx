@@ -443,8 +443,12 @@ async function scopeOf($: EngineInterface, agentId: string): Promise<Scope> {
 async function isReviewTeam($: EngineInterface, pending: Pending, agentId: string) {
   if (pending.agentId === undefined) return false
   if (pending.agentId === agentId || pending.team.has(agentId)) return true
-  const team = teamOf(await $.agent.list().catch(() => []), pending.agentId)
+  if (pending.strangers.has(agentId)) return false
+  const agents = await $.agent.list().catch(() => [])
+  const team = teamOf(agents, pending.agentId)
   for (const id of team) if (id !== pending.agentId) pending.team.add(id)
+  // An agent listed outside the team stays outside it: its parent is fixed, and listed before it.
+  if (!team.has(agentId) && agents.some(one => one.id === agentId)) pending.strangers.add(agentId)
   return team.has(agentId)
 }
 
@@ -553,10 +557,11 @@ export const register: Register = (on, options) => {
   // A subagent's reply is its turn's end; the main thread's end is a moment to look at git again.
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) {
-      mail.settle(e.agentId, e.answer, e.usage)
-      doorbell.ring()
+      // The turn's cost is counted before the round is woken, so the round never sums it too early.
       const pending = desk.pending
       if (pending !== undefined && (await isReviewTeam($, pending, e.agentId))) pending.tokens = plus(pending.tokens, e.usage)
+      mail.settle(e.agentId, e.answer, e.usage)
+      doorbell.ring()
     }
     else await refresh($).catch(() => undefined)
     return next(e)

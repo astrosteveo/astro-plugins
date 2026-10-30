@@ -77,6 +77,8 @@ type World = {
   forkFails?: string
   /** How many TaskStop calls from now the session refuses, as it does right after the person presses Esc. */
   stopRefusals?: number
+  /** A local branch besides main, which origin may no longer have. */
+  localBranch?: string
   /** The branch origin's HEAD names, which may no longer be on origin; left out, origin has no HEAD. */
   originHead?: string
 }
@@ -129,7 +131,8 @@ function engine(on: On, repo: World) {
       if (rest[0] === '--show-toplevel') return ran(0, `${ROOT}\n`)
       if (rest[0] === '--path-format=absolute') return ran(0, `${ROOT}/.git\n`)
       if (last === 'HEAD') return ran(0, `${repo.head}\n`)
-      return last === 'refs/heads/main' || (repo.originHead !== undefined && last === 'refs/remotes/origin/main') ? ran(0, `${BASE}\n`) : ran(1)
+      const isLocal = last === 'refs/heads/main' || (repo.localBranch !== undefined && last === `refs/heads/${repo.localBranch}`)
+      return isLocal || (repo.originHead !== undefined && last === 'refs/remotes/origin/main') ? ran(0, `${BASE}\n`) : ran(1)
     }
     if (sub === 'symbolic-ref' && last === 'refs/remotes/origin/HEAD') return repo.originHead === undefined ? ran(1) : ran(0, `origin/${repo.originHead}\n`)
     if (sub === 'symbolic-ref') return last === 'HEAD' && repo.branch !== '' ? ran(0, `${repo.branch}\n`) : ran(1)
@@ -1718,4 +1721,43 @@ test("an origin HEAD that names a branch origin no longer has falls back to the 
   await act($, reviews, 0)
   expect(String((await call).result)).toContain('Review round 1 of feat/app')
   expect((reviews[0] as Review).args).toBe(`high ${BASE}..${ONE}`)
+})
+
+test("an origin HEAD that names a branch pruned from origin but kept here compares against the local one", async ($, on) => {
+  const { store, argvs } = engine(on, world({ originHead: 'develop', localBranch: 'develop' }))
+  seed(store, { rounds: [round(1, ONE, 0)], findings: [], reviewed: ONE })
+  await start($)
+  expect(String((await $.tool.call(open())).result)).toContain('Opened')
+  expect(argvs.find(argv => argv[0] === 'gh' && argv[2] === 'create')).toContain('develop')
+})
+
+test('an idle review that has not recorded may be waiting on a notice, so it is waited for; one that stays so is stopped', async ($, on) => {
+  const repo = world({ background: true, endsAs: 'idle' })
+  const { reviews, stops } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  // It ends a turn to wait on a background shell, which the agent list does not show.
+  await reply($, one.id, 'Waiting for the tests to run.')
+  let finished = false
+  void call.then(() => {
+    finished = true
+  })
+  for (let wait = 0; wait < 10; wait++) await tick($)
+  expect(finished).toBe(false)
+  // The shell's notice wakes it: it records and ends.
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
+  await reply($, one.id, 'Done.')
+  expect(String((await call).result)).toContain('R1-1 · important')
+  expect(stops).toEqual([])
+
+  // One that stays idle and never records is given up on after a minute, and stopped.
+  const again = $.command.run({ command: 'review-gate', args: '', ...person })
+  await until($, 'the second review', () => reviews.length === 2)
+  const two = reviews[1] as Review
+  await reply($, two.id, 'Waiting.')
+  const text = String((await again).text)
+  expect(text).toContain('/code-review ended without recording its findings')
+  expect(stops).toEqual([two.id])
 })

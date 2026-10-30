@@ -58,7 +58,14 @@ export type Place = {
 async function defaultBranch(git: Git): Promise<{ main: string; ref: string }> {
   const remote = await git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
   const named = remote.ok && remote.out.trim().startsWith('origin/') ? remote.out.trim().slice('origin/'.length) : ''
-  if (named !== '' && (await git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${named}`])).ok) return { main: named, ref: `origin/${named}` }
+  if (named !== '') {
+    const [onOrigin, local] = await Promise.all([
+      git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${named}`]),
+      git(['rev-parse', '--verify', '--quiet', `refs/heads/${named}`]),
+    ])
+    if (onOrigin.ok) return { main: named, ref: `origin/${named}` }
+    if (local.ok) return { main: named, ref: named }
+  }
   for (const name of ['main', 'master', 'trunk']) {
     const [local, onOrigin] = await Promise.all([
       git(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]),

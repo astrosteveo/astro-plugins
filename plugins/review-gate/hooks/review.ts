@@ -93,6 +93,8 @@ export type Pending = {
   tokens: Tokens
   /** The agents the review started, as far as the agent list has shown them, whose turns count in its cost. */
   team: Set<string>
+  /** Agents the list showed outside the review's team, which never join it. */
+  strangers: Set<string>
   /** New agents no plugin named that made calls while the review was unknown: the review, untagged, may be one. */
   untagged: Set<string>
   /**
@@ -231,16 +233,38 @@ export function bell(): Bell {
  * spend its clock, so the caller stops waiting rather than spin or time out.
  */
 async function pause($: EngineInterface, woken: Promise<unknown>, signal: AbortSignal, seconds: number) {
-  const child = $.process.spawn({ argv: ['sleep', String(seconds)] })
+  // A round already stopped, or a wait already woken, has nothing to wait for.
+  if (signal.aborted || (await isSettled(woken))) return true
+  let child: ReturnType<EngineInterface['process']['spawn']>
+  try {
+    child = $.process.spawn({ argv: ['sleep', String(seconds)] })
+  } catch {
+    return false
+  }
   const slept = child.next().then(
     step => step.done === true && step.value.code === 0,
     () => false,
   )
-  const stopped = new Promise<'woken'>(resolve => signal.addEventListener('abort', () => resolve('woken'), { once: true }))
-  const ended = await Promise.race([slept, woken.then(() => 'woken' as const), stopped])
-  if (ended !== 'woken') return ended || signal.aborted
-  await child.return({ code: null, signal: null }).catch(() => undefined)
-  return true
+  let onAbort = () => undefined as void
+  const stopped = new Promise<'woken'>(resolve => {
+    onAbort = () => resolve('woken')
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    const ended = await Promise.race([slept, woken.then(() => 'woken' as const), stopped])
+    if (ended !== 'woken') return ended || signal.aborted
+    await child.return({ code: null, signal: null }).catch(() => undefined)
+    return true
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
+}
+
+// Whether a promise has settled already, read without waiting on it.
+async function isSettled(promise: Promise<unknown>) {
+  const NOT_YET = Symbol('not yet')
+  const first = await Promise.race([promise.then(() => true, () => true), Promise.resolve(NOT_YET)])
+  return first !== NOT_YET
 }
 
 /**
@@ -344,6 +368,7 @@ const LIST_TRIES = 10
 async function untilEnded($: EngineInterface, ask: RoundAsk, agentId: string): Promise<{ stuck?: string; status?: string }> {
   // A wake is followed by one check a second later too, since the agent list may say a turn has
   // ended a moment after the turn's own event does.
+  let quietSince: number | undefined
   for (let misses = 0, soon = false; !ask.signal.aborted; ) {
     // The ring is taken before the list is read, so one that comes while it is read still wakes the wait.
     const woken = ask.bell.next()
@@ -351,10 +376,17 @@ async function untilEnded($: EngineInterface, ask: RoundAsk, agentId: string): P
     // A list that could not be read says nothing of the review: it is read again.
     misses = agents === undefined ? misses + 1 : 0
     if (misses >= LIST_TRIES) return { stuck: UNLISTED }
-    const ended = agents === undefined ? undefined : endOf(agents, agentId)
-    if (ended !== undefined) return ended
+    const state = agents === undefined ? 'running' : stateOf(agents, agentId)
+    if (typeof state === 'object') return state
+    // An idle review with nothing of its own at work has ended once it has handed back all the round
+    // asks of it. Before that it may be idle only until a notice wakes it, such as a background agent's
+    // or a background shell's, so it has ended only once it has stayed so for QUIET_MS.
+    const now = await $.clock.now()
+    quietSince = state === 'quiet' ? (quietSince ?? now) : undefined
+    if (quietSince !== undefined && (isHandedBack(ask) || now - quietSince >= QUIET_MS)) return {}
     let isWoken = false
-    const isRunning = await pause($, woken.then(() => (isWoken = true)), ask.signal, soon || misses > 0 ? 1 : CHECK_EVERY_S)
+    const seconds = soon || misses > 0 ? 1 : quietSince === undefined ? CHECK_EVERY_S : Math.max(1, Math.ceil((QUIET_MS - (now - quietSince)) / 1000))
+    const isRunning = await pause($, woken.then(() => (isWoken = true)), ask.signal, Math.min(seconds, CHECK_EVERY_S))
     if (!isRunning) return ask.signal.aborted ? {} : { stuck: STUCK }
     soon = isWoken
   }
@@ -364,17 +396,28 @@ async function untilEnded($: EngineInterface, ask: RoundAsk, agentId: string): P
 /** How often, in seconds, a round looks at the agent list when no event wakes it. */
 const CHECK_EVERY_S = 15
 
-// What the agent list says of how the review ended, or undefined while it runs. One the list no longer
-// shows has ended. One idle between turns with no agent of its own still at work has ended too: it
-// waits only for a message, and one waiting on agents of its own reads as waiting.
-function endOf(agents: readonly { id: string; parentId?: string; status: string }[], agentId: string): { status?: string } | undefined {
+/** How long a review that has not handed back all the round asks must stay idle before it has ended. */
+const QUIET_MS = 60_000
+
+// Whether the review has handed back all the round asks of it: its findings, and with --fix its fixes.
+function isHandedBack(ask: RoundAsk) {
+  const pending = ask.desk.pending
+  return pending?.record !== undefined && (!pending.plan.fix || pending.fixes !== undefined)
+}
+
+/**
+ * What the agent list says of the review: how it ended; `quiet`, idle between turns with no agent of
+ * its own at work; or `running`. One the list no longer shows has ended. One waiting on agents of its
+ * own reads as waiting, so is running.
+ */
+function stateOf(agents: readonly { id: string; parentId?: string; status: string }[], agentId: string): { status?: string } | 'quiet' | 'running' {
   const agent = agents.find(one => one.id === agentId)
   if (agent === undefined) return {}
   if (ENDED.has(agent.status)) return { status: agent.status }
-  if (agent.status !== 'idle') return undefined
+  if (agent.status !== 'idle') return 'running'
   const team = teamOf(agents, agentId)
   const isBusy = agents.some(one => one.id !== agentId && team.has(one.id) && !ENDED.has(one.status) && one.status !== 'idle')
-  return isBusy ? undefined : {}
+  return isBusy ? 'running' : 'quiet'
 }
 
 /**
@@ -530,6 +573,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       calls: 0,
       tokens: NONE,
       team: new Set(),
+      strangers: new Set(),
       untagged: new Set(),
       drift: () => driftOf(git, place, true),
     }
@@ -570,6 +614,8 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
         report = (got.reply?.answer ?? (run.background === true ? '' : run.result)).trim()
         stuck = got.stuck
         failed = endedBadly(got.status) ?? failed
+        // A review that ends the round without its record may yet wake and go on: stopped, it cannot.
+        if (run.background === true && got.stuck === undefined && !isHandedBack(ask)) await stop($, ask, run.agentId)
       }
       tokens = sum(tokens, pending.tokens)
       calls = pending.calls
