@@ -51,7 +51,7 @@ The second line is the review's agent: its tool calls so far, and what it is doi
 
 Between rounds the band says where the branch stands: findings open, commits not reviewed yet, or a commit ready for its pull request, with a note when it waits for your approval. A review's row in the chat draws as a card that lists each finding with its grade, place and the review's category for it; fixed ones are ticked, and dismissed ones show their reason. ctrl+o shows the text Claude read. The round's result ends by asking Claude to suggest, for each open finding, whether to fix it and how or dismiss it and why.
 
-When the review ran in the background, the engine sends a notice of its end, which would hand Claude `/code-review`'s raw report a second time. review-gate puts the round's word in place of the report and draws the notice's row as one dim line, `review-gate · round 2 recorded`. When Claude ran the round, the notice tells it only that. When you ran `/review-gate`, the notice carries the round's result, so Claude follows up with its suggestions.
+When the review ran in the background, the engine sends a notice of its end, which would hand Claude `/code-review`'s raw report a second time. review-gate puts the round's word in place of the report and draws the notice's row as one dim line, `review-gate · round 2 recorded`. When Claude ran the round, the notice tells it only that, and a notice that comes once its turn has ended is dropped rather than start an empty one. When you ran `/review-gate`, the notice carries the round's result, so Claude follows up with its suggestions; a review that ran in the foreground sends no notice, so the command's output carries the same request for Claude's next turn.
 
 - `/review-gate` runs a round now. `/review-gate low`, `medium`, `high`, `xhigh` or `max` picks its level. Add `--max-findings <n|all|default>` to pass `/code-review` its limit, which it keeps for later runs. Your run goes past the cap and reviews a commit again.
 - A pull request's number is not a target: the gate reviews the branch checked out, so run `gh pr checkout <n>` first. `--comment` is not passed, since the review runs before the pull request exists, and neither is `--fix`: Claude fixes findings and commits, and the next round confirms each fix.
@@ -71,7 +71,7 @@ A REVIEW.md at the root, or in any folder above a changed file, goes to the revi
 
 ## Where the record lives
 
-Each branch's record of rounds, findings, answers and your approval is kept in the plugin's own store, outside the repository, so it lasts across sessions and is never committed. A record goes when its branch is deleted. A record from version 0.1, whose rounds ran review-gate's own reviewer agents, reads as none, so its branch is reviewed again.
+Each branch's record of rounds, findings, answers and your approval is kept in the plugin's own store, outside the repository, so it lasts across sessions and is never committed. A record goes when its branch is deleted. A branch deleted and made again under the same name before the band looks at git keeps the old record: `/review-gate reset` clears it. A record from version 0.1, whose rounds ran review-gate's own reviewer agents, reads as none, so its branch is reviewed again.
 
 ## Options
 

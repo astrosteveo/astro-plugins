@@ -306,12 +306,64 @@ const doorbell = bell()
 const desk: { pending?: Pending } = {}
 // What the round said of each review it ran: in place of the raw report in the review's notice, and
 // as the notice's row.
-const told = new Map<string, { note: string; label: string }>()
+const told = new Map<string, Told>()
 // The review agent of the round running now, once known, and when that round ends.
 let current: string | undefined
 let ended: Promise<void> = Promise.resolve()
 
-const NOTICE = /<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g
+/**
+ * What a round said of its review. `note` stands in for the raw report in the review's first notice
+ * and goes once used; `isQuiet` says it gives the model nothing to do; `label` draws the notice's row.
+ */
+type Told = { note?: string; isQuiet: boolean; label: string }
+
+const CLOSE = '</task-notification>'
+
+// Text put inside a notice's result, so a finding that quotes the notice's own tags cannot end it.
+const escaped = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/**
+ * A delivery with the raw report of each review's notice replaced by `word`. A notice's result comes
+ * last, and a report may quote `</result>` or the notice's own closing tag, so a review's notice
+ * runs from its `<result>` to the `</result></task-notification>` that ends the delivery or comes
+ * before the next notice. Gives the text outside every notice, which may name a review too, and how
+ * many notices are other tasks'.
+ */
+export function rewriteNotices(text: string, ids: readonly string[], word: (id: string) => string) {
+  let out = ''
+  let outside = ''
+  let others = 0
+  let at = 0
+  for (;;) {
+    const start = text.indexOf('<task-notification', at)
+    const close = start < 0 ? -1 : text.indexOf(CLOSE, start)
+    if (start < 0 || close < 0) {
+      out += text.slice(at)
+      outside += text.slice(at)
+      return { text: out, outside, others }
+    }
+    out += text.slice(at, start)
+    outside += text.slice(at, start)
+    const result = text.indexOf('<result>', start)
+    const head = text.slice(start, result >= 0 && result < close ? result : close)
+    const id = ids.find(one => head.includes(`<task-id>${one}</task-id>`))
+    if (id === undefined) {
+      others += 1
+      out += text.slice(start, close + CLOSE.length)
+      at = close + CLOSE.length
+      continue
+    }
+    if (result < 0 || result > close) {
+      out += `${head}<result>${word(id)}</result>${CLOSE}`
+      at = close + CLOSE.length
+      continue
+    }
+    const ends = [...text.slice(result).matchAll(/<\/result>\s*<\/task-notification>/g)].map(match => result + (match.index ?? 0) + match[0].length)
+    const end = ends.find(one => /^\s*(?:$|<task-notification\b)/.test(text.slice(one))) ?? ends[ends.length - 1] ?? close + CLOSE.length
+    out += `${head}<result>${word(id)}</result>${CLOSE}`
+    at = end
+  }
+}
 
 // The review agents rounds have run, and the agents of theirs a round stopped: their task
 // notifications repeat what the round reported, and none of them is a later round's review.
@@ -358,7 +410,7 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
       edit: change => edit($, place, change),
     })
     isSaved = outcome.ok
-    if (current !== undefined) told.set(current, tell(outcome, wishes.force, place.head))
+    if (current !== undefined) told.set(current, tell(outcome, wishes.force))
     return outcome
   } finally {
     settle()
@@ -379,11 +431,12 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
  * round's result already; after the person's /review-gate, the notice starts a turn of its own and
  * carries the result, so the model follows up with its suggestions.
  */
-function tell(outcome: Awaited<ReturnType<typeof runRound>>, isPerson: boolean, head: string) {
-  if (!outcome.ok) return { note: `review-gate recorded nothing from this review: ${outcome.text}`, label: 'the round recorded nothing' }
+function tell(outcome: Awaited<ReturnType<typeof runRound>>, isPerson: boolean): Told {
+  if (!outcome.ok) return { note: `review-gate recorded nothing from this review: ${outcome.text}`, isQuiet: !isPerson, label: 'the round recorded nothing' }
   const label = `round ${outcome.round} recorded`
-  if (!isPerson) return { note: `review-gate recorded this review as round ${outcome.round}, and the review tool's result holds its findings: nothing more to do for this notice.`, label }
-  return { note: `The user ran /review-gate, and review-gate recorded this review as round ${outcome.round}:\n\n${outcome.text}\n\n${followUp(outcome.ledger, head)}`, label }
+  if (!isPerson)
+    return { note: `review-gate recorded this review as round ${outcome.round}, and the review tool's result holds its findings: nothing more to do for this notice.`, isQuiet: true, label }
+  return { note: `The user ran /review-gate, and review-gate recorded this review as round ${outcome.round}:\n\n${outcome.text}\n\n${followUp(outcome.ledger)}`, isQuiet: false, label }
 }
 
 /**
@@ -492,12 +545,9 @@ export function parseRun(args: string): Pick<Wishes, 'level' | 'maxFindings'> | 
  * What the model says to the person once a round is back: a suggestion for each open finding, or the
  * next step when none is open. The card shows the findings, so the model adds its judgment, not a list.
  */
-export function followUp(ledger: Ledger, head: string) {
+export function followUp(ledger: Ledger) {
   const open = openFindings(ledger)
-  if (open.length === 0)
-    return standing(ledger, head).kind === 'unreviewed'
-      ? 'Tell the user what the review found, then review the new commits.'
-      : 'Tell the user the review passed, and suggest the next step, such as opening the pull request.'
+  if (open.length === 0) return 'Tell the user the review passed, and suggest the next step, such as opening the pull request.'
   return `Tell the user what you suggest for ${open.length === 1 ? 'the open finding' : `each of the ${open.length} open findings`}, a line each by its id: fix it, and how, or dismiss it, and why. The user sees the findings in the review's card, so do not repeat them.`
 }
 
@@ -534,19 +584,20 @@ export const register: Register = (on, options) => {
     const ids = [...reviews, desk.pending?.agentId].filter((one): one is string => one !== undefined && e.text.includes(`<task-id>${one}</task-id>`))
     if (ids.length === 0) return next(e)
     doorbell.ring()
-    // The notice can come while its round still checks and saves what the review found.
-    if (busy) await ended
-    const text = e.text.replace(NOTICE, notice => {
-      const id = ids.find(one => notice.includes(`<task-id>${one}</task-id>`))
-      if (id === undefined) return notice
-      const word = `<result>${told.get(id)?.note ?? 'review-gate handled this review already: nothing to do.'}</result>`
-      return /<result>[\s\S]*?<\/result>/.test(notice)
-        ? notice.replace(/<result>[\s\S]*?<\/result>/, () => word)
-        : notice.replace(/<\/task-notification>$/, () => `${word}</task-notification>`)
+    // The notice of the round running now can come while it still checks and saves what the review found.
+    if (busy && current !== undefined && ids.includes(current)) await ended
+    let isQuiet = true
+    const rewritten = rewriteNotices(e.text, ids, id => {
+      const said = told.get(id)
+      if (said !== undefined) told.set(id, { isQuiet: said.isQuiet, label: said.label })
+      isQuiet &&= said?.note === undefined || said.isQuiet
+      return escaped(said?.note ?? 'review-gate handled this review already: nothing to do.')
     })
     // A review's id outside any notice the hook can read may carry its raw report, so the delivery goes.
-    const outside = e.text.replace(NOTICE, '')
-    return !ids.some(id => outside.includes(id)) ? next({ ...e, text }) : { drop: 'review-gate: a review report it could not read was kept out' }
+    if (ids.some(id => rewritten.outside.includes(id))) return { drop: 'review-gate: a review report it could not read was kept out' }
+    // A notice that would start a turn of its own with nothing to do is dropped: its row is the lesser cost.
+    if (e.turnId === undefined && isQuiet && rewritten.others === 0) return { drop: 'review-gate: the round reported this review already' }
+    return next({ ...e, text: rewritten.text })
   }).catch((_, e, next) => next(e))
 
   // A review's notice row is one dim line: the round's card above already shows what it found.
@@ -680,7 +731,7 @@ export const register: Register = (on, options) => {
       force: false,
       signal: next.signal,
     })
-    return outcome.ok ? { result: `${outcome.text}\n\n${followUp(outcome.ledger, place.head)}` } : { deny: outcome.text }
+    return outcome.ok ? { result: `${outcome.text}\n\n${followUp(outcome.ledger)}` } : { deny: outcome.text }
   }).catch((_, _e, next) => ({ deny: `review-gate: the review failed${next.error?.message ? `: ${next.error.message}` : ''}. Nothing was recorded.` }))
 
   on('tool.call', { tool: DISMISS }, async ($, e) => {
@@ -743,7 +794,9 @@ export const register: Register = (on, options) => {
     const wishes = parseRun(e.args)
     if (typeof wishes === 'string') return { text: wishes }
     const outcome = await round($, place, settings, { intent: '', ...wishes, force: isPerson, signal: next.signal })
-    return { text: outcome.text }
+    // A review that ran in the foreground sends no notice to start Claude's follow-up, so the output
+    // carries it too, for Claude's next turn; the card draws the round, not this line.
+    return { text: outcome.ok && isPerson ? `${outcome.text}\n\n${followUp(outcome.ledger)}` : outcome.text }
   }).catch((_, _e, next) => ({ text: `review-gate: the command failed${next.error?.message ? `: ${next.error.message}` : ''}.` }))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

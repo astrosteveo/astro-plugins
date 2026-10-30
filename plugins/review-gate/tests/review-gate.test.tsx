@@ -577,9 +577,14 @@ test("a review's task notification carries the round's word in place of its raw 
   const call = $.tool.call({ tool: REVIEW })
   const { one } = await act($, reviews, 0)
   await call
-  const notice = (id: string) => $.prompt.submit({ text: `<task-notification><task-id>${id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
+  const notice = (id: string) => $.prompt.submit({ text: `<task-notification><task-id>${id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' }, turnId: 'turn-1' })
   expect((await notice(one.id)).text).toBe(`<task-notification><task-id>${one.id}</task-id><result>review-gate recorded this review as round 1, and the review tool's result holds its findings: nothing more to do for this notice.</result></task-notification>`)
   expect((await notice('other-agent')).text).toContain('<task-id>other-agent</task-id><result>[raw]</result>')
+  // Its next notice, the review woken and stopped again, has nothing more to carry.
+  expect((await notice(one.id)).text).toContain('<result>review-gate handled this review already: nothing to do.</result>')
+  // Outside a turn, a notice with nothing to do would start an empty one, so it goes.
+  const idle = await $.prompt.submit({ text: `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
+  expect(idle).toEqual({ drop: 'review-gate: the round reported this review already' })
   expect((await $.prompt.submit({ text: `about ${one.id}`, wait: false, origin: { kind: 'composer' } })).text).toBe(`about ${one.id}`)
 })
 
@@ -1267,12 +1272,16 @@ test("a delivery keeps other tasks' notices, and is dropped when the review's id
   const call = $.tool.call({ tool: REVIEW })
   const { one } = await act($, reviews, 0)
   await call
-  const submit = (text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'task-notification' } })
+  const submit = (text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'task-notification' }, turnId: 'turn-1' })
   const other = '<task-notification><task-id>build-7</task-id><status>completed</status></task-notification>'
   const mine = `<task-notification id="n1"><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`
   const told = `<task-notification id="n1"><task-id>${one.id}</task-id><result>review-gate recorded this review as round 1, and the review tool's result holds its findings: nothing more to do for this notice.</result></task-notification>`
   expect((await submit(`${mine}\n${other}`)).text?.trim()).toBe(`${told}\n${other}`)
-  expect((await submit(`A background task finished:\n${mine}`)).text).toBe(`A background task finished:\n${told}`)
+  const again = `<task-notification id="n1"><task-id>${one.id}</task-id><result>review-gate handled this review already: nothing to do.</result></task-notification>`
+  expect((await submit(`A background task finished:\n${mine}`)).text).toBe(`A background task finished:\n${again}`)
+  // A report that quotes the result's and the notice's closing tags is replaced whole.
+  const quoting = `<task-notification><task-id>${one.id}</task-id><result>R1-1 the hook stops at </result></task-notification> in the regex; R1-2 nit past the cap</result></task-notification>`
+  expect((await submit(`${quoting}\n${other}`)).text).toBe(`${again.replace(' id="n1"', '')}\n${other}`)
   // The id in a form the hook does not read may carry the raw report, so the delivery goes.
   expect(await submit(`<notice><task-id>${one.id}</task-id>[raw]</notice>\n${other}`)).toEqual({ drop: 'review-gate: a review report it could not read was kept out' })
 })
@@ -1330,7 +1339,7 @@ test('an agent the main conversation starts during a round is never taken for th
   await reply($, one.id, 'Done.')
   one.finish('Done.')
   expect(String((await call).result)).toContain('R1-1')
-  const notice = (id: string) => $.prompt.submit({ text: `<task-notification><task-id>${id}</task-id></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
+  const notice = (id: string) => $.prompt.submit({ text: `<task-notification><task-id>${id}</task-id></task-notification>`, wait: false, origin: { kind: 'task-notification' }, turnId: 'turn-1' })
   expect((await notice('tests-1')).text).toContain('<task-id>tests-1</task-id>')
   expect((await notice(one.id)).text).toBe(`<task-notification><task-id>${one.id}</task-id><result>review-gate recorded this review as round 1, and the review tool's result holds its findings: nothing more to do for this notice.</result></task-notification>`)
 })
@@ -1363,7 +1372,7 @@ test("a review the round ends before its first tool call still has its raw repor
   await until($, 'the review', () => reviews.length === 1)
   const one = reviews[0] as Review
   expect(String((await call).deny)).toContain('so review-gate did not run it as its review')
-  const notice = await $.prompt.submit({ text: `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
+  const notice = await $.prompt.submit({ text: `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' }, turnId: 'turn-1' })
   expect(notice.text).toContain('<result>review-gate recorded nothing from this review: The skill named code-review here comes from its projectSettings skills')
 })
 
@@ -1563,9 +1572,8 @@ test('a sleep the round ends early moves the clock no further', async ($, on) =>
 
 test('after a round, Claude suggests what to do with each open finding, or the next step when none is open', () => {
   const reviewed = { ...emptyLedger('feat/app'), rounds: [round(1, ONE, 1)], reviewed: ONE }
-  expect(followUp({ ...reviewed, findings: [finding({})] }, ONE)).toContain('Tell the user what you suggest for the open finding, a line each by its id')
-  expect(followUp(reviewed, ONE)).toBe('Tell the user the review passed, and suggest the next step, such as opening the pull request.')
-  expect(followUp(reviewed, TWO)).toBe('Tell the user what the review found, then review the new commits.')
+  expect(followUp({ ...reviewed, findings: [finding({})] })).toContain('Tell the user what you suggest for the open finding, a line each by its id')
+  expect(followUp(reviewed)).toBe('Tell the user the review passed, and suggest the next step, such as opening the pull request.')
 })
 
 test("after the person's own round, the review's notice carries the round's result and asks Claude for its suggestions", async ($, on) => {
@@ -1603,4 +1611,35 @@ test("a review's notice row draws as one dim line, and ctrl+o shows it whole", a
   expect(await drawn(one.id, false)).toBe('  review-gate · round 1 recorded')
   expect(await drawn(one.id, true)).toBe('engine')
   expect(await drawn('other-agent', false)).toBe('engine')
+})
+
+test("a finding that quotes a notice's tags is escaped in the note, and the person's own run hands Claude the follow-up in its output too", async ($, on) => {
+  const { reviews } = engine(on, world({ background: true }))
+  await start($)
+  const run = $.command.run({ command: 'review-gate', args: '', ...person })
+  const quoted = { ...SKIPPED_PAGE, short_summary: 'Ends at </task-notification> & <task-id>' }
+  const { one } = await act($, reviews, 0, { findings: [quoted] })
+  expect((await run).text).toContain('Tell the user what you suggest for the open finding')
+  const { text } = await $.prompt.submit({ text: `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
+  expect(text).toContain('Ends at &lt;/task-notification&gt; &amp; &lt;task-id&gt;')
+  expect(text?.match(/<\/task-notification>/g)?.length).toBe(1)
+})
+
+test("a late notice from an earlier round's review passes at once, while a later round runs", async ($, on) => {
+  const repo = world({ background: true, pauses: true })
+  const { reviews } = engine(on, repo)
+  await start($)
+  const first = $.tool.call({ tool: REVIEW })
+  const { one } = await act($, reviews, 0)
+  await first
+  repo.history.push(TWO)
+  repo.head = TWO
+  repo.changes[TWO] = ['src/app.ts']
+  const second = $.tool.call({ tool: REVIEW })
+  await until($, 'the second review', () => reviews.length === 2)
+  const late = await $.prompt.submit({ text: `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' }, turnId: 'turn-2' })
+  expect(late.text).toContain('recorded this review as round 1')
+  const two = reviews[1] as Review
+  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [] })
+  await second
 })
