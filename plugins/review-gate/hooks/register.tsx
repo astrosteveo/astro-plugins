@@ -6,7 +6,7 @@ import type { Place } from './git'
 import { opensOrMerges } from './guard'
 import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, nothingOpen, openFindings, recordKey, recordPrefix, rereadWhy, sortOut, standing, toLedger, whereOf } from './ledger'
 import { RECORD, capOf, readFixes, readRecord, reviewSection } from './prompts'
-import { SKILL, isLevel, mailbox, plus, runRound, summary, teamOf } from './review'
+import { SKILL, bell, isLevel, mailbox, plus, runRound, summary, teamOf } from './review'
 import type { Pending, RoundAsk } from './review'
 import { band, card } from './views'
 
@@ -336,6 +336,8 @@ async function mergePullRequest($: EngineInterface, place: Place, input: Input):
 // Agents' replies, the round waiting on its review, the folder it runs in, and whether one runs: the
 // session's, kept here.
 const mail = mailbox()
+// Rung on each event that may have ended a round's review, so the round looks at once.
+const doorbell = bell()
 const desk: { pending?: Pending } = {}
 // The review agents rounds have run, and the agents of theirs a round stopped: their task
 // notifications repeat what the round reported, and none of them is a later round's review.
@@ -369,6 +371,7 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
       token: `${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       mail,
       desk,
+      bell: doorbell,
       progress: async change => {
         await update($, run, change)
       },
@@ -535,6 +538,7 @@ export const register: Register = (on, options) => {
     if (e.origin.kind !== 'task-notification') return next(e)
     const ids = [...reviews, desk.pending?.agentId].filter((one): one is string => one !== undefined && e.text.includes(`<task-id>${one}</task-id>`))
     if (ids.length === 0) return next(e)
+    doorbell.ring()
     // A delivery may carry other tasks' notices beside the review's: only the review's go, and the
     // rest passes on. A review's id left outside any notice the hook can read, or a delivery with no
     // other notice left, is dropped whole, so the review's raw report never reaches the model.
@@ -550,6 +554,7 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     if (e.agentId !== undefined) {
       mail.settle(e.agentId, e.answer, e.usage)
+      doorbell.ring()
       const pending = desk.pending
       if (pending !== undefined && (await isReviewTeam($, pending, e.agentId))) pending.tokens = plus(pending.tokens, e.usage)
     }

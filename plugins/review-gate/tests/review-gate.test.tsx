@@ -70,7 +70,7 @@ type World = {
   /** Whether git finds no commit the branch shares with main, as in a shallow clone. */
   noBase?: boolean
   /** How a review that has ended shows in the agent list; left out, completed. */
-  endsAs?: 'failed' | 'killed'
+  endsAs?: 'failed' | 'killed' | 'idle'
   /** How many reads of the agent list from now fail. */
   listFails?: number
   /** What git merge-base says when it fails for a reason other than no shared history. */
@@ -235,6 +235,15 @@ function engine(on: On, repo: World) {
     const text = files.get(String(e.path))
     if (text === undefined) throw new Error('ENOENT')
     return { value: text }
+  })
+  // A sleep the round holds while it waits: it takes a moment and moves the clock a tenth of its length.
+  on('process.spawn', async function* (_, e) {
+    const argv = e.argv.map(String)
+    if (argv[0] !== 'sleep') return { value: { code: 0, signal: null } }
+    if (repo.noSleep === true) return { value: { code: 127, signal: null } }
+    await new Promise<void>(resolve => setTimeout(resolve, 1))
+    repo.now += Number(argv[1]) * 100
+    return { value: { code: 0, signal: null } }
   })
   on('process.run', async (_, e) => {
     const argv = e.argv.map(String)
@@ -1333,6 +1342,35 @@ test('a stop the session refuses, as right after Esc, is asked again a moment la
   // The timer asks again after a second, and once more when that too is refused.
   for (let wait = 0; wait < 300 && stops.length < 3; wait++) await new Promise<void>(resolve => setTimeout(resolve, 10))
   expect(stops).toEqual([id, id, id])
+})
+
+test('a background review that ends idle between turns, with no agent of its own at work, has ended', async ($, on) => {
+  const repo = world({ background: true, endsAs: 'idle' })
+  const { reviews, stops } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  const { one } = await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
+  const text = String((await call).result)
+  expect(text).toContain('R1-1 · important · src/app.ts:12')
+  expect(text.includes('failed')).toBe(false)
+  expect(stops).toEqual([])
+  // One idle while an angle agent of its still works has not ended.
+  repo.agents = [{ id: 'angle-1', type: 'general-purpose', parentId: 'review-2' }]
+  const again = $.command.run({ command: 'review-gate', args: '', ...person })
+  await until($, 'the second review', () => reviews.length === 2)
+  const two = reviews[1] as Review
+  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [] })
+  await reply($, two.id, 'Waiting for my angle.')
+  let finished = false
+  void again.then(() => {
+    finished = true
+  })
+  for (let wait = 0; wait < 20; wait++) await tick(session as Engine)
+  expect(finished).toBe(false)
+  repo.agents = []
+  await reply($, two.id, 'Done.')
+  expect(String((await again).text)).toContain('Review round 2')
+  expect(one.id).toBe('review-1')
 })
 
 test('a background review that failed or was stopped after it recorded is reported as such', async ($, on) => {

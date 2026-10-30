@@ -145,6 +145,8 @@ export type RoundAsk = {
   progress: (change: (run: Run | null) => Run | null) => Promise<void>
   /** Takes an agent as the round's review, on proof such as the Skill tool naming it. */
   bind: (agentId: string) => Promise<void>
+  /** Rung by the hooks on each event that may have ended the review, which wakes the round's wait. */
+  bell: Bell
   /** Marks agents the round stopped as its own, so their notices stay out of the conversation. */
   quiet: (agentIds: readonly string[]) => void
 
@@ -203,30 +205,55 @@ function forked(value: unknown): Forked | undefined {
 }
 
 /**
- * Waits for `promise`, or until the round is stopped or `limitMs` passes, when it gives no value. A
- * hook's own clock runs while no call of its is in flight, and the reply comes through another
- * hook's event, so the wait keeps a `sleep` in flight. The hook's own sleep would spend its clock,
- * so where `sleep` cannot run the wait ends at once, and says so, rather than spin or time out.
+ * What wakes a round's wait: the hooks ring it on each event that may have ended the review, such as
+ * a turn's end in the review or an agent of its, and the round waits on it. `next` is the next ring.
+ */
+export type Bell = { ring: () => void; next: () => Promise<void> }
+
+export function bell(): Bell {
+  let ring = () => undefined as void
+  let next = new Promise<void>(resolve => (ring = resolve))
+  return {
+    ring() {
+      const rung = ring
+      next = new Promise<void>(resolve => (ring = resolve))
+      rung()
+    },
+    next: () => next,
+  }
+}
+
+/**
+ * Waits until `woken` settles, the round is stopped, or `seconds` pass, with one `sleep` in flight
+ * all the while: a hook's own clock runs while no call of its is in flight, and what it waits for
+ * comes through other hooks' events. The sleep is ended as soon as the wait is woken, so the wait
+ * costs one child however long it lasts. False when `sleep` cannot run; the hook's own sleep would
+ * spend its clock, so the caller stops waiting rather than spin or time out.
+ */
+async function pause($: EngineInterface, woken: Promise<unknown>, signal: AbortSignal, seconds: number) {
+  const child = $.process.spawn({ argv: ['sleep', String(seconds)] })
+  const slept = child.next().then(
+    step => step.done === true && step.value.code === 0,
+    () => false,
+  )
+  const stopped = new Promise<'woken'>(resolve => signal.addEventListener('abort', () => resolve('woken'), { once: true }))
+  const ended = await Promise.race([slept, woken.then(() => 'woken' as const), stopped])
+  if (ended !== 'woken') return ended || signal.aborted
+  await child.return({ code: null, signal: null }).catch(() => undefined)
+  return true
+}
+
+/**
+ * Waits for `promise`, or until the round is stopped or `limitMs` passes, when it gives no value.
+ * Where `sleep` cannot run the wait ends at once, and says so.
  */
 async function waitFor<T>($: EngineInterface, promise: Promise<T>, signal: AbortSignal, limitMs: number): Promise<{ value?: T; isStuck: boolean }> {
   let value: T | undefined
-  let isSettled = false
   void promise.then(got => {
     value = got
-    isSettled = true
   })
-  const since = await $.clock.now()
-  while (!isSettled && !signal.aborted && (await $.clock.now()) - since < limitMs) {
-    const slept = await Promise.race([promise.then(() => true), pause($)])
-    if (!slept && !isSettled) return { isStuck: true }
-  }
-  return value === undefined ? { isStuck: false } : { value, isStuck: false }
-}
-
-// A second with a call in flight; false when `sleep` cannot run.
-async function pause($: EngineInterface) {
-  const ran = await $.process.run(['sleep', '1']).catch(() => undefined)
-  return ran !== undefined && ran.exitCode === 0
+  const isRunning = await pause($, promise, signal, Math.ceil(limitMs / 1000))
+  return value === undefined ? { isStuck: !isRunning } : { value, isStuck: false }
 }
 
 const STUCK = 'review-gate could not wait for the review, since the `sleep` program could not run here, so it stopped the review.'
@@ -314,19 +341,40 @@ const LIST_TRIES = 10
  * not its end. Gives how it ended, as the agent list says, and whether the wait could not go on: where
  * `sleep` cannot run, or the agent list cannot be read.
  */
-async function untilEnded($: EngineInterface, agentId: string, signal: AbortSignal): Promise<{ stuck?: string; status?: string }> {
-  for (let misses = 0; !signal.aborted; ) {
+async function untilEnded($: EngineInterface, ask: RoundAsk, agentId: string): Promise<{ stuck?: string; status?: string }> {
+  // A wake is followed by one check a second later too, since the agent list may say a turn has
+  // ended a moment after the turn's own event does.
+  for (let misses = 0, soon = false; !ask.signal.aborted; ) {
+    // The ring is taken before the list is read, so one that comes while it is read still wakes the wait.
+    const woken = ask.bell.next()
     const agents = await $.agent.list().catch(() => undefined)
     // A list that could not be read says nothing of the review: it is read again.
     misses = agents === undefined ? misses + 1 : 0
     if (misses >= LIST_TRIES) return { stuck: UNLISTED }
-    const agent = agents?.find(one => one.id === agentId)
-    // An agent the list no longer shows has ended.
-    if (agents !== undefined && agent === undefined) return {}
-    if (agent !== undefined && ENDED.has(agent.status)) return { status: agent.status }
-    if (!(await pause($))) return { stuck: STUCK }
+    const ended = agents === undefined ? undefined : endOf(agents, agentId)
+    if (ended !== undefined) return ended
+    let isWoken = false
+    const isRunning = await pause($, woken.then(() => (isWoken = true)), ask.signal, soon || misses > 0 ? 1 : CHECK_EVERY_S)
+    if (!isRunning) return ask.signal.aborted ? {} : { stuck: STUCK }
+    soon = isWoken
   }
   return {}
+}
+
+/** How often, in seconds, a round looks at the agent list when no event wakes it. */
+const CHECK_EVERY_S = 15
+
+// What the agent list says of how the review ended, or undefined while it runs. One the list no longer
+// shows has ended. One idle between turns with no agent of its own still at work has ended too: it
+// waits only for a message, and one waiting on agents of its own reads as waiting.
+function endOf(agents: readonly { id: string; parentId?: string; status: string }[], agentId: string): { status?: string } | undefined {
+  const agent = agents.find(one => one.id === agentId)
+  if (agent === undefined) return {}
+  if (ENDED.has(agent.status)) return { status: agent.status }
+  if (agent.status !== 'idle') return undefined
+  const team = teamOf(agents, agentId)
+  const isBusy = agents.some(one => one.id !== agentId && team.has(one.id) && !ENDED.has(one.status) && one.status !== 'idle')
+  return isBusy ? undefined : {}
 }
 
 /**
@@ -336,7 +384,7 @@ async function untilEnded($: EngineInterface, agentId: string, signal: AbortSign
  * run on unseen.
  */
 async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<{ reply?: Reply; stuck?: string; status?: string }> {
-  const ended = run.background === true ? await untilEnded($, run.agentId, ask.signal) : {}
+  const ended = run.background === true ? await untilEnded($, ask, run.agentId) : {}
   if (ended.stuck !== undefined) {
     await stop($, ask, run.agentId)
     return { stuck: ended.stuck }
