@@ -34,11 +34,6 @@ export type Finding = {
   answer?: string
   /** The round that found it fixed. */
   closedRound?: number
-  /**
-   * What a review run with --fix said it did about it while it was open: fixed it, or left it, and
-   * why. The finding stays open until a round confirms the fix, and the next round's word replaces it.
-   */
-  fix?: { round: number; applied: boolean; why: string }
 }
 
 /** One review round: what it covered and what came of it. */
@@ -53,11 +48,9 @@ export type Round = {
   risk: Risk
   /** Findings the review reported, those the branch had had included. */
   raised: number
-  /** The most findings the review's level lets it report; a review that reports that many may have left some out. */
-  cap?: number
   /** Findings the round added. */
   kept: number
-  /** Nits the round left out past the cap of a few a round. */
+  /** Nits the round left out, since the branch had raised as many as it may. */
   nitsLeft?: number
   /** Findings the review reported in files REVIEW.md skips, which the round left out. */
   skippedOut?: number
@@ -68,8 +61,6 @@ export type Round = {
   at: number
   /** How long the round ran, from its start to its record. */
   durationMs?: number
-  /** What the review and the risk check spent: tokens in and out, and the input read from the cache. */
-  tokens?: Tokens
   /** The review's tool calls. */
   calls?: number
   /** Set when every file the round covers is on a REVIEW.md Skip list, so no review ran. */
@@ -77,9 +68,6 @@ export type Round = {
   /** Set when the commits the round covers change no file, so no review ran. */
   unchanged?: boolean
 }
-
-/** Tokens a round spent. `input` counts what was sent at full price, cache writes included. */
-export type Tokens = { input: number; output: number; cached: number }
 
 /** A branch's review record, kept in the plugin's own store, outside the repository. */
 export type Ledger = {
@@ -89,11 +77,6 @@ export type Ledger = {
   findings: Finding[]
   /** The commit the last round reviewed. */
   reviewed?: string
-  /**
-   * Who began the branch, and when: its first commit's author and date. A record whose `first` is not
-   * the branch's own belongs to an earlier branch of the same name.
-   */
-  first?: string
   /** The risk the classifier gave the last commit it judged, kept so that commit is not judged twice. */
   riskFor?: { sha: string; risk: Risk }
   /** The round the count toward the cap starts after: the person's `/review-gate more` moves it. */

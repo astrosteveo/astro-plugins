@@ -185,15 +185,6 @@ export async function guideFiles(git: Git, at: string, files: readonly string[])
   return read.filter(file => file.text.trim() !== '')
 }
 
-/**
- * Who began a branch, and when: the author and date of its first commit past `from`. A rebase or
- * an amend keeps them, and another branch under the same name has its own.
- */
-export async function firstCommit(git: Git, from: string, to: string) {
-  const out = must(await git(['log', '--reverse', '--format=%aI %ae', `${from}..${to}`]), 'read the branch\'s first commit')
-  return out.split('\n')[0]?.trim() ?? ''
-}
-
 /** The repository's local branches, by name. */
 export async function branches(git: Git) {
   const out = must(await git(['for-each-ref', '--format=%(refname:short)', 'refs/heads']), 'list the branches')

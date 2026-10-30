@@ -1,6 +1,6 @@
 import type { Finding, Level, Risk } from '../types'
 import { short } from './git'
-import { whereOf } from './ledger'
+import { NIT_CAP, nitsLeftFor, whereOf } from './ledger'
 import type { Guide, Recheck, Reported } from './ledger'
 
 const FENCE = '```'
@@ -81,7 +81,6 @@ export type Plan = {
   from: string
   scope: 'full' | 'delta'
   level: Level
-  fix: boolean
   intent: string
   guides: readonly Guide[]
   /** Skip globs from the REVIEW.md files, written from the repository's root. */
@@ -99,6 +98,7 @@ const findingLine = (finding: Finding) =>
  */
 export function reviewSection(plan: Plan) {
   const open = plan.earlier.filter(finding => finding.status === 'open')
+  const nits = nitsLeftFor(plan.earlier)
   const scope =
     plan.scope === 'full'
       ? `the whole branch, as its pull request will show it: \`git diff ${plan.from} ${plan.head}\`.`
@@ -109,8 +109,11 @@ export function reviewSection(plan: Plan) {
     "review-gate keeps this branch's review record, and opens its pull request only once every finding is answered. This section adds to the steps above, and where the two differ, it holds.",
     '',
     `- Review ${scope}`,
-    `- The repository is at \`${plan.root}\`, its working tree at ${short(plan.head)}: run git and read files there.${plan.fix ? '' : ' Change no file.'} Leave HEAD where it is: read other commits with git show or git diff, and do not commit, check out or reset, or the round records nothing.`,
+    `- The repository is at \`${plan.root}\`, its working tree at ${short(plan.head)}: run git and read files there. Change no file. Leave HEAD where it is: read other commits with git show or git diff, and do not commit, check out or reset, or the round records nothing.`,
     `- What the author says the change is for: ${intentLine(plan.intent)}`,
+    nits === 0
+      ? `- Report no nits (cleanup, style, reuse, simplification, efficiency): this branch has raised the ${NIT_CAP} it may. Report only defects.`
+      : `- Report at most ${nits} nit${nits === 1 ? '' : 's'} (cleanup, style, reuse, simplification, efficiency), the ones most worth an answer: each needs one before the pull request, and a branch raises at most ${NIT_CAP}.`,
   ]
   if (plan.skip.length > 0) lines.push(`- Leave out the files these globs match, as the repository's REVIEW.md asks: ${plan.skip.map(glob => `\`${glob}\``).join(', ')}.`)
   if (plan.guides.length > 0) lines.push('', guides(plan.guides).trimStart())
@@ -124,35 +127,14 @@ export function reviewSection(plan: Plan) {
     )
   lines.push(
     '',
-    `When your list of findings is final, and before you ${plan.fix ? 'change any file or ' : ''}write your answer, call the ${RECORD} tool once, with:`,
+    `When your list of findings is final, and before you write your answer, call the ${RECORD} tool once, with:`,
     `- round: "${plan.token}"`,
     '- findings: every finding of your final list, with its file, line, summary, short_summary, failure_scenario and category as the steps above describe them, and two more fields. security is true when the defect lets someone do what they should not: read or change data that is not theirs, get past a check, run code, or learn a secret. introduced is false when the defect was there before this branch.',
     `- rechecked: ${open.length === 0 ? 'an empty list.' : 'one entry for each open finding listed above: its id, fixed (true or false), and why, in one line.'}`,
     '',
-    'Its reply gives each finding its id.',
+    'Its reply gives each finding its id. Then finish as the steps above say.',
   )
-  if (plan.fix)
-    lines.push(
-      '',
-      `Then fix the findings as the steps above say. When you have changed every file you will change, call ${RECORD} a second time, with:`,
-      `- round: "${plan.token}"`,
-      `- fixes: one entry for each finding its first reply named${open.length === 0 ? '' : ' and each open finding listed above'}: its id, applied (true when you fixed it in the working tree), and why, in one line: what you changed, or why you left it.`,
-      '',
-      'Leave every change uncommitted. Then end with an answer of two or three sentences: review-gate shows the findings and your fixes itself, so do not list them again.',
-    )
-  else lines.push('Then finish as the steps above say.')
   return lines.join('\n')
-}
-
-/** What a review run with --fix did about one finding. */
-export type Fix = { id: string; applied: boolean; why: string }
-
-/** The fixes a second record call carries, or undefined when it carries none. */
-export function readFixes(input: Record<string, unknown>): Fix[] | undefined {
-  if (!Array.isArray(input.fixes)) return undefined
-  return input.fixes.flatMap((item): Fix[] =>
-    isRecord(item) && typeof item.id === 'string' ? [{ id: item.id.trim().toUpperCase(), applied: item.applied === true, why: text(item.why, 300) }] : [],
-  )
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -200,15 +182,6 @@ export function readRecord(
     isRecord(item) && typeof item.id === 'string' ? [{ id: item.id.trim().toUpperCase(), fixed: item.fixed === true, why: text(item.why, 300) }] : [],
   )
   return { findings, rechecked }
-}
-
-/**
- * The most findings a review may report, as /code-review's own text for its level says (`at most
- * 10 objects`, `at most **4 findings**`); undefined where it says no number.
- */
-export function capOf(skillText: string) {
-  const said = /at most \**(\d+)\** (?:objects|findings)/i.exec(skillText)
-  return said?.[1] === undefined ? undefined : Number(said[1])
 }
 
 /** The last json object in a reply: its last fenced block that parses, else its last {...} that does. */
