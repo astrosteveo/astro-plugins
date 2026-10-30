@@ -93,8 +93,8 @@ export type Pending = {
   tokens: Tokens
   /** The agents the review started, as far as the agent list has shown them, whose turns count in its cost. */
   team: Set<string>
-  /** A new agent no plugin named that made calls while the review was unknown: likely the review, untagged. */
-  untagged?: string
+  /** New agents no plugin named that made calls while the review was unknown: the review, untagged, may be one. */
+  untagged: Set<string>
   /**
    * Why the round records nothing because the repository is no longer as it found it, or undefined
    * while it is: HEAD moved, or a file changed. The record call asks before it takes the findings.
@@ -456,6 +456,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       calls: 0,
       tokens: NONE,
       team: new Set(),
+      untagged: new Set(),
       drift: () => driftOf(git, place, true),
     }
     ask.desk.pending = pending
@@ -508,7 +509,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     if (pending.record === undefined)
       return refuse(
         `${
-          run !== undefined && failed === undefined && pending.untagged === run.agentId
+          run !== undefined && failed === undefined && pending.untagged.has(run.agentId)
             ? "/code-review ran, but the agent list did not name review-gate as its starter, so the gate could not tell it was the review and took no record from it."
             : `/code-review ended without recording its findings${
                 run === undefined ? ', and it ran in no agent of its own' : failed !== undefined ? `, and it failed: ${failed}` : ''

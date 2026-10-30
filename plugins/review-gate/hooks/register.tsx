@@ -423,7 +423,7 @@ async function scopeOf($: EngineInterface, agentId: string): Promise<Scope> {
     await bind($, agentId)
     return 'review'
   }
-  if (!before.has(agentId) && agent.spawnedBy === undefined && agent.parentId === undefined) pending.untagged = agentId
+  if (!before.has(agentId) && agent.spawnedBy === undefined && agent.parentId === undefined) pending.untagged.add(agentId)
   others.add(agentId)
   return 'other'
 }
@@ -441,8 +441,8 @@ async function isReviewTeam($: EngineInterface, pending: Pending, agentId: strin
 }
 
 // No agent answers at the gate: a finding's answer and a pull request are the session's main
-// conversation's to give, so a review, or an agent it started, never can.
-const isRoundAgent = (agentId: string | undefined) => agentId !== undefined
+// conversation's to give, so no subagent can, a review or an agent it started included.
+const isSubagent = (agentId: string | undefined) => agentId !== undefined
 
 // The review's tool call as a few words for the band.
 function describeCall(e: { tool: string } & Record<string, unknown>) {
@@ -607,7 +607,7 @@ export const register: Register = (on, options) => {
     if (scope !== 'review')
       return {
         deny:
-          pending.untagged === e.agentId
+          pending.untagged.has(e.agentId)
             ? `${refusal} The agent list does not name review-gate as this agent's starter, so the gate cannot tell it is the round's review. Say so in your answer.`
             : refusal,
       }
@@ -657,7 +657,7 @@ export const register: Register = (on, options) => {
   }).catch(() => ({ deny: 'review-gate: the findings could not be recorded.' }))
 
   on('tool.call', { tool: PULL_REQUEST }, async ($, e) => {
-    if (isRoundAgent(e.agentId)) return { deny: 'review-gate: pull requests are opened and merged from the main conversation, not by an agent.' }
+    if (isSubagent(e.agentId)) return { deny: 'review-gate: pull requests are opened and merged from the main conversation, not by an agent.' }
     const place = await locate($, await cwdOf($, e.path))
     if (typeof place === 'string') return { deny: place }
     if (e.action === 'open') return openPullRequest($, place, e)
@@ -683,7 +683,7 @@ export const register: Register = (on, options) => {
   }).catch((_, _e, next) => ({ deny: `review-gate: the review failed${next.error?.message ? `: ${next.error.message}` : ''}. Nothing was recorded.` }))
 
   on('tool.call', { tool: DISMISS }, async ($, e) => {
-    if (isRoundAgent(e.agentId))
+    if (isSubagent(e.agentId))
       return {
         deny: 'review-gate: findings are answered from the main conversation, not by an agent. A review hands back what it found with record.',
       }

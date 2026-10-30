@@ -1545,6 +1545,22 @@ test('a review the agent list does not name as review-gate\'s cannot record, and
   )
 })
 
+test('an untagged review is named as such when another new agent of the main conversation makes calls after it', async ($, on) => {
+  const repo = world({ untagged: true })
+  const { reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  await $.tool.call({ tool: 'Read', agentId: one.id, file_path: `${ROOT}/src/app.ts` })
+  // The model starts a helper of its own, which makes a call after the review's first.
+  repo.agents = [{ id: 'helper', type: 'general-purpose' }]
+  await $.tool.call({ tool: 'Read', agentId: 'helper', file_path: `${ROOT}/README.md` })
+  const { recorded } = await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
+  expect(recorded).toContain("The agent list does not name review-gate as this agent's starter")
+  expect(String((await call).deny)).toContain('/code-review ran, but the agent list did not name review-gate as its starter')
+})
+
 test('a round that hits its finding limit is read once more before the gate vouches, however its findings are answered', async ($, on) => {
   const { store, reviews } = engine(on, world({ skillText: 'Return findings as a JSON array of at most 1 objects.' }))
   await start($)
