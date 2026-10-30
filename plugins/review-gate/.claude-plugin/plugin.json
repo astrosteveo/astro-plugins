@@ -1,6 +1,6 @@
 {
   "name": "review-gate",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Reviews a branch before its pull request with Claude Code's /code-review, at a level the change's risk picks, keeps every finding until it is fixed or dismissed with a reason, and opens and merges the pull request only for the reviewed commit.",
   "types": "./types/index.d.ts",
   "author": {

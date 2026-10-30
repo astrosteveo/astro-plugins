@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { NIT_CAP, atLeast, atMost, emptyLedger, rereadLevel, standing, globTest, isCapped, kindOf, levelFor, newFindings, parseGuide, sameDefect, severityOf, sortOut, spent, streak, toLedger } from '../hooks/ledger'
+import { NIT_CAP, atMost, emptyLedger, standing, globTest, kindOf, levelFor, newFindings, parseGuide, sameDefect, severityOf, sortOut, spent, streak, toLedger } from '../hooks/ledger'
 import type { Reported } from '../hooks/ledger'
-import { capOf, lastJson, readRecord, readRisk, reviewSection } from '../hooks/prompts'
+import { lastJson, readRecord, readRisk, reviewSection } from '../hooks/prompts'
 import type { Plan } from '../hooks/prompts'
 
 const reported = (over: Partial<Reported>): Reported => ({
@@ -130,10 +130,9 @@ test("a reply is read from its last json block, or its last object", () => {
   expect(lastJson('No json here.')).toBe(undefined)
 })
 
-test("a round's cost reads as its time and its tokens, the cache's share named", () => {
-  expect(spent({ ...round(1, 0), durationMs: 252_000, tokens: { input: 150_000, output: 60_000, cached: 610_000 } })).toBe('4m 12s · 820k tokens, 610k from the cache')
-  expect(spent({ ...round(1, 0), durationMs: 9_400, tokens: { input: 900, output: 50, cached: 0 } })).toBe('9s · 950 tokens')
-  expect(spent({ ...round(1, 0), durationMs: 1_000, tokens: { input: 2_400_000, output: 0, cached: 0 } })).toBe('1s · 2.4M tokens')
+test("a round's cost reads as its time", () => {
+  expect(spent({ ...round(1, 0), durationMs: 252_000 })).toBe('4m 12s')
+  expect(spent({ ...round(1, 0), durationMs: 9_400 })).toBe('9s')
   expect(spent(round(1, 0))).toBe('')
 })
 
@@ -238,13 +237,6 @@ test("a record call is read whatever it leaves out, and a path keeps a real fold
   expect(readRecord({ findings: 'none' }, changed)).toBe('Give findings as a list, empty when the review found nothing.')
 })
 
-test("a review's cap is read from /code-review's own words for its level", () => {
-  expect(capOf('Return findings as a JSON array of at most 10 objects:')).toBe(10)
-  expect(capOf('Output at most **4 findings**, most-severe first')).toBe(4)
-  expect(capOf('Report every finding.')).toBe(undefined)
-  expect([isCapped({ ...round(1, 4), cap: 4 }), isCapped({ ...round(1, 3), cap: 4 }), isCapped(round(1, 9))]).toEqual([true, false, false])
-})
-
 test("the section a round adds to /code-review names its scope, the branch's findings, and the round to record under", () => {
   const plan: Plan = {
     token: 'tok-1',
@@ -255,7 +247,6 @@ test("the section a round adds to /code-review names its scope, the branch's fin
     from: '1'.repeat(40),
     scope: 'delta',
     level: 'high',
-    fix: false,
     intent: '',
     guides: [{ path: 'REVIEW.md', text: '## Skip\n- *.lock\n', skip: ['*.lock'] }],
     skip: ['*.lock'],
@@ -277,17 +268,26 @@ test("the section a round adds to /code-review names its scope, the branch's fin
   expect(text.includes('- R1-2 src/app.ts:12 Pages overlap')).toBe(false)
   expect(text).toContain('- round: "tok-1"')
   expect(text).toContain('before you write your answer, call the mcp__review-gate__record tool once')
-  const fixing = reviewSection({ ...plan, fix: true, earlier: [], scope: 'full' })
-  expect(fixing).toContain('before you change any file or write your answer')
-  expect(fixing.includes('Change no file.')).toBe(false)
-  expect(fixing).toContain('- rechecked: an empty list.')
+  expect(text).toContain(`- Report at most ${NIT_CAP} nits (cleanup, style, reuse, simplification, efficiency)`)
+  const fresh = reviewSection({ ...plan, earlier: [], scope: 'full' })
+  expect(fresh).toContain('- rechecked: an empty list.')
+  const nits = (count: number) => Array.from({ length: count }, (_, at) => finding({ id: `R1-${at + 1}`, severity: 'nit', status: 'dismissed', line: 100 + at * 20, title: `Helper ${at}` }))
+  expect(reviewSection({ ...plan, earlier: nits(NIT_CAP - 1) })).toContain('- Report at most 1 nit (')
+  expect(reviewSection({ ...plan, earlier: nits(NIT_CAP) })).toContain(`- Report no nits (cleanup, style, reuse, simplification, efficiency): this branch has raised the ${NIT_CAP} it may.`)
 })
 
-test('a round raises a few nits at most, and says how many it left out and how many were repeats', () => {
+test('a branch raises a few nits at most over all its rounds, and a round says how many it left out and how many were repeats', () => {
   const nits = Array.from({ length: 5 }, (_, at) => reported({ summary: `Helper ${at} is copied from util${at}`, category: 'reuse', line: 100 + at * 20 }))
   const sorted = sortOut([...nits, reported({ summary: 'The last page is skipped', line: 12 })], 2, [])
   expect(sorted.added.map(one => one.severity)).toEqual(['important', ...Array(NIT_CAP).fill('nit')])
   expect([sorted.nitsLeft, sorted.repeats]).toEqual([5 - NIT_CAP, 0])
+  // Nits the branch has had, in any state, use up its allowance: a later round raises only what is left.
+  const earlier = [finding({ id: 'R1-1', severity: 'nit', status: 'fixed', line: 400, title: 'Rename the pager' })]
+  const later = sortOut(nits, 3, earlier)
+  expect([later.added.length, later.nitsLeft]).toEqual([NIT_CAP - 1, 5 - (NIT_CAP - 1)])
+  const spentAll = Array.from({ length: NIT_CAP }, (_, at) => finding({ id: `R1-${at + 1}`, severity: 'nit', status: 'dismissed', line: 500 + at * 20, title: `Inline helper ${at}` }))
+  const none = sortOut([...nits, reported({ summary: 'The last page is skipped', line: 12 })], 3, spentAll)
+  expect([none.added.map(one => one.severity), none.nitsLeft]).toEqual([['important'], 5])
 })
 
 test('two findings a few lines apart that share only common words are two defects', () => {
@@ -297,28 +297,11 @@ test('two findings a few lines apart that share only common words are two defect
   expect(sameDefect(a, { ...a, line: 13, title: 'The loop stops at the last page' })).toBe(true)
 })
 
-test('a capped round wants a read as deep as it over the same commit, and a shallower one settles nothing', () => {
-  const head = '1'.repeat(40)
-  const at = (n: number, level: Round['level'], capped: boolean): Round => ({ ...round(n, capped ? 4 : 1), head, level, cap: 4 })
-  const ledger = (...rounds: Round[]): Ledger => ({ ...emptyLedger('feat/x'), rounds, reviewed: head })
-  expect(rereadLevel(ledger(at(1, 'high', false)))).toBe(undefined)
-  expect(rereadLevel(ledger(at(1, 'max', true)))).toBe('max')
-  expect(rereadLevel(ledger(at(1, 'max', true), at(2, 'xhigh', false)))).toBe('max')
-  expect(rereadLevel(ledger(at(1, 'max', true), at(2, 'xhigh', true)))).toBe('max')
-  // A read as deep settles it, capped or not.
-  expect(rereadLevel(ledger(at(1, 'high', true), at(2, 'high', true)))).toBe(undefined)
-  expect(rereadLevel(ledger(at(1, 'high', true), at(2, 'max', false)))).toBe(undefined)
-  // A round over an earlier commit owes nothing for this one.
-  expect(rereadLevel(ledger({ ...at(1, 'max', true), head: 'b'.repeat(40) }, at(2, 'high', false)))).toBe(undefined)
-  expect([atLeast('high', 'max'), atLeast('max', 'high')]).toEqual(['max', 'max'])
-})
-
-test('where a commit stands: reviewed, nothing open, read again when capped, then approved when high risk', () => {
+test('where a commit stands: reviewed, nothing open, then approved when high risk', () => {
   const head = '1'.repeat(40)
   const base = { ...emptyLedger('feat/x'), rounds: [{ ...round(1, 0), head }], reviewed: head }
   expect(standing({ ...base, reviewed: 'b'.repeat(40) }, head).kind).toBe('unreviewed')
   expect(standing({ ...base, findings: [finding({})] }, head).kind).toBe('open')
-  expect(standing({ ...base, rounds: [{ ...round(1, 0), head, raised: 4, cap: 4 }] }, head)).toEqual({ kind: 'reread', level: 'high' })
   const high = { ...base, rounds: [{ ...round(1, 0), head, risk: { tier: 'high' as const, why: ['runs commands'] } }] }
   expect(standing(high, head).kind).toBe('approval')
   expect(standing({ ...high, approved: { sha: head, at: 0 } }, head).kind).toBe('ready')
