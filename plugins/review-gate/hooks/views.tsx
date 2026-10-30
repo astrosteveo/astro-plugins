@@ -1,7 +1,7 @@
 import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import type { Activity, Finding, Ledger, Repo, Run } from '../types'
 import { short } from './git'
-import { ROUND_CAP, aboutOf, duration, isApplied, isCapped, openFindings, riskNow, spent, streak, wantsReread } from './ledger'
+import { ROUND_CAP, aboutOf, duration, isApplied, isCapped, openFindings, riskNow, spent, standing, streak } from './ledger'
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
@@ -67,9 +67,7 @@ export function band(
   const applied = open.filter(isApplied)
   const waiting = open.filter(finding => !isApplied(finding))
   const ids = (list: readonly Finding[]) => list.map(finding => finding.id).join(' ')
-  const isCurrent = ledger.reviewed === repo.head
-  const risk = riskNow(ledger)
-  const needsYou = isCurrent && open.length === 0 && risk?.tier === 'high' && ledger.approved?.sha !== repo.head
+  const stand = standing(ledger, repo.head)
   return (
     <Box flexDirection="row" flexWrap="wrap">
       {label}
@@ -86,10 +84,10 @@ export function band(
       )}
       {waiting.length > 0 && <Text dimColor> · fix and commit, or dismiss with a reason</Text>}
       {open.length > 0 && streak(ledger) >= ROUND_CAP && <Text color="warning"> · {ROUND_CAP} rounds without converging: step back</Text>}
-      {!isCurrent && <Text color="warning">{open.length > 0 ? ' · ' : ''}○ new commits since {short(ledger.reviewed ?? '')}</Text>}
-      {isCurrent && open.length === 0 && !wantsReread(ledger) && <Text color="success">✓ {short(repo.head)} reviewed, ready for a pull request</Text>}
-      {isCurrent && open.length === 0 && wantsReread(ledger) && <Text color="warning">○ review once more: the last round hit its finding limit</Text>}
-      {needsYou && <Text color="warning"> · high risk: you approve it at the gate</Text>}
+      {stand.kind === 'unreviewed' && <Text color="warning">{open.length > 0 ? ' · ' : ''}○ new commits since {short(ledger.reviewed ?? '')}</Text>}
+      {(stand.kind === 'ready' || stand.kind === 'approval') && <Text color="success">✓ {short(repo.head)} reviewed, ready for a pull request</Text>}
+      {stand.kind === 'reread' && <Text color="warning">○ review once more at /code-review {stand.level}: the last round hit its finding limit</Text>}
+      {stand.kind === 'approval' && <Text color="warning"> · high risk: you approve it at the gate</Text>}
     </Box>
   )
 }
@@ -123,6 +121,8 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
   const waiting = open.length - applied.length
   const risk = riskNow(ledger) ?? round.risk
   const moved = isLast && repo !== null && repo.branch === ledger.branch && repo.head !== round.head
+  // What the pull request waits for, as the gate reads it, once the commits since have been reviewed.
+  const now = moved ? undefined : standing(ledger, ledger.reviewed ?? round.head)
   const cost = [spent(round), round.calls === undefined ? '' : plural(round.calls, 'call')].filter(part => part !== '').join(' · ')
   return (
     <Box flexDirection="column" paddingLeft={2}>
@@ -180,9 +180,13 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
             <Text color="error">{plural(waiting, 'finding')} open.</Text> Fix and commit, then review again; or dismiss each with a reason.
           </Text>
         )}
-        {open.length === 0 && !moved && !wantsReread(ledger) && <Text color="success">Nothing open: ready for a pull request.</Text>}
-        {open.length === 0 && !moved && risk.tier === 'high' && ledger.approved?.sha !== round.head && (
-          <Text color="warning">High risk: the gate asks you to approve it.</Text>
+        {(now?.kind === 'ready' || now?.kind === 'approval') && <Text color="success">Nothing open: ready for a pull request.</Text>}
+        {now?.kind === 'approval' && <Text color="warning">High risk: the gate asks you to approve it.</Text>}
+        {now?.kind === 'reread' && (
+          <Text>
+            <Text color="warning">Nothing open, but review once more before the pull request.</Text> The last round hit its finding limit, so one more round at
+            /code-review {now.level} settles it.
+          </Text>
         )}
         {moved && <Text color="warning">Commits since this round have not been reviewed.</Text>}
         {isCapped(round) && (

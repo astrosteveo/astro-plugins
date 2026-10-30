@@ -4,7 +4,7 @@ import type { Ledger, Level } from '../types'
 import { branches, firstCommit, locate, short } from './git'
 import type { Place } from './git'
 import { opensOrMerges } from './guard'
-import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, openFindings, recordKey, recordPrefix, riskNow, sortOut, toLedger, wantsReread, whereOf } from './ledger'
+import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, nothingOpen, openFindings, recordKey, recordPrefix, rereadWhy, sortOut, standing, toLedger, whereOf } from './ledger'
 import { RECORD, capOf, readFixes, readRecord, reviewSection } from './prompts'
 import { SKILL, isLevel, mailbox, plus, runRound, summary, teamOf } from './review'
 import type { Pending, RoundAsk } from './review'
@@ -31,7 +31,7 @@ const PATH = {
 const REVIEW_TOOL = {
   name: 'review',
   description:
-    "Review the current branch's commits, as its pull request would show them, before you open the pull request. It runs Claude Code's /code-review over the branch, at a level the change's risk picks, and keeps every finding in the branch's review record. Call it once the change is committed and its checks pass: the pull_request tool opens and merges pull requests only for a commit that was reviewed with every finding answered. Answer each finding: fix it and commit, then review again (later rounds read only the new commits and confirm each fix); or dismiss it with the reason it can stay. After three rounds in a row end with findings open, it stops and asks you to step back with the user. A round takes minutes.",
+    "Review the current branch's commits, as its pull request would show them, before you open the pull request. It runs Claude Code's /code-review over the branch, at a level the change's risk picks, and keeps every finding in the branch's review record. Call it once the change is committed and its checks pass: the pull_request tool opens and merges pull requests only for a commit that was reviewed with every finding answered. A round that reports as many findings as its level allows may have left some out, so the gate then waits for one more round over the same commit. Answer each finding: fix it and commit, then review again (later rounds read only the new commits and confirm each fix); or dismiss it with the reason it can stay. After three rounds in a row end with findings open, it stops and asks you to step back with the user. A round takes minutes.",
   isDeferred: false,
   inputSchema: {
     type: 'object',
@@ -131,7 +131,7 @@ const DISMISS_TOOL = {
 const PULL_REQUEST_TOOL = {
   name: 'pull_request',
   description:
-    "Open or merge a pull request: the only way to, as gh pr create, gh pr merge and gh api calls that do either are refused in Bash. open pushes the current branch to origin and opens its pull request. merge merges a pull request, and only while its head is still the commit that was reviewed. Both are refused until that commit has been reviewed and every finding answered, and a high-risk change also waits for the user's approval in a dialog. Ask the user before you open or merge one.",
+    "Open or merge a pull request: the only way to, as gh pr create, gh pr merge and gh api calls that do either are refused in Bash. open pushes the current branch to origin and opens its pull request. merge merges a pull request, and only while its head is still the commit that was reviewed. Both are refused until that commit has been reviewed and every finding answered, and after a round that hit its finding limit, until one more round has read it; a high-risk change also waits for the user's approval in a dialog. Ask the user before you open or merge one.",
   isDeferred: false,
   inputSchema: {
     type: 'object',
@@ -249,34 +249,25 @@ async function show($: EngineInterface, place: Place | string) {
   await update($, ledgerState, () => record)
 }
 
-function nothingOpen(ledger: Ledger, head: string) {
-  if (ledger.reviewed !== head) return `Nothing is open, but the commits since ${short(ledger.reviewed ?? '')} have not been reviewed.`
-  if (wantsReread(ledger))
-    return `Nothing is open, but the last round reported as many findings as its level allows, so review again before the pull request: one more round over ${short(head)} settles it.`
-  const high = riskNow(ledger)?.tier === 'high' && ledger.approved?.sha !== head
-  return `Nothing is open. ${ledger.branch} at ${short(head)} is ready for a pull request${high ? ', once the user approves it at the gate: it is high risk' : ''}.`
-}
-
 /**
- * Why a pull request may not be opened or merged for `branch` at `sha`, or undefined when it may:
- * the commit was reviewed, no finding is open, and a high-risk change has the person's approval for
- * that commit, asked for here when it has none.
+ * Why a pull request may not be opened or merged for `branch` at `sha`, or undefined when it may, by
+ * the rule `standing` gives: a high-risk change's approval is asked for here when it has none.
  */
 async function vouch($: EngineInterface, place: Place, branch: string, sha: string, action: 'open' | 'merge'): Promise<string | undefined> {
   const ledger = await load($, place, branch, sha)
-  if (ledger.reviewed !== sha)
+  const now = standing(ledger, sha)
+  if (now.kind === 'ready') return undefined
+  if (now.kind === 'unreviewed')
     return `Review first: ${branch} at ${short(sha)} has not been reviewed${
       ledger.reviewed === undefined ? '' : ` (the last round covered ${short(ledger.reviewed)})`
     }. Call ${REVIEW} with what the change is for, answer each finding, then try again.`
-  if (wantsReread(ledger))
-    return `Review again: the last round over ${short(sha)} reported as many findings as its level allows, so it may have left some out. Call ${REVIEW} once more; that round settles it.`
-  const open = openFindings(ledger)
-  if (open.length > 0)
-    return `${branch} has ${open.length} open review finding${open.length === 1 ? '' : 's'}: ${open
+  if (now.kind === 'open')
+    return `${branch} has ${now.open.length} open review finding${now.open.length === 1 ? '' : 's'}: ${now.open
       .map(finding => `${finding.id} (${finding.file}:${finding.line} ${finding.title})`)
       .join('; ')}. Fix each and commit, then call ${REVIEW} again; or dismiss it with ${DISMISS} and a reason.`
-  const risk = riskNow(ledger)
-  if (risk?.tier !== 'high' || ledger.approved?.sha === sha) return undefined
+  if (now.kind === 'reread')
+    return `Review again: ${rereadWhy(now.level)}. Call ${REVIEW} once more; it reads ${short(sha)} at /code-review ${now.level}, and that round settles it.`
+  const { risk } = now
 
   // A person's approval: the dialog is theirs to answer, never the model's.
   const dismissed = ledger.findings.filter(finding => finding.status === 'dismissed')

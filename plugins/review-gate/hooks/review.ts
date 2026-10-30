@@ -2,7 +2,7 @@ import type { EngineInterface, ModelUsage } from 'claude-code'
 import type { Finding, Ledger, Level, Risk, Round, Run, Tokens } from '../types'
 import { changedFiles, commitLog, diffOf, firstCommit, guideFiles, headNow, isAncestor, short, uncommitted } from './git'
 import type { Place } from './git'
-import { LEVELS, NIT_CAP, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, isApplied, isCapped, levelFor, openFindings, parseGuide, riskNow, riskWith, spent, streak, wantsReread, whereOf } from './ledger'
+import { LEVELS, NIT_CAP, ROUND_CAP, UNJUDGED, aboutOf, atLeast, atMost, globTest, isApplied, isCapped, levelFor, nothingOpen, openFindings, parseGuide, rereadLevel, riskNow, riskWith, spent, streak, whereOf } from './ledger'
 import type { Recheck } from './ledger'
 import { RISK, readRisk, riskPrompt } from './prompts'
 import type { Context, Fix, Plan } from './prompts'
@@ -368,8 +368,10 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
 
   const last = ledger.rounds[ledger.rounds.length - 1]
   const open = openFindings(ledger)
-  // A commit is read again only by the person, or once after a round that hit its finding limit.
-  if (!ask.force && last !== undefined && ledger.reviewed === place.head && !wantsReread(ledger)) {
+  // A commit is read again only by the person, or once after a round that hit its finding limit, at
+  // that round's level at least: a shallower read may miss what the deeper one left out.
+  const owed = ledger.reviewed === place.head ? rereadLevel(ledger) : undefined
+  if (!ask.force && last !== undefined && ledger.reviewed === place.head && owed === undefined) {
     return { ok: true, ledger, round: last.n, text: `${summary(ledger, last.n)}\n\nThis commit was reviewed already; nothing was run again.` }
   }
   if (!ask.force && streak(ledger) >= ROUND_CAP && open.length > 0) return refuse(stepBack(ledger))
@@ -409,7 +411,9 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   }
   if (ask.signal.aborted) return refuse(STOPPED)
   const wanted = ask.levelOption === 'auto' ? levelFor(riskWith(judged, ledger.findings)) : ask.levelOption
-  const level = ask.level ?? (isDelta ? atMost(wanted, 'high') : wanted)
+  const picked = ask.level ?? (isDelta ? atMost(wanted, 'high') : wanted)
+  // The person's own level stands; any other read owed after a capped round reads as deep as it.
+  const level = owed !== undefined && !(ask.force && ask.level !== undefined) ? atLeast(picked, owed) : picked
 
   const plan: Plan = {
     token: ask.token,
@@ -665,17 +669,7 @@ export function summary(ledger: Ledger, n: number) {
   if (nits > 0) lines.push(`${nits} more nit${nits === 1 ? ' was' : 's were'} left out: a round raises at most ${NIT_CAP}.`)
   if (skippedOut > 0) lines.push(`${skippedOut} finding${skippedOut === 1 ? ' was' : 's were'} in files REVIEW.md skips, so ${skippedOut === 1 ? 'it was' : 'they were'} left out.`)
   if (isCapped(round)) lines.push(`The review reported ${round.raised}, as many findings as /code-review ${round.level} lets it, so the next round reviews the whole branch again.`)
-  if (open.length === 0) {
-    const approval =
-      risk.tier === 'high' && ledger.approved?.sha !== round.head
-        ? ' It is high risk, so the gate asks the user to approve it when the pull request is opened or merged.'
-        : ''
-    lines.push(
-      wantsReread(ledger)
-        ? `Nothing is open, but the review reported as many findings as its level allows, so review again before the pull request: one more round over ${short(round.head)} settles it.`
-        : `Nothing is open. ${ledger.branch} at ${short(round.head)} is ready for a pull request.${approval}`,
-    )
-  }
+  if (open.length === 0) lines.push(nothingOpen(ledger, round.head))
   if (round.skipped === true) lines.push(`Every file the round covers is on a REVIEW.md Skip list, so no review ran.`)
   if (round.unchanged === true) lines.push('The commits the round covers change no file, so no review ran.')
   const cost = spent(round)

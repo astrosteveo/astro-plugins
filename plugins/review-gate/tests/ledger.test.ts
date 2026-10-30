@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { NIT_CAP, atMost, emptyLedger, globTest, isCapped, kindOf, levelFor, newFindings, parseGuide, sameDefect, severityOf, sortOut, spent, streak, toLedger } from '../hooks/ledger'
+import { NIT_CAP, atLeast, atMost, emptyLedger, rereadLevel, standing, globTest, isCapped, kindOf, levelFor, newFindings, parseGuide, sameDefect, severityOf, sortOut, spent, streak, toLedger } from '../hooks/ledger'
 import type { Reported } from '../hooks/ledger'
 import { capOf, lastJson, readRecord, readRisk, reviewSection } from '../hooks/prompts'
 import type { Plan } from '../hooks/prompts'
@@ -295,4 +295,32 @@ test('two findings a few lines apart that share only common words are two defect
   const b = { file: 'src/app.ts', line: 14, title: 'The cache is read when the key is stale and the lock is not held', detail: '' }
   expect(sameDefect(a, b)).toBe(false)
   expect(sameDefect(a, { ...a, line: 13, title: 'The loop stops at the last page' })).toBe(true)
+})
+
+test('a capped round wants a read as deep as it over the same commit, and a shallower one settles nothing', () => {
+  const head = '1'.repeat(40)
+  const at = (n: number, level: Round['level'], capped: boolean): Round => ({ ...round(n, capped ? 4 : 1), head, level, cap: 4 })
+  const ledger = (...rounds: Round[]): Ledger => ({ ...emptyLedger('feat/x'), rounds, reviewed: head })
+  expect(rereadLevel(ledger(at(1, 'high', false)))).toBe(undefined)
+  expect(rereadLevel(ledger(at(1, 'max', true)))).toBe('max')
+  expect(rereadLevel(ledger(at(1, 'max', true), at(2, 'xhigh', false)))).toBe('max')
+  expect(rereadLevel(ledger(at(1, 'max', true), at(2, 'xhigh', true)))).toBe('max')
+  // A read as deep settles it, capped or not.
+  expect(rereadLevel(ledger(at(1, 'high', true), at(2, 'high', true)))).toBe(undefined)
+  expect(rereadLevel(ledger(at(1, 'high', true), at(2, 'max', false)))).toBe(undefined)
+  // A round over an earlier commit owes nothing for this one.
+  expect(rereadLevel(ledger({ ...at(1, 'max', true), head: 'b'.repeat(40) }, at(2, 'high', false)))).toBe(undefined)
+  expect([atLeast('high', 'max'), atLeast('max', 'high')]).toEqual(['max', 'max'])
+})
+
+test('where a commit stands: reviewed, nothing open, read again when capped, then approved when high risk', () => {
+  const head = '1'.repeat(40)
+  const base = { ...emptyLedger('feat/x'), rounds: [{ ...round(1, 0), head }], reviewed: head }
+  expect(standing({ ...base, reviewed: 'b'.repeat(40) }, head).kind).toBe('unreviewed')
+  expect(standing({ ...base, findings: [finding({})] }, head).kind).toBe('open')
+  expect(standing({ ...base, rounds: [{ ...round(1, 0), head, raised: 4, cap: 4 }] }, head)).toEqual({ kind: 'reread', level: 'high' })
+  const high = { ...base, rounds: [{ ...round(1, 0), head, risk: { tier: 'high' as const, why: ['runs commands'] } }] }
+  expect(standing(high, head).kind).toBe('approval')
+  expect(standing({ ...high, approved: { sha: head, at: 0 } }, head).kind).toBe('ready')
+  expect(standing(base, head).kind).toBe('ready')
 })

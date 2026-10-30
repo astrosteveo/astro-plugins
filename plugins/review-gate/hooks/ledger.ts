@@ -50,14 +50,64 @@ export const lastRound = (ledger: Ledger): Round | undefined => ledger.rounds[le
 /** Whether a round's review reported as many findings as its level lets it, so it may have left some out. */
 export const isCapped = (round: Round | undefined) => round?.cap !== undefined && round.raised >= round.cap
 
+const depth = (level: Level) => LEVELS.indexOf(level)
+
+/** `level`, raised to `least` at the shallowest. */
+export const atLeast = (level: Level, least: Level): Level => (depth(level) < depth(least) ? least : level)
+
 /**
- * Whether the branch's commit wants a second read before the gate vouches for it: its last round
- * reported as many findings as its level allows, and was the first to read that commit. A second read
- * settles it, capped or not, so the gate never waits for ever.
+ * The level the branch's reviewed commit wants a second read at before the gate vouches for it, or
+ * undefined when it wants none: a round over that commit reported as many findings as its level
+ * allows, and no later round over it read as deep. Such a read settles it, capped or not, so the gate
+ * never waits for ever; a shallower one settles nothing, since it may miss what the deeper one left out.
  */
-export function wantsReread(ledger: Ledger) {
-  const last = lastRound(ledger)
-  return isCapped(last) && ledger.rounds[ledger.rounds.length - 2]?.head !== last?.head
+export function rereadLevel(ledger: Ledger): Level | undefined {
+  const head = lastRound(ledger)?.head
+  let owed: Level | undefined
+  for (const round of ledger.rounds) {
+    if (round.head !== head) continue
+    if (owed !== undefined && depth(round.level) >= depth(owed)) owed = undefined
+    else if (isCapped(round)) owed = owed === undefined ? round.level : atLeast(round.level, owed)
+  }
+  return owed
+}
+
+/** Where a commit stands at the gate: what its pull request waits for, or that it waits for nothing. */
+export type Standing =
+  | { kind: 'unreviewed' }
+  | { kind: 'open'; open: Finding[] }
+  | { kind: 'reread'; level: Level }
+  | { kind: 'approval'; risk: Risk }
+  | { kind: 'ready' }
+
+/**
+ * Where the branch at `head` stands, by the one rule the gate and every view share: the commit was
+ * reviewed, no finding is open, a round that hit its finding limit was read again as deep, and a
+ * high-risk change has the person's approval for that commit.
+ */
+export function standing(ledger: Ledger, head: string): Standing {
+  if (ledger.reviewed !== head) return { kind: 'unreviewed' }
+  const open = openFindings(ledger)
+  if (open.length > 0) return { kind: 'open', open }
+  const level = rereadLevel(ledger)
+  if (level !== undefined) return { kind: 'reread', level }
+  const risk = riskNow(ledger)
+  if (risk?.tier === 'high' && ledger.approved?.sha !== head) return { kind: 'approval', risk }
+  return { kind: 'ready' }
+}
+
+/** Why a commit wants a second read, as the gate and the views say it. */
+export const rereadWhy = (level: Level) => `the last round reported as many findings as /code-review ${level} allows, so it may have left some out`
+
+/** What the branch at `head` waits for once nothing is open, as the model and the person read it. */
+export function nothingOpen(ledger: Ledger, head: string) {
+  const now = standing(ledger, head)
+  const at = head.slice(0, 7)
+  if (now.kind === 'unreviewed') return `Nothing is open, but the commits since ${(ledger.reviewed ?? '').slice(0, 7)} have not been reviewed.`
+  if (now.kind === 'reread')
+    return `Nothing is open, but ${rereadWhy(now.level)}. Review again before the pull request: one more round over ${at} at /code-review ${now.level} settles it.`
+  const approval = now.kind === 'approval' ? ' It is high risk, so the gate asks the user to approve it when the pull request is opened or merged.' : ''
+  return `Nothing is open. ${ledger.branch} at ${at} is ready for a pull request.${approval}`
 }
 
 const compact = (count: number) => (count >= 1e6 ? `${(count / 1e6).toFixed(1)}M` : count >= 1e3 ? `${Math.round(count / 1e3)}k` : String(count))
