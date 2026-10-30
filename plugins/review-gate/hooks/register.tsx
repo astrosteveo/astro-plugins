@@ -644,6 +644,7 @@ export const register: Register = (on, options) => {
       const unknown = fixes.filter(one => !known.has(one.id)).map(one => one.id)
       if (unknown.length > 0) return { deny: `Round ${pending.plan.n} has no open finding ${unknown.join(', ')}: give the ids its first reply named.` }
       pending.fixes = fixes
+      doorbell.ring()
       const applied = fixes.filter(one => one.applied).length
       return { result: `Recorded ${applied} fix${applied === 1 ? '' : 'es'} in the working tree. End with two or three sentences: review-gate shows the findings and fixes itself.` }
     }
@@ -657,6 +658,7 @@ export const register: Register = (on, options) => {
     const skippedOut = read.findings.length - kept.length
     const record = { raised: read.findings.length, rechecked: read.rechecked, added, repeats, nitsLeft, skippedOut }
     pending.record = record
+    doorbell.ring()
     const left = [
       repeats > 0 ? `${repeats} the branch has had before` : '',
       nitsLeft > 0 ? `${nitsLeft} nit${nitsLeft === 1 ? '' : 's'} past the ${NIT_CAP} a round raises` : '',

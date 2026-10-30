@@ -360,35 +360,30 @@ function stopLater($: EngineInterface, ask: RoundAsk, agentId: string, tries: nu
 const LIST_TRIES = 10
 
 /**
- * Waits until a review the Skill tool started in the background has ended, as long as that takes, as
- * /code-review run by hand does: a pause between its turns, such as while agents of its own work, is
- * not its end. Gives how it ended, as the agent list says, and whether the wait could not go on: where
+ * Waits on a review the Skill tool started in the background until it has handed back all the round
+ * asks of it through the record tool, which rings the round's bell, as long as that takes: a pause
+ * between its turns, such as while agents of its own work, is no end. The agent list is read only to
+ * see a review that ends without handing it all back: one the list shows ended, or idle with nothing
+ * of its own at work for QUIET_MS, since until then it may only be waiting on a background agent's or
+ * shell's notice. Gives how it ended, as the list says, and whether the wait could not go on: where
  * `sleep` cannot run, or the agent list cannot be read.
  */
-async function untilEnded($: EngineInterface, ask: RoundAsk, agentId: string): Promise<{ stuck?: string; status?: string }> {
-  // A wake is followed by one check a second later too, since the agent list may say a turn has
-  // ended a moment after the turn's own event does.
+async function untilDone($: EngineInterface, ask: RoundAsk, agentId: string): Promise<{ stuck?: string; status?: string }> {
   let quietSince: number | undefined
-  for (let misses = 0, soon = false; !ask.signal.aborted; ) {
+  for (let misses = 0; !ask.signal.aborted && !isHandedBack(ask); ) {
     // The ring is taken before the list is read, so one that comes while it is read still wakes the wait.
     const woken = ask.bell.next()
     const agents = await $.agent.list().catch(() => undefined)
-    // A list that could not be read says nothing of the review: it is read again.
+    // A list that could not be read says nothing of the review: it is read again soon.
     misses = agents === undefined ? misses + 1 : 0
     if (misses >= LIST_TRIES) return { stuck: UNLISTED }
     const state = agents === undefined ? 'running' : stateOf(agents, agentId)
     if (typeof state === 'object') return state
-    // An idle review with nothing of its own at work has ended once it has handed back all the round
-    // asks of it. Before that it may be idle only until a notice wakes it, such as a background agent's
-    // or a background shell's, so it has ended only once it has stayed so for QUIET_MS.
     const now = await $.clock.now()
     quietSince = state === 'quiet' ? (quietSince ?? now) : undefined
-    if (quietSince !== undefined && (isHandedBack(ask) || now - quietSince >= QUIET_MS)) return {}
-    let isWoken = false
-    const seconds = soon || misses > 0 ? 1 : quietSince === undefined ? CHECK_EVERY_S : Math.max(1, Math.ceil((QUIET_MS - (now - quietSince)) / 1000))
-    const isRunning = await pause($, woken.then(() => (isWoken = true)), ask.signal, Math.min(seconds, CHECK_EVERY_S))
-    if (!isRunning) return ask.signal.aborted ? {} : { stuck: STUCK }
-    soon = isWoken
+    if (quietSince !== undefined && now - quietSince >= QUIET_MS) return {}
+    const seconds = misses > 0 ? 1 : quietSince === undefined ? CHECK_EVERY_S : Math.ceil((QUIET_MS - (now - quietSince)) / 1000)
+    if (!(await pause($, woken, ask.signal, Math.max(1, Math.min(seconds, CHECK_EVERY_S))))) return ask.signal.aborted ? {} : { stuck: STUCK }
   }
   return {}
 }
@@ -422,22 +417,21 @@ function stateOf(agents: readonly { id: string; parentId?: string; status: strin
 
 /**
  * The review's last reply, and how it ended. One that ran in the foreground has replied by the time
- * the Skill tool answers; one the Skill tool started in the background is waited for until it has
- * ended. A background review the round did not hear from is stopped, with its agents, so it does not
- * run on unseen.
+ * the Skill tool answers; one the Skill tool started in the background is waited for until it is done,
+ * then given a moment for its closing words, then stopped with its agents: the round has what it
+ * needs, and a review left running could change files no round records.
  */
 async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<{ reply?: Reply; stuck?: string; status?: string }> {
-  const ended = run.background === true ? await untilEnded($, ask, run.agentId) : {}
+  const ended = run.background === true ? await untilDone($, ask, run.agentId) : {}
   if (ended.stuck !== undefined) {
     await stop($, ask, run.agentId)
     return { stuck: ended.stuck }
   }
   const got = await waitFor($, ask.mail.take(run.agentId), ask.signal, REPLY_LIMIT_MS)
-  if (got.value !== undefined) return { ...ended, reply: got.value }
-  ask.mail.drop(run.agentId)
+  if (got.value === undefined) ask.mail.drop(run.agentId)
   // A stopped round stops the review itself, once.
   if (run.background === true && !ask.signal.aborted) await stop($, ask, run.agentId)
-  return ended
+  return got.value === undefined ? ended : { ...ended, reply: got.value }
 }
 
 // Why the agent list says a review ended, when it did not end as it should.
@@ -614,8 +608,6 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
         report = (got.reply?.answer ?? (run.background === true ? '' : run.result)).trim()
         stuck = got.stuck
         failed = endedBadly(got.status) ?? failed
-        // A review that ends the round without its record may yet wake and go on: stopped, it cannot.
-        if (run.background === true && got.stuck === undefined && !isHandedBack(ask)) await stop($, ask, run.agentId)
       }
       tokens = sum(tokens, pending.tokens)
       calls = pending.calls

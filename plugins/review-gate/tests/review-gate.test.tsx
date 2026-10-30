@@ -1356,13 +1356,13 @@ test('a background review that ends idle between turns, with no agent of its own
   const text = String((await call).result)
   expect(text).toContain('R1-1 · important · src/app.ts:12')
   expect(text.includes('failed')).toBe(false)
-  expect(stops).toEqual([])
-  // One idle while an angle agent of its still works has not ended.
+  // Idle, it could still be woken by a message: the round stops it.
+  expect(stops).toEqual([one.id])
+  // One idle while an angle agent of its still works, and that has not recorded, has not ended.
   repo.agents = [{ id: 'angle-1', type: 'general-purpose', parentId: 'review-2' }]
   const again = $.command.run({ command: 'review-gate', args: '', ...person })
   await until($, 'the second review', () => reviews.length === 2)
   const two = reviews[1] as Review
-  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [] })
   await reply($, two.id, 'Waiting for my angle.')
   let finished = false
   void again.then(() => {
@@ -1371,16 +1371,17 @@ test('a background review that ends idle between turns, with no agent of its own
   for (let wait = 0; wait < 20; wait++) await tick(session as Engine)
   expect(finished).toBe(false)
   repo.agents = []
+  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [] })
   await reply($, two.id, 'Done.')
   expect(String((await again).text)).toContain('Review round 2')
-  expect(one.id).toBe('review-1')
 })
 
 test('a background review that failed or was stopped after it recorded is reported as such', async ($, on) => {
   const repo = world({ background: true, endsAs: 'failed' })
   const { reviews } = engine(on, repo)
   await start($)
-  const call = $.tool.call({ tool: REVIEW })
+  // With --fix it owes its fixes too, so it is still waited for when it fails after its findings.
+  const call = $.tool.call({ tool: REVIEW, fix: true })
   await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
   expect(String((await call).result)).toContain('The review recorded its findings, then failed: the agent list shows its agent failed')
   repo.endsAs = 'killed'
@@ -1396,9 +1397,9 @@ test('an agent list that cannot be read is read again, not taken for the end of 
   const call = $.tool.call({ tool: REVIEW })
   await until($, 'the review', () => reviews.length === 1)
   const one = reviews[0] as Review
-  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
   repo.listFails = 3
   await until($, 'the list to be read again', () => repo.listFails === 0)
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
   await reply($, one.id, 'Done.')
   expect(String((await call).result)).toContain('R1-1 · important')
   expect(stops).toEqual([])
@@ -1750,7 +1751,7 @@ test('an idle review that has not recorded may be waiting on a notice, so it is 
   await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
   await reply($, one.id, 'Done.')
   expect(String((await call).result)).toContain('R1-1 · important')
-  expect(stops).toEqual([])
+  expect(stops).toEqual([one.id])
 
   // One that stays idle and never records is given up on after a minute, and stopped.
   const again = $.command.run({ command: 'review-gate', args: '', ...person })
@@ -1759,5 +1760,21 @@ test('an idle review that has not recorded may be waiting on a notice, so it is 
   await reply($, two.id, 'Waiting.')
   const text = String((await again).text)
   expect(text).toContain('/code-review ended without recording its findings')
-  expect(stops).toEqual([two.id])
+  expect(stops).toEqual([one.id, two.id])
+})
+
+test('a background review that has handed back all the round asks ends the wait at once, however it then lingers', async ($, on) => {
+  const repo = world({ background: true, pauses: true })
+  const { reviews, stops } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  // An angle agent of its still runs, and the review never goes idle; its record is what counts.
+  repo.agents = [{ id: 'angle-1', type: 'general-purpose', parentId: one.id }]
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
+  await reply($, one.id, 'Recorded.')
+  expect(String((await call).result)).toContain('R1-1 · important')
+  // Both stopped, so neither runs on unseen.
+  expect([...stops].sort()).toEqual(['angle-1', one.id].sort())
 })
