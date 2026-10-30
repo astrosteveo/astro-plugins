@@ -73,6 +73,10 @@ type World = {
   endsAs?: 'failed' | 'killed'
   /** How many reads of the agent list from now fail. */
   listFails?: number
+  /** What git merge-base says when it fails for a reason other than no shared history. */
+  forkFails?: string
+  /** The branch origin's HEAD names, which may no longer be on origin; left out, origin has no HEAD. */
+  originHead?: string
 }
 
 /** A run of /code-review the round started: what it was asked, and the hand that ends it. */
@@ -106,8 +110,8 @@ function engine(on: On, repo: World) {
   // What the risk classifier was asked, and every program run, by its argv.
   const judged: { model: string; prompt: string; cached: boolean }[] = []
   const argvs: string[][] = []
-  const ran = (exitCode: number, stdout = '') => ({
-    value: { exitCode, stdout, stderr: exitCode === 0 ? '' : 'failed', isStdoutTruncated: false, isStderrTruncated: false },
+  const ran = (exitCode: number, stdout = '', stderr = exitCode === 0 ? '' : 'failed') => ({
+    value: { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false },
   })
   const between = (from: string, to: string) => {
     const commits = repo.history.slice(repo.history.indexOf(from) + 1, repo.history.indexOf(to) + 1)
@@ -123,14 +127,16 @@ function engine(on: On, repo: World) {
       if (rest[0] === '--show-toplevel') return ran(0, `${ROOT}\n`)
       if (rest[0] === '--path-format=absolute') return ran(0, `${ROOT}/.git\n`)
       if (last === 'HEAD') return ran(0, `${repo.head}\n`)
-      return last === 'refs/heads/main' ? ran(0, `${BASE}\n`) : ran(1)
+      return last === 'refs/heads/main' || (repo.originHead !== undefined && last === 'refs/remotes/origin/main') ? ran(0, `${BASE}\n`) : ran(1)
     }
+    if (sub === 'symbolic-ref' && last === 'refs/remotes/origin/HEAD') return repo.originHead === undefined ? ran(1) : ran(0, `origin/${repo.originHead}\n`)
     if (sub === 'symbolic-ref') return last === 'HEAD' && repo.branch !== '' ? ran(0, `${repo.branch}\n`) : ran(1)
     if (sub === 'merge-base' && rest[0] === '--is-ancestor') {
       const older = repo.history.indexOf(rest[1] ?? '')
       return older >= 0 && older <= repo.history.indexOf(rest[2] ?? '') ? ran(0) : ran(1)
     }
-    if (sub === 'merge-base') return repo.noBase === true ? ran(1) : ran(0, `${BASE}\n`)
+    if (sub === 'merge-base' && repo.forkFails !== undefined) return ran(128, '', repo.forkFails)
+    if (sub === 'merge-base') return repo.noBase === true ? ran(1, '', '') : ran(0, `${BASE}\n`)
     if (sub === 'rev-list') return ran(0, `${repo.history.indexOf(repo.head)}\n`)
     if (sub === 'status') {
       const fresh = rest.includes('--untracked-files=no') ? [] : (repo.untracked ?? [])
@@ -1631,4 +1637,21 @@ test('a branch git finds no shared history for is told why, not that main is mis
   engine(on, world({ noBase: true }))
   await start($)
   expect(String((await $.tool.call({ tool: REVIEW })).deny)).toContain('git finds no commit feat/app shares with main')
+})
+
+test("a fork git cannot find for another reason is told git's words, not to fetch history", async ($, on) => {
+  engine(on, world({ forkFails: 'fatal: bad object refs/remotes/origin/main' }))
+  await start($)
+  expect(String((await $.tool.call({ tool: REVIEW })).deny)).toBe(
+    'git could not find where feat/app forked from main: fatal: bad object refs/remotes/origin/main. Nothing was recorded.',
+  )
+})
+
+test("an origin HEAD that names a branch origin no longer has falls back to the usual names", async ($, on) => {
+  const { reviews } = engine(on, world({ originHead: 'master' }))
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await act($, reviews, 0)
+  expect(String((await call).result)).toContain('Review round 1 of feat/app')
+  expect((reviews[0] as Review).args).toBe(`high ${BASE}..${ONE}`)
 })

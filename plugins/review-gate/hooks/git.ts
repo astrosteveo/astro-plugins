@@ -44,15 +44,19 @@ export type Place = {
   mainRef: string
   /** The commit the branch forked from the default branch at; empty when there is none. */
   base: string
+  /** Why git could not find that commit, in its words; empty when it found it, or the branch shares no history. */
+  forkError: string
   /** Commits on the branch past its base. */
   ahead: number
 }
 
-// The default branch: the one origin's HEAD names where the clone knows it, else the first of the
-// usual names that exists here or on origin.
+// The default branch: the one origin's HEAD names where the clone has it, else the first of the
+// usual names that exists here or on origin. origin's HEAD outlives the branch it names when that
+// branch is renamed on origin and pruned here.
 async function defaultBranch(git: Git) {
   const remote = await git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
-  if (remote.ok && remote.out.trim().startsWith('origin/')) return remote.out.trim().slice('origin/'.length)
+  const named = remote.ok && remote.out.trim().startsWith('origin/') ? remote.out.trim().slice('origin/'.length) : ''
+  if (named !== '' && (await git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${named}`])).ok) return named
   for (const name of ['main', 'master', 'trunk']) {
     const [local, onOrigin] = await Promise.all([
       git(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]),
@@ -88,6 +92,8 @@ export async function locate($: EngineInterface, cwd: string): Promise<Place | s
   const ref = await mainRef(git, main)
   const fork = ref === '' ? undefined : await git(['merge-base', 'HEAD', ref])
   const base = fork?.ok === true ? fork.out.trim() : ''
+  // git merge-base fails with no words when the two share no history, and says why otherwise.
+  const forkError = fork === undefined || fork.ok ? '' : fork.err
   const count = base === '' ? undefined : await git(['rev-list', '--count', `${base}..HEAD`])
   return {
     root,
@@ -98,6 +104,7 @@ export async function locate($: EngineInterface, cwd: string): Promise<Place | s
     main,
     mainRef: ref,
     base,
+    forkError,
     ahead: count?.ok === true ? Number(count.out.trim()) || 0 : 0,
   }
 }

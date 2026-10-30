@@ -351,6 +351,8 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   if (place.branch === '') return refuse('HEAD is detached: check out the branch the change is on, then review it.')
   if (place.main === '' || place.mainRef === '')
     return refuse(`${place.root} has no default branch to compare against: no main, master or trunk, here or on origin.`)
+  if (place.base === '' && place.forkError !== '')
+    return refuse(`git could not find where ${place.branch} forked from ${place.mainRef}: ${place.forkError}. Nothing was recorded.`)
   if (place.base === '')
     return refuse(
       `git finds no commit ${place.branch} shares with ${place.mainRef}, so there is nothing to compare it against. In a shallow clone, fetch the history (git fetch --unshallow); a branch with no history in common with ${place.main} cannot be reviewed against it.`,
