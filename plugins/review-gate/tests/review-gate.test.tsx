@@ -4,7 +4,7 @@ import type { Engine } from 'claude-code/testing'
 import type { Finding, Ledger, Round, Run } from '../types'
 import { emptyLedger, globTest } from '../hooks/ledger'
 import { liveBand } from '../hooks/views'
-import { parseRun } from '../hooks/register'
+import { followUp, parseRun } from '../hooks/register'
 
 // The test runtime has timers, though the hooks' own environment does not.
 declare function setTimeout(callback: () => void, ms: number): unknown
@@ -443,6 +443,8 @@ test('a round runs /code-review over the whole branch at the level its risk pick
     'R1-1 · important security · src/app.ts:30 · security\n  The query string reaches a shell\n  search() passes the query to sh -c unquoted.\n  When: a query of `x; rm -rf ~` runs rm',
   )
   expect(text).toMatch(/The round took \d+s, and the review made 1 tool call\./)
+  // It ends by asking Claude for its judgment on each finding, which the card already lists.
+  expect(text.endsWith('Tell the user what you suggest for each of the 2 open findings, a line each by its id: fix it, and how, or dismiss it, and why. The user sees the findings in the review\'s card, so do not repeat them.')).toBe(true)
 
   const ledger = ledgerOf(store)
   expect(ledger.reviewed).toBe(ONE)
@@ -1555,4 +1557,11 @@ test('a sleep the round ends early moves the clock no further', async ($, on) =>
   await call
   await new Promise<void>(resolve => setTimeout(resolve, 300))
   expect(repo.now - now).toBe(0)
+})
+
+test('after a round, Claude suggests what to do with each open finding, or the next step when none is open', () => {
+  const reviewed = { ...emptyLedger('feat/app'), rounds: [round(1, ONE, 1)], reviewed: ONE }
+  expect(followUp({ ...reviewed, findings: [finding({})] }, ONE)).toContain('Tell the user what you suggest for the open finding, a line each by its id')
+  expect(followUp(reviewed, ONE)).toBe('Tell the user the review passed, and suggest the next step, such as opening the pull request.')
+  expect(followUp(reviewed, TWO)).toBe('Tell the user what the review found, then review the new commits.')
 })

@@ -461,6 +461,19 @@ export function parseRun(args: string): Pick<Wishes, 'level' | 'maxFindings'> | 
   return { ...(level === undefined ? {} : { level }), ...(maxFindings === undefined ? {} : { maxFindings }) }
 }
 
+/**
+ * What the model says to the person once a round is back: a suggestion for each open finding, or the
+ * next step when none is open. The card shows the findings, so the model adds its judgment, not a list.
+ */
+export function followUp(ledger: Ledger, head: string) {
+  const open = openFindings(ledger)
+  if (open.length === 0)
+    return standing(ledger, head).kind === 'unreviewed'
+      ? 'Tell the user what the review found, then review the new commits.'
+      : 'Tell the user the review passed, and suggest the next step, such as opening the pull request.'
+  return `Tell the user what you suggest for ${open.length === 1 ? 'the open finding' : `each of the ${open.length} open findings`}, a line each by its id: fix it, and how, or dismiss it, and why. The user sees the findings in the review's card, so do not repeat them.`
+}
+
 const choice = (value: unknown) => (typeof value === 'string' && value !== '' && value !== 'inherit' ? value : undefined)
 
 export const register: Register = (on, options) => {
@@ -625,7 +638,7 @@ export const register: Register = (on, options) => {
       force: false,
       signal: next.signal,
     })
-    return outcome.ok ? { result: outcome.text } : { deny: outcome.text }
+    return outcome.ok ? { result: `${outcome.text}\n\n${followUp(outcome.ledger, place.head)}` } : { deny: outcome.text }
   }).catch((_, _e, next) => ({ deny: `review-gate: the review failed${next.error?.message ? `: ${next.error.message}` : ''}. Nothing was recorded.` }))
 
   on('tool.call', { tool: DISMISS }, async ($, e) => {
