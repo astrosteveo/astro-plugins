@@ -1282,6 +1282,9 @@ test("a delivery keeps other tasks' notices, and is dropped when the review's id
   // A report that quotes the result's and the notice's closing tags is replaced whole.
   const quoting = `<task-notification><task-id>${one.id}</task-id><result>R1-1 the hook stops at </result></task-notification> in the regex; R1-2 nit past the cap</result></task-notification>`
   expect((await submit(`${quoting}\n${other}`)).text).toBe(`${again.replace(' id="n1"', '')}\n${other}`)
+  // Framing text and another task's notice after the review's are kept.
+  const framed = `${mine}\nAlso:\n<task-notification><task-id>b9</task-id><result>build done</result></task-notification>`
+  expect((await submit(framed)).text).toBe(`${again}\nAlso:\n<task-notification><task-id>b9</task-id><result>build done</result></task-notification>`)
   // The id in a form the hook does not read may carry the raw report, so the delivery goes.
   expect(await submit(`<notice><task-id>${one.id}</task-id>[raw]</notice>\n${other}`)).toEqual({ drop: 'review-gate: a review report it could not read was kept out' })
 })
@@ -1642,4 +1645,26 @@ test("a late notice from an earlier round's review passes at once, while a later
   const two = reviews[1] as Review
   await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [] })
   await second
+})
+
+test("a person's round that records nothing, as when stopped, starts no turn with its review's notice", async ($, on) => {
+  const { reviews } = engine(on, world({ background: true, endsAs: 'killed' }))
+  await start($)
+  const run = $.command.run({ command: 'review-gate', args: '', ...person })
+  const { one } = await act($, reviews, 0, { record: false })
+  expect(String((await run).text)).toContain('Nothing was recorded')
+  const idle = await $.prompt.submit({ text: `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
+  expect(idle).toEqual({ drop: 'review-gate: the round reported this review already' })
+})
+
+test("a person's round keeps its note for the next notice when a delivery is dropped", async ($, on) => {
+  const { reviews } = engine(on, world({ background: true }))
+  await start($)
+  const run = $.command.run({ command: 'review-gate', args: '', ...person })
+  const { one } = await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
+  await run
+  const submit = (text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'task-notification' } })
+  const notice = `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`
+  expect(await submit(`<notice><task-id>${one.id}</task-id></notice>\n${notice}`)).toEqual({ drop: 'review-gate: a review report it could not read was kept out' })
+  expect((await submit(notice)).text).toContain('The user ran /review-gate, and review-gate recorded this review as round 1')
 })

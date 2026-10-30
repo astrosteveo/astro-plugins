@@ -325,8 +325,8 @@ const escaped = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt
 /**
  * A delivery with the raw report of each review's notice replaced by `word`. A notice's result comes
  * last, and a report may quote `</result>` or the notice's own closing tag, so a review's notice
- * runs from its `<result>` to the `</result></task-notification>` that ends the delivery or comes
- * before the next notice. Gives the text outside every notice, which may name a review too, and how
+ * runs from its `<result>` to the last `</result></task-notification>` before the next notice opens
+ * with its task id, or before the delivery ends. Gives the text outside every notice, which may name a review too, and how
  * many notices are other tasks'.
  */
 export function rewriteNotices(text: string, ids: readonly string[], word: (id: string) => string) {
@@ -358,8 +358,10 @@ export function rewriteNotices(text: string, ids: readonly string[], word: (id: 
       at = close + CLOSE.length
       continue
     }
-    const ends = [...text.slice(result).matchAll(/<\/result>\s*<\/task-notification>/g)].map(match => result + (match.index ?? 0) + match[0].length)
-    const end = ends.find(one => /^\s*(?:$|<task-notification\b)/.test(text.slice(one))) ?? ends[ends.length - 1] ?? close + CLOSE.length
+    const after = text.slice(result).search(/<task-notification\b[^>]*>\s*<task-id>/)
+    const limit = after < 0 ? text.length : result + after
+    const ends = [...text.slice(result, limit).matchAll(/<\/result>\s*<\/task-notification>/g)].map(match => result + (match.index ?? 0) + match[0].length)
+    const end = ends[ends.length - 1] ?? close + CLOSE.length
     out += `${head}<result>${word(id)}</result>${CLOSE}`
     at = end
   }
@@ -432,7 +434,8 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
  * carries the result, so the model follows up with its suggestions.
  */
 function tell(outcome: Awaited<ReturnType<typeof runRound>>, isPerson: boolean): Told {
-  if (!outcome.ok) return { note: `review-gate recorded nothing from this review: ${outcome.text}`, isQuiet: !isPerson, label: 'the round recorded nothing' }
+  // The round's output has said why it recorded nothing, Esc included, so its notice starts no turn.
+  if (!outcome.ok) return { note: `review-gate recorded nothing from this review: ${outcome.text}`, isQuiet: true, label: 'the round recorded nothing' }
   const label = `round ${outcome.round} recorded`
   if (!isPerson)
     return { note: `review-gate recorded this review as round ${outcome.round}, and the review tool's result holds its findings: nothing more to do for this notice.`, isQuiet: true, label }
@@ -587,9 +590,10 @@ export const register: Register = (on, options) => {
     // The notice of the round running now can come while it still checks and saves what the review found.
     if (busy && current !== undefined && ids.includes(current)) await ended
     let isQuiet = true
+    const used: string[] = []
     const rewritten = rewriteNotices(e.text, ids, id => {
       const said = told.get(id)
-      if (said !== undefined) told.set(id, { isQuiet: said.isQuiet, label: said.label })
+      if (said?.note !== undefined) used.push(id)
       isQuiet &&= said?.note === undefined || said.isQuiet
       return escaped(said?.note ?? 'review-gate handled this review already: nothing to do.')
     })
@@ -597,6 +601,11 @@ export const register: Register = (on, options) => {
     if (ids.some(id => rewritten.outside.includes(id))) return { drop: 'review-gate: a review report it could not read was kept out' }
     // A notice that would start a turn of its own with nothing to do is dropped: its row is the lesser cost.
     if (e.turnId === undefined && isQuiet && rewritten.others === 0) return { drop: 'review-gate: the round reported this review already' }
+    // A note is used up once a delivery carries it; a later notice of the same review says only that.
+    for (const id of used) {
+      const said = told.get(id)
+      if (said !== undefined) told.set(id, { isQuiet: said.isQuiet, label: said.label })
+    }
     return next({ ...e, text: rewritten.text })
   }).catch((_, e, next) => next(e))
 
