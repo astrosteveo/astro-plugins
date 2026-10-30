@@ -280,8 +280,29 @@ async function stop($: EngineInterface, ask: RoundAsk, agentId: string) {
   ask.quiet([...team])
   for (const id of team) {
     if (ENDED.has(agents?.find(one => one.id === id)?.status ?? '')) continue
-    await $.tool.call({ tool: 'TaskStop', task_id: id }).catch(() => undefined)
+    if (await isRefused($, id)) stopLater($, id, STOP_TRIES)
   }
+}
+
+/** How long a refused stop waits before it asks again, and how many times it asks in all. */
+const STOP_AGAIN_MS = 1_000
+const STOP_TRIES = 3
+
+// Whether the session refused to stop an agent. One that has ended already answers with an error,
+// which is no refusal.
+async function isRefused($: EngineInterface, agentId: string) {
+  const answer: unknown = await $.tool.call({ tool: 'TaskStop', task_id: agentId }).catch(() => undefined)
+  return typeof answer === 'object' && answer !== null && 'deny' in answer
+}
+
+// Right after the person presses Esc, the session refuses every tool call, the round's TaskStop
+// included, and the review runs on. A moment later, from a timer outside the round, it does not.
+function stopLater($: EngineInterface, agentId: string, tries: number) {
+  $.clock.after(STOP_AGAIN_MS, () => {
+    void isRefused($, agentId).then(refused => {
+      if (refused && tries > 1) stopLater($, agentId, tries - 1)
+    })
+  })
 }
 
 /** How many reads of the agent list in a row may fail before the round stops waiting on it. */

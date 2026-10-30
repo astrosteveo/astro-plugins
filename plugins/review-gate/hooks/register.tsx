@@ -384,7 +384,9 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
     const shown = (await read($, run).catch(() => null))?.agentId
     if (shown !== undefined) await update($, memberOf(activity, { requestId: shown }), () => null).catch(() => undefined)
     await update($, run, () => null).catch(() => undefined)
-    await refresh($).catch(() => undefined)
+    // A stopped round changed no record, and right after Esc git cannot run, so the band would read
+    // as no repository at all: it keeps what it showed.
+    if (!wishes.signal.aborted) await refresh($).catch(() => undefined)
   }
 }
 

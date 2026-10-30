@@ -75,6 +75,8 @@ type World = {
   listFails?: number
   /** What git merge-base says when it fails for a reason other than no shared history. */
   forkFails?: string
+  /** How many TaskStop calls from now the session refuses, as it does right after the person presses Esc. */
+  stopRefusals?: number
   /** The branch origin's HEAD names, which may no longer be on origin; left out, origin has no HEAD. */
   originHead?: string
 }
@@ -213,6 +215,12 @@ function engine(on: On, repo: World) {
     }
   })
   on('clock.now', () => ({ value: repo.now }))
+  // A timer's wait takes a moment and moves the clock by its length.
+  on('clock.after', async (_, e) => {
+    await new Promise<void>(resolve => setTimeout(resolve, 1))
+    repo.now += e.ms
+    return { value: undefined }
+  })
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => {
     store.set(e.key, JSON.parse(JSON.stringify(e.value)))
@@ -266,6 +274,10 @@ function engine(on: On, repo: World) {
     }
     if (e.tool === 'TaskStop') {
       stops.push(String((e as unknown as { task_id?: string }).task_id))
+      if ((repo.stopRefusals ?? 0) > 0) {
+        repo.stopRefusals = (repo.stopRefusals ?? 0) - 1
+        return { deny: "The user doesn't want to take this action right now." }
+      }
       return { result: {} }
     }
     if (e.tool !== 'AskUserQuestion') return { result: {} }
@@ -1307,6 +1319,20 @@ test('a background review the round does not hear from is stopped, with the agen
   const notice = (id: string) => `<task-notification><task-id>${id}</task-id><result>[raw]</result></task-notification>`
   const submitted = await $.prompt.submit({ text: `${notice('angle-1')}\n${notice('helper')}`, wait: false, origin: { kind: 'task-notification' } })
   expect(submitted.text?.trim()).toBe(notice('helper'))
+})
+
+test('a stop the session refuses, as right after Esc, is asked again a moment later', async ($, on) => {
+  const repo = world({ background: true, noSleep: true, stopRefusals: 2 })
+  const { reviews, stops } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  await call
+  const id = (reviews[0] as Review).id
+  expect(stops).toEqual([id])
+  // The timer asks again after a second, and once more when that too is refused.
+  for (let wait = 0; wait < 300 && stops.length < 3; wait++) await new Promise<void>(resolve => setTimeout(resolve, 10))
+  expect(stops).toEqual([id, id, id])
 })
 
 test('a background review that failed or was stopped after it recorded is reported as such', async ($, on) => {
