@@ -62,6 +62,8 @@ type World = {
   noSleep?: boolean
   /** Holds the risk classifier's reply until it settles. */
   holdRisk?: Promise<void>
+  /** Whether the agent list shows the review without naming review-gate as its starter. */
+  untagged?: boolean
 }
 
 /** A run of /code-review the round started: what it was asked, and the hand that ends it. */
@@ -156,7 +158,13 @@ function engine(on: On, repo: World) {
   on('agent.list', () => ({
     value: [
       ...(repo.agents ?? []).map(agent => ({ ...agent, description: agent.description ?? 'an agent', status: 'running' as const })),
-      ...reviews.map(review => ({ id: review.id, type: 'general-purpose', description: '/code-review', status: 'running' as const, spawnedBy: 'review-gate' })),
+      ...reviews.map(review => ({
+        id: review.id,
+        type: 'general-purpose',
+        description: '/code-review',
+        status: 'running' as const,
+        ...(repo.untagged === true ? {} : { spawnedBy: 'review-gate' }),
+      })),
     ],
   }))
   // A skill's prompt as the engine computes it, before any plugin adds to it.
@@ -1420,4 +1428,15 @@ test("an agent the list does not show cannot record, even with the round's name,
   const { recorded } = await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
   expect(recorded).toContain('Recorded round 1: R1-1')
   await call
+})
+
+test('a review the agent list does not name as review-gate\'s cannot record, and the round says why', async ($, on) => {
+  const { reviews } = engine(on, world({ untagged: true }))
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  const { recorded } = await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
+  expect(recorded).toContain('record takes the findings')
+  expect(String((await call).deny)).toBe(
+    '/code-review ended without recording its findings, and the agent list did not name review-gate as its starter, so the gate could not tell it was the review, so the round has nothing to stand on. Nothing was recorded; review again.',
+  )
 })

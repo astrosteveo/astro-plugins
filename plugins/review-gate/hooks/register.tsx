@@ -391,8 +391,8 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
 }
 
 /**
- * Takes an agent as the round's review, on proof: the agent list says this plugin started it, the
- * Skill tool names it, or it records with the round's name. The first proof wins. Every agent proved
+ * Takes an agent as the round's review, on proof: the agent list says this plugin started it, or the
+ * Skill tool names it. The first proof wins. Every agent proved
  * a review is remembered, so its task notices are the round's, no later round takes it for its own,
  * and it never answers at the gate.
  */
@@ -425,6 +425,7 @@ async function scopeOf($: EngineInterface, agentId: string): Promise<Scope> {
     await bind($, agentId)
     return 'review'
   }
+  if (!before.has(agentId) && agent.spawnedBy === undefined && agent.parentId === undefined) pending.untagged = true
   others.add(agentId)
   return 'other'
 }
@@ -579,15 +580,12 @@ export const register: Register = (on, options) => {
   }).catch((_, e, next) => next(e))
 
   // The review hands back its findings here: only the round's own review, naming the round, once.
-  // Once the review's agent is known, another agent that has the round's name, such as one the
-  // review started, or another /code-review briefed by mistake, records nothing. Before it is known,
-  // an agent another agent's model started, such as one the review handed part of its work to, is
-  // not the review either.
+  // Another agent that has the round's name, such as one the review started, or another /code-review
+  // briefed by mistake, records nothing. The review's first call names it, so it is known by then.
   on('tool.call', { tool: RECORD }, async ($, e) => {
     const pending = desk.pending
     const refusal = "record takes the findings of review-gate's own review round, from its review, with the round its instructions name."
     if (pending === undefined || e.agentId === undefined || asText(e.round).trim() !== pending.plan.token) return { deny: refusal }
-    // The round's review, or, before something proves which agent that is, one that may be it.
     const scope = await scopeOf($, e.agentId)
     if (scope !== 'review') return { deny: refusal }
     // The findings are about the commit the round began at: when the repository changed before they
@@ -621,7 +619,6 @@ export const register: Register = (on, options) => {
     const skippedOut = read.findings.length - kept.length
     const record = { raised: read.findings.length, rechecked: read.rechecked, added, repeats, nitsLeft, skippedOut }
     pending.record = record
-    await bind($, e.agentId)
     const left = [
       repeats > 0 ? `${repeats} the branch has had before` : '',
       nitsLeft > 0 ? `${nitsLeft} nit${nitsLeft === 1 ? '' : 's'} past the ${NIT_CAP} a round raises` : '',

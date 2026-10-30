@@ -86,12 +86,14 @@ export type Pending = {
   /** The most findings the review's level lets it report, as its prompt says. */
   cap?: number
   /**
-   * The review's agent, once something proves it: the agent list says this plugin started it, the
-   * Skill tool names it, or it records with the round's name.
+   * The review's agent, once something proves it: the agent list says this plugin started it, or the
+   * Skill tool names it.
    */
   agentId?: string
   /** The review's tool calls so far. */
   calls: number
+  /** Set when a new agent no plugin named made calls while the review was unknown: likely the review, untagged. */
+  untagged?: boolean
   /**
    * Why the round records nothing because the repository is no longer as it found it, or undefined
    * while it is: HEAD moved, or a file changed. The record call asks before it takes the findings.
@@ -427,7 +429,13 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     if (pending.record === undefined)
       return refuse(
         `/code-review ended without recording its findings${
-          run === undefined ? ', and it ran in no agent of its own' : failed === undefined ? '' : `, and it failed: ${failed}`
+          run === undefined
+            ? ', and it ran in no agent of its own'
+            : failed !== undefined
+              ? `, and it failed: ${failed}`
+              : pending.untagged === true && pending.agentId === run.agentId
+                ? ', and the agent list did not name review-gate as its starter, so the gate could not tell it was the review'
+                : ''
         }, so the round has nothing to stand on.${isStuck ? ` ${STUCK}` : ''} Nothing was recorded; review again.`,
       )
     record = pending.record
