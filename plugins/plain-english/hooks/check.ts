@@ -39,20 +39,46 @@ async function rules($: EngineInterface) {
   return typeof file === 'string' ? parseStyle(file)?.body : undefined
 }
 
+// Text in quotation marks blanked out, columns kept: a report that quotes what it found.
+export const unquoted = (text: string) => text.replace(/"[^"\n]{1,300}"|“[^”\n]{1,300}”/g, m => ' '.repeat(m.length))
+
+// What the model reads: the prose alone, code and block quotes blanked as the word scan does, with
+// runs of blank lines closed up.
+const forModel = (text: string) =>
+  prose(text)
+    .map(l => l.trimEnd())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+export type Options = {
+  // The text a write replaces: its Claudisms are not the write's to answer for.
+  before?: string
+  // What the model reads in place of the whole text: an edit's new words, not the file around them.
+  judged?: string
+  // Leave text in quotation marks alone, as in a report that quotes what it found.
+  skipQuotes?: boolean
+}
+
 // The Claudisms in a text: each rewrite the word scan finds, then what the model finds, the words
 // the scan left for a reader among them. When the model cannot answer, the scan's rewrites stand
-// alone. `before` is the text an edit replaces.
-export async function problems($: EngineInterface, text: string, before = '', useModel = true): Promise<Problem[]> {
+// alone.
+export async function problems($: EngineInterface, given: string, options: Options = {}): Promise<Problem[]> {
+  const strip = (t: string) => (options.skipQuotes === true ? unquoted(t) : t)
+  const text = strip(given)
+  const before = options.before ?? ''
   const hits = added(scan(text), before)
   const found: Problem[] = hits.filter(h => h.tier === 'rewrite').map(h => ({ quote: h.text, why: h.why }))
-  if (!useModel || proseWords(text) < JUDGED_WORDS) return found
+  const read = forModel(strip(options.judged ?? given))
+  if (proseWords(read) < JUDGED_WORDS) return found
   const style = await rules($)
   if (style === undefined) return found
   const candidates = hits.filter(h => h.tier === 'check')
-  const judged = await judge($, style, text.slice(0, JUDGED_CHARS), candidates).catch(() => undefined)
+  const judged = await judge($, style, read.slice(0, JUDGED_CHARS), candidates).catch(() => undefined)
   if (judged === undefined) return found
   const old = flat(before)
-  const covered = (q: string) => found.some(p => flat(p.quote).includes(q) || q.includes(flat(p.quote)))
+  // A finding inside words the scan already reported adds nothing; one that holds them says more.
+  const covered = (q: string) => found.some(p => flat(p.quote).includes(q))
   for (const f of judged) {
     const q = flat(f.quote)
     if ((old !== '' && old.includes(q)) || covered(q)) continue

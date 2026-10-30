@@ -25,19 +25,30 @@ Do not flag:
 - Technical terms, names, code, commands, paths and quoted text.
 - Plain, specific prose that merely sounds formal. When in doubt, leave it out: a false flag costs more than a miss.
 
-Answer with a JSON array and nothing else. Each element is {"quote": the exact words from the text, at most 12 words, copied character for character; "why": what form it is, in a few words; "fix": the plainer wording, or "cut"}. Answer [] when the text is clean.`
+Answer with a JSON array and nothing else, at most 20 elements, the clearest first. Each element is {"quote": the exact words from the text, at most 12 words, copied character for character; "why": what form it is, in a few words; "fix": the plainer wording, or "cut"}. Answer [] when the text is clean.`
 
-// The JSON array in a reply, kept only where each quote is really in the text.
-export function parseFindings(reply: string, text: string): Finding[] {
+// The JSON array in a reply, or as much of it as came whole: a reply cut off at its token cap keeps
+// the objects before the cut.
+function array(reply: string): unknown {
   const open = reply.indexOf('[')
+  if (open === -1) return undefined
   const close = reply.lastIndexOf(']')
-  if (open === -1 || close < open) return []
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(reply.slice(open, close + 1))
-  } catch {
-    return []
+  if (close > open) {
+    try {
+      return JSON.parse(reply.slice(open, close + 1))
+    } catch {}
   }
+  for (let end = reply.lastIndexOf('}'); end > open; end = reply.lastIndexOf('}', end - 1)) {
+    try {
+      return JSON.parse(`${reply.slice(open, end + 1)}]`)
+    } catch {}
+  }
+  return undefined
+}
+
+// The findings in a reply, kept only where each quote is really in the text.
+export function parseFindings(reply: string, text: string): Finding[] {
+  const parsed = array(reply)
   if (!Array.isArray(parsed)) return []
   const flat = (s: string) => s.replace(/\s+/g, ' ').toLowerCase()
   const haystack = flat(text)
@@ -67,7 +78,7 @@ export function prompt(rules: string, text: string, candidates: readonly Hit[]) 
 // The model's findings, or undefined when it gave none to use: an API error, a timeout, a reply
 // that is not JSON. A check that cannot run lets the text through.
 export async function judge($: EngineInterface, rules: string, text: string, candidates: readonly Hit[]) {
-  const r = await $.model.complete({ model: 'haiku', prompt: prompt(rules, text, candidates), maxTokens: 1500, timeoutMs: 30_000 })
+  const r = await $.model.complete({ model: 'haiku', prompt: prompt(rules, text, candidates), maxTokens: 4000, timeoutMs: 30_000 })
   if (!r.isAnswered) return undefined
   return parseFindings(r.text, text)
 }

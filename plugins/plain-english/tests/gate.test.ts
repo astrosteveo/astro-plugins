@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
-import { pieces, shellPieces, words } from '../hooks/gate'
+import { gh, parse, pieces, shellPieces } from '../hooks/gate'
 import { parseFindings } from '../hooks/judge'
 
 const STYLE = '---\nname: Plain English\ndescription: Plain words\n---\n\n# Plain English\n\nWrite plainly.\n'
@@ -40,6 +40,10 @@ function engine(on: On, w: World) {
     return { result: 'ran' } as never
   })
   on('classic.SubagentStop', () => ({}))
+  on('process.run', (_, e) => {
+    w.ran.push(e.argv.join(' '))
+    return { value: { exitCode: 0, stdout: 'https://github.com/o/r/pull/1', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } } as never
+  })
 }
 
 // The kit's types for `$.tool.call` know each built-in tool's input; these tests pass loose ones.
@@ -52,42 +56,74 @@ const LONG =
 
 // What a shell command publishes
 
+const sh = (line: string) => shellPieces(line, '/work')
+const message = (text: string) => [{ what: 'the commit message', text }]
+
 test('a commit message is read from -m, --message and a here-document', () => {
-  expect(shellPieces('git commit -m "fix: one" -m "Two."')).toEqual([{ what: 'the commit message', text: 'fix: one\n\nTwo.' }])
-  expect(shellPieces("git add a.ts && git commit --message='feat: x'")).toEqual([{ what: 'the commit message', text: 'feat: x' }])
-  const heredoc = `git commit -m "$(cat <<'EOF'\nfeat: add it\n\nIt's here.\nEOF\n)"`
-  expect(shellPieces(heredoc)).toEqual([{ what: 'the commit message', text: "feat: add it\n\nIt's here." }])
-  expect(shellPieces("git commit -F - <<'EOF'\nfix: from stdin\nEOF")).toEqual([{ what: 'the commit message', text: 'fix: from stdin' }])
-  expect(shellPieces('git -C /repo commit -F msg.txt')).toEqual([{ what: 'the commit message', file: 'msg.txt' }])
+  expect(sh('git commit -m "fix: one" -m "Two."')).toEqual(message('fix: one\n\nTwo.'))
+  expect(sh("git add a.ts && git commit --message='feat: x'")).toEqual(message('feat: x'))
+  expect(sh(`git commit -m "$(cat <<'EOF'\nfeat: add it\n\nIt's here.\nEOF\n)"`)).toEqual(message("feat: add it\n\nIt's here."))
+  expect(sh("git commit -F - <<'EOF'\nfix: from stdin\nEOF")).toEqual(message('fix: from stdin'))
+  expect(sh('git -C /repo commit -F msg.txt')).toEqual([{ what: 'the commit message', file: '/repo/msg.txt' }])
+})
+
+test('a commit on a later line of the command is found', () => {
+  expect(sh('git add -A\ngit commit -m "feat: a parser"')).toEqual(message('feat: a parser'))
+  expect(sh('git status\ngh pr create --title "T" --body "B"')).toHaveLength(2)
+})
+
+test('combined short flags give their message', () => {
+  for (const flags of ['-am', '-sm', '-nm', '-vm']) expect(sh(`git commit ${flags} "feat: x"`)).toEqual(message('feat: x'))
+  expect(sh('git commit -mfeat:x')).toEqual(message('feat:x'))
+})
+
+test('a here-document leaves the rest of its line, and each command reads its own', () => {
+  expect(sh("cat <<'EOF' | git commit -F -\nfeat: piped\nEOF")).toEqual(message('feat: piped'))
+  expect(sh("cat > notes.md <<'EOF'\nA robust tool.\nEOF\ngit commit -F - <<'EOF'\nfix: x\nEOF")).toEqual(message('fix: x'))
+  expect(sh('echo "fix: echoed" | git commit -F -')).toEqual(message('fix: echoed'))
+})
+
+test('a message file the same line writes is read as written, in the directory it was written', () => {
+  expect(sh("cat > /tmp/msg.txt <<'EOF'\nfeat: new\nEOF\ngit commit -F /tmp/msg.txt")).toEqual(message('feat: new'))
+  expect(sh("cat <<EOF > m.txt && git commit -F m.txt\nfeat: same line\nEOF")).toEqual(message('feat: same line'))
+  expect(sh('cd /repo && git commit -F msg.txt')).toEqual([{ what: 'the commit message', file: '/repo/msg.txt' }])
 })
 
 test('commands that publish no prose carry none', () => {
-  for (const command of ['git commit --amend --no-edit', 'git status', 'echo "git commit -m robust"', 'gh pr view 3', 'git log -m'])
-    expect(shellPieces(command)).toEqual([])
+  for (const command of ['git commit --amend --no-edit', 'git status', 'echo "git commit -m robust"', 'gh pr view 3', 'git log -m', 'ls 2>&1 | head'])
+    expect(sh(command)).toEqual([])
 })
 
 test('a pull request or issue gives its title, body and body file', () => {
-  expect(shellPieces('gh pr create --title "Add it" --body "The body."')).toEqual([
+  expect(sh('gh pr create --title "Add it" --body "The body."')).toEqual([
     { what: 'the pull request title', text: 'Add it' },
     { what: 'the pull request body', text: 'The body.' },
   ])
-  expect(shellPieces('gh issue comment 4 -b "Thanks."')).toEqual([{ what: 'the issue comment', text: 'Thanks.' }])
-  expect(shellPieces('gh pr edit 3 --body-file /tmp/b.md')).toEqual([{ what: 'the pull request body', file: '/tmp/b.md' }])
+  expect(sh('gh issue comment 4 -b "Thanks."')).toEqual([{ what: 'the issue comment', text: 'Thanks.' }])
+  expect(sh('gh pr edit 3 --body-file /tmp/b.md')).toEqual([{ what: 'the pull request body', file: '/tmp/b.md' }])
+  expect(gh(['gh', 'pr', 'create', '--title', 'T', '--body=B'], '/r')).toEqual([
+    { what: 'the pull request title', text: 'T' },
+    { what: 'the pull request body', text: 'B' },
+  ])
 })
 
-test('quotes, escapes and operators split as a shell splits them', () => {
-  expect(words(`a "b \\"c\\"" 'd e'&&f;g`)).toEqual(['a', 'b "c"', 'd e', '&', '&', 'f', ';', 'g'])
+test('quotes, escapes, comments and operators split as a shell splits them', () => {
+  expect(parse(`a "b \\"c\\"" 'd e'&&f;g # h`).map(c => c.words)).toEqual([['a', 'b "c"', 'd e'], ['f'], ['g']])
 })
 
-test('prose files and pull request tools are matched; code files are not', () => {
-  expect(pieces('Write', { file_path: '/r/README.md', content: 'x' })).toEqual([{ what: '/r/README.md', text: 'x', beforeFile: '/r/README.md' }])
-  expect(pieces('Edit', { file_path: '/r/docs/a.mdx', old_string: 'a', new_string: 'b' })).toEqual([{ what: '/r/docs/a.mdx', text: 'b', before: 'a' }])
-  expect(pieces('Write', { file_path: '/r/src/a.ts', content: 'robust' })).toEqual([])
-  expect(pieces('mcp__review-gate__pull_request', { action: 'open', title: 'T', body: 'B' })).toEqual([
+test('prose files and pull request tools are matched; code, config and test files are not', () => {
+  expect(pieces('Write', { file_path: '/r/README.md', content: 'x' }, '/w')).toEqual([{ what: '/r/README.md', text: 'x', beforeFile: '/r/README.md' }])
+  expect(pieces('Edit', { file_path: 'docs/a.mdx', old_string: 'a', new_string: 'b' }, '/w')).toEqual([
+    { what: '/w/docs/a.mdx', text: 'b', before: 'a', beforeFile: '/w/docs/a.mdx', edit: { old: 'a', new: 'b', all: false } },
+  ])
+  for (const file_path of ['/r/src/a.ts', '/r/CMakeLists.txt', '/r/requirements.txt', '/r/tests/fixtures/claudish.md'])
+    expect(pieces('Write', { file_path, content: 'robust' }, '/w')).toEqual([])
+  expect(pieces('Write', { file_path: '/r/NOTES.txt', content: 'x' }, '/w')).toHaveLength(1)
+  expect(pieces('mcp__review-gate__pull_request', { action: 'open', title: 'T', body: 'B' }, '/w')).toEqual([
     { what: 'the title', text: 'T' },
     { what: 'the body', text: 'B' },
   ])
-  expect(pieces('mcp__plain-english__scan', { text: 'robust' })).toEqual([])
+  expect(pieces('mcp__plain-english__scan', { text: 'robust' }, '/w')).toEqual([])
 })
 
 // The model's findings
@@ -146,8 +182,9 @@ test('the same text sent again unchanged goes through', async ($, on) => {
   expect(refusal(await call($, 'Bash', { command }))).toContain('seamless')
   await call($, 'Bash', { command })
   expect(w.ran).toEqual(['Bash'])
-  // Held once more after that, as a new attempt.
-  expect(refusal(await call($, 'Bash', { command }))).toContain('seamless')
+  // A text sent through stays cleared: checking it again would only repeat what Claude set aside.
+  await call($, 'Bash', { command })
+  expect(w.ran).toEqual(['Bash', 'Bash'])
 })
 
 test('an edit answers only for what it adds', async ($, on) => {
@@ -213,4 +250,51 @@ test('a word used twice is listed once', async ($, on) => {
   engine(on, w)
   const r = await call($, 'Bash', { command: 'git commit -m "feat: a robust, robust parser"' })
   expect(refusal(r).match(/"robust"/g)).toHaveLength(1)
+})
+
+// The fixes of review round 1
+
+test('a call refused for two pieces goes through when made again unchanged', async ($, on) => {
+  const w = world()
+  engine(on, w)
+  const input = { action: 'open', title: 'Leverage the cache', body: 'A seamless handoff.' }
+  expect(refusal(await call($, 'mcp__review-gate__pull_request', input))).toContain('In the body:')
+  expect(refusal(await call($, 'mcp__review-gate__pull_request', { ...input, body: 'A robust handoff.' }))).toContain('In the title:')
+  await call($, 'mcp__review-gate__pull_request', { ...input, body: 'A robust handoff.' })
+  expect(w.ran).toEqual(['mcp__review-gate__pull_request'])
+})
+
+test('an edit inside a code fence is not prose', async ($, on) => {
+  const w = world({ files: new Map([['/r/README.md', '# Tool\n\n```js\nconst x = parse(a)\n```\n']]) })
+  engine(on, w)
+  await call($, 'Edit', { file_path: '/r/README.md', old_string: 'const x = parse(a)', new_string: 'const robust = parse(a)' })
+  expect(w.ran).toEqual(['Edit'])
+})
+
+test('a subagent report may quote the Claudisms it found', async ($, on) => {
+  const w = world()
+  engine(on, w)
+  const r = await $.classic.SubagentStop({ ...STOP, last_assistant_message: 'The commit says "a seamless handoff" and “Hope this helps”.' })
+  expect(r.block).toBeUndefined()
+})
+
+test('a reply cut off at its token cap keeps the findings before the cut', () => {
+  const text = 'The real fix is here. It does the heavy lifting.'
+  expect(parseFindings('[{"quote":"The real fix","why":"crowned","fix":"The fix"},{"quote":"the heavy', text).map(f => f.quote)).toEqual(['The real fix'])
+})
+
+test('a model finding that holds a word-scan hit is kept', async ($, on) => {
+  const w = world({ reply: '[{"quote":"The real fix — a cache","why":"crowned claim","fix":"A cache fixed it"}]' })
+  engine(on, w)
+  const r = await call($, 'Bash', { command: `git commit -m "fix: x" -m "${LONG} The real fix — a cache."` })
+  expect(refusal(r)).toContain('"The real fix — a cache": crowned claim.')
+})
+
+test('literal unlock and elevated are left to the model; empower is a rewrite in every form', async ($, on) => {
+  const w = world()
+  engine(on, w)
+  await call($, 'Bash', { command: 'git commit -m "fix: unlock the mutex with elevated privileges"' })
+  expect(w.ran).toEqual(['Bash'])
+  for (const word of ['empower', 'empowers', 'empowered'])
+    expect(refusal(await call($, 'Bash', { command: `git commit -m "feat: ${word} teams"` }))).toContain(`"${word}"`)
 })

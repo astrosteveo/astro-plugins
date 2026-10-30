@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { list, problems } from './check'
-import { pieces } from './gate'
+import { type Piece, gh, pieces } from './gate'
 import { report, scan } from './scan'
 import { STYLE_FILE, hasRules, parseStyle, withRules } from './style'
 
@@ -33,17 +33,26 @@ async function resolve($: EngineInterface, path: string) {
   return `${await $.session.cwd()}/${path}`
 }
 
-// A file is read only where the person's rules let Claude read it; elsewhere the model reads it
-// with Read, which asks, and passes the text.
-async function scanFile($: EngineInterface, path: string) {
+// A file's text, read only where the person's rules let Claude read it; elsewhere the model reads
+// it with Read, which asks, and passes the text.
+async function readFile($: EngineInterface, path: string): Promise<{ text: string } | { deny: string }> {
   const file = await resolve($, path)
   if (file === undefined) return { deny: `HOME is not set, so ${path} has no place. Give an absolute path.` }
   const verdict = await $.tool.check({ tool: 'Read', input: { file_path: file } })
   if (verdict.decision !== 'allow')
     return { deny: `Reading ${path} is not allowed without asking. Read it with the Read tool and pass its text as text.` }
   const body = await $.fs.read(file).catch(() => undefined)
-  if (typeof body !== 'string') return { deny: `Could not read ${path} as text.` }
-  return { result: await judged($, path, body) }
+  return typeof body === 'string' ? { text: body } : { deny: `Could not read ${path} as text.` }
+}
+
+const readable = async ($: EngineInterface, path: string) => {
+  const read = await readFile($, path)
+  return 'text' in read ? read.text : undefined
+}
+
+async function scanFile($: EngineInterface, path: string): Promise<Answer> {
+  const read = await readFile($, path)
+  return 'text' in read ? { result: await judged($, path, read.text) } : read
 }
 
 // The word scan's report, and under it what the model found that the scan did not.
@@ -53,17 +62,26 @@ async function judged($: EngineInterface, source: string, text: string) {
   return found.length === 0 ? base : `${base}\n\nFound by a model reading the text:\n${list(found)}`
 }
 
-// A file's text for the gate, where the person's rules let Claude read it; else undefined.
-async function readable($: EngineInterface, path: string) {
-  const file = await resolve($, path)
-  if (file === undefined) return undefined
-  const verdict = await $.tool.check({ tool: 'Read', input: { file_path: file } })
-  if (verdict.decision !== 'allow') return undefined
-  const body = await $.fs.read(file).catch(() => undefined)
-  return typeof body === 'string' ? body : undefined
+const flat = (s: string) => s.replace(/\s+/g, ' ').trim()
+
+// An Edit applied to the file's text, or undefined where the old text is not in it.
+function applied(file: string, edit: { old: string; new: string; all: boolean }) {
+  if (edit.old === '' || !file.includes(edit.old)) return undefined
+  return edit.all ? file.split(edit.old).join(edit.new) : file.replace(edit.old, () => edit.new)
 }
 
-const flat = (s: string) => s.replace(/\s+/g, ' ').trim()
+// A piece's text, what it replaces, and what the model reads of it. An Edit is scanned as the file
+// it leaves, so code fences around it keep their meaning, and the model reads only its new words.
+async function prepare($: EngineInterface, piece: Piece) {
+  const text = piece.text ?? (piece.file === undefined ? undefined : await readable($, piece.file))
+  if (text === undefined) return undefined
+  const file = piece.beforeFile === undefined ? undefined : await readable($, piece.beforeFile)
+  if (piece.edit !== undefined) {
+    const after = file === undefined ? undefined : applied(file, piece.edit)
+    return after === undefined ? { text, scanned: text, before: piece.edit.old } : { text, scanned: after, before: file!, judged: piece.edit.new }
+  }
+  return { text, scanned: text, before: piece.before ?? file ?? '' }
+}
 
 type Answer = { result: string } | { deny: string }
 
@@ -80,6 +98,41 @@ async function scanFor($: EngineInterface, e: { path?: unknown; text?: unknown; 
   const { value } = await $.state.get(LAST_REPLY)
   if (value === undefined || value === '') return { deny: 'There is no earlier reply to scan. Pass a path or text.' }
   return { result: await judged($, 'your last reply', value) }
+}
+
+type Memory = {
+  // The calls the gate refused, by what they carry. The same call made again goes through: the
+  // model read the findings and judged them wrong, as for a word used literally. A pass is kept
+  // until the call runs, so a call another hook refuses keeps it.
+  held: Set<string>
+  // Texts that passed, so the gh that review-gate runs for a pull request already checked here
+  // costs no second model call.
+  cleared: Set<string>
+}
+
+// The refusal for a call's pieces, if any, and the key the call is held by.
+async function gate($: EngineInterface, { held, cleared }: Memory, kind: string, found: readonly Piece[]) {
+  const ready = (await Promise.all(found.map(p => prepare($, p)))).map((p, i) => (p === undefined ? undefined : { ...p, what: found[i]!.what }))
+  const known = ready.filter(p => p !== undefined)
+  const key = `${kind}|${known.map(p => `${p.what}\u0000${flat(p.text)}`).join('\u0001')}`
+  if (known.length === 0) return { key }
+  if (held.has(key)) {
+    for (const p of known) cleared.add(flat(p.text))
+    return { key, passed: true }
+  }
+  const refusals: string[] = []
+  for (const p of known) {
+    if (cleared.has(flat(p.text))) continue
+    const problem = await problems($, p.scanned, { before: p.before, judged: p.judged })
+    if (problem.length === 0) cleared.add(flat(p.text))
+    else refusals.push(`In ${p.what}:\n${list(problem)}`)
+  }
+  if (refusals.length === 0) return { key }
+  held.add(key)
+  return {
+    key,
+    deny: `plain-english held this call: its prose has Claudisms. Rewrite them in plain English and make the call again.\n\n${refusals.join('\n\n')}\n\nIf a finding is wrong, such as a word used literally, make the same call again unchanged and it goes through.`,
+  }
 }
 
 export const register: Register = on => {
@@ -114,40 +167,44 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The texts the gate refused, by tool, piece and text. The same text sent again goes through:
-  // the model read the findings and judged them wrong, as for a word used literally.
-  const held = new Set<string>()
+  const memory: Memory = { held: new Set(), cleared: new Set() }
 
   // A commit message, a pull request or issue, or a prose file is checked before it is written,
   // and a call that would publish Claudisms is refused with the list to fix. A check that fails
   // lets the call through.
   on('tool.call', async ($, e, next) => {
-    const found = pieces(e.tool, e as unknown as Record<string, unknown>)
+    const found = pieces(e.tool, e as unknown as Record<string, unknown>, await $.session.cwd())
     if (found.length === 0) return next(e)
-    const refusals: string[] = []
-    for (const piece of found) {
-      const text = piece.text ?? (await readable($, piece.file!))
-      if (text === undefined) continue
-      const key = `${e.tool}|${piece.what}|${flat(text)}`
-      if (held.delete(key)) continue
-      const before = piece.before ?? (piece.beforeFile === undefined ? '' : ((await readable($, piece.beforeFile)) ?? ''))
-      const problem = await problems($, text, before)
-      if (problem.length === 0) continue
-      held.add(key)
-      refusals.push(`In ${piece.what}:\n${list(problem)}`)
-    }
-    if (refusals.length === 0) return next(e)
-    return {
-      deny: `plain-english held this call: its prose has Claudisms. Rewrite them in plain English and make the call again.\n\n${refusals.join('\n\n')}\n\nIf a finding is wrong, such as a word used literally, make the same call again unchanged and it goes through.`,
-    }
+    const checked = await gate($, memory, e.tool, found)
+    if (checked.deny !== undefined) return { deny: checked.deny }
+    const result = await next(e)
+    if (checked.passed === true && result.deny === undefined) memory.held.delete(checked.key)
+    return result
   }).catch((_, e, next) => next(e))
 
-  // A subagent's report is checked as it finishes, and sent back once to be rewritten.
+  // review-gate opens a pull request by running gh itself, from its own tool's hook, which may sit
+  // outside this mod's: the title and body are checked here too, as gh is run.
+  on('process.run', async ($, e, next) => {
+    const program = e.argv[0] ?? ''
+    if (program !== 'gh' && !program.endsWith('/gh')) return next(e)
+    const cwd = await $.session.cwd()
+    const dir = e.init?.cwd === undefined ? cwd : e.init.cwd.startsWith('/') ? e.init.cwd : `${cwd}/${e.init.cwd}`
+    const found = gh(['gh', ...e.argv.slice(1)], dir, e.init?.stdin)
+    if (found.length === 0) return next(e)
+    const checked = await gate($, memory, 'gh', found)
+    if (checked.deny !== undefined) return { deny: checked.deny }
+    const result = await next(e)
+    if (checked.passed === true) memory.held.delete(checked.key)
+    return result
+  }).catch((_, e, next) => next(e))
+
+  // A subagent's report is checked as it finishes, and sent back once to be rewritten. Text in
+  // quotation marks is left alone: a review quotes what it found.
   on('classic.SubagentStop', async ($, e, next) => {
     const result = await next(e)
     const text = e.last_assistant_message ?? ''
     if (e.stop_hook_active || result.block !== undefined || text.trim() === '' || /^\s*[[{]/.test(text)) return result
-    const problem = await problems($, text)
+    const problem = await problems($, text, { skipQuotes: true })
     if (problem.length === 0) return result
     return {
       ...result,
