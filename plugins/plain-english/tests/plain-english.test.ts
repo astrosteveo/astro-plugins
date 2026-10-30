@@ -263,7 +263,7 @@ test('literal uses are only checked, and rewrites win over checks on the same wo
 
 test('"honest" on its own is checked; its set phrases are rewritten once', () => {
   expect(found('Words with honest literal uses.')).toEqual(['check honest'])
-  expect(found('Here is the honest version.')).toEqual(['rewrite the honest version'])
+  expect(found('So, the honest version.')).toEqual(['rewrite the honest version'])
   expect(found('Honestly, it works.')).toEqual(['rewrite Honestly'])
 })
 
