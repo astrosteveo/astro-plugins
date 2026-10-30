@@ -343,7 +343,7 @@ async function mergePullRequest($: EngineInterface, place: Place, input: Input):
 const mail = mailbox()
 const desk: { pending?: Pending } = {}
 // The review agents rounds have run: their task notifications repeat what the round reported, none
-// of them is a later round's review, and none changes anything once its round is over.
+// of them is a later round's review, and none answers at the gate.
 const reviews = new Set<string>()
 // Agents the round has found are not its review, so it does not ask about them again.
 const others = new Set<string>()
@@ -383,9 +383,9 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
     busy = false
     activeRoot = undefined
     // The band's activity for the round's review goes with the round.
-    const shown = (await read($, run))?.agentId
-    if (shown !== undefined) await update($, memberOf(activity, { requestId: shown }), () => null)
-    await update($, run, () => null)
+    const shown = (await read($, run).catch(() => null))?.agentId
+    if (shown !== undefined) await update($, memberOf(activity, { requestId: shown }), () => null).catch(() => undefined)
+    await update($, run, () => null).catch(() => undefined)
     await refresh($).catch(() => undefined)
   }
 }
@@ -405,13 +405,11 @@ async function bind($: EngineInterface, agentId: string) {
 }
 
 /**
- * What an agent is to the gate: the round's review; one that may be it, while the round has yet to
- * learn which agent its review is, which may record with the round's name and so prove it; a review
- * of an earlier round, which a notice or a message can wake once its round is over; or none of these.
- * Agents the review starts, as /code-review max does, are none of these: they neither record nor
- * answer at the gate, since the review is known by then.
+ * What an agent is to the gate: the round's review; a review of an earlier round, which a notice or a
+ * message can wake once its round is over; or neither. Agents the review starts, as /code-review max
+ * does, are neither: they neither record nor answer at the gate, since the review is known by then.
  */
-type Scope = 'review' | 'maybe' | 'past' | 'other'
+type Scope = 'review' | 'past' | 'other'
 
 async function scopeOf($: EngineInterface, agentId: string): Promise<Scope> {
   const pending = desk.pending
@@ -419,17 +417,14 @@ async function scopeOf($: EngineInterface, agentId: string): Promise<Scope> {
   if (reviews.has(agentId)) return 'past'
   // Only a round that has yet to learn its review's agent has anyone left to place.
   if (pending === undefined || pending.agentId !== undefined || others.has(agentId)) return 'other'
+  // The review is listed with this plugin's name from its first call, as a live session shows, so
+  // that call names it. An agent the list does not show is asked about again at its next call.
   const agent = (await $.agent.list()).find(one => one.id === agentId)
-  // The review is listed with this plugin's name from its first call, as a live session shows. An
-  // agent the list does not show yet is asked about again at its next call.
-  if (agent === undefined) return 'maybe'
+  if (agent === undefined) return 'other'
   if (!before.has(agentId) && agent.spawnedBy === PLUGIN) {
     await bind($, agentId)
     return 'review'
   }
-  // A new agent that no plugin and no agent started may be the review too, should the engine not name
-  // this plugin for it, but only its record proves it.
-  if (!before.has(agentId) && agent.spawnedBy === undefined && agent.parentId === undefined) return 'maybe'
   others.add(agentId)
   return 'other'
 }
@@ -530,7 +525,7 @@ export const register: Register = (on, options) => {
     )
     const isClean = !ids.some(id => text.includes(`<task-id>${id}</task-id>`))
     if (isClean && /<task-notification\b/.test(text)) return next({ ...e, text })
-    return { drop: "review-gate: the review finished; the round's result has its findings." }
+    return { drop: 'review-gate: duplicate review report skipped' }
   }).catch((_, e, next) => next(e))
 
   // A subagent's reply is its turn's end; the main thread's end is a moment to look at git again.
@@ -594,7 +589,7 @@ export const register: Register = (on, options) => {
     if (pending === undefined || e.agentId === undefined || asText(e.round).trim() !== pending.plan.token) return { deny: refusal }
     // The round's review, or, before something proves which agent that is, one that may be it.
     const scope = await scopeOf($, e.agentId)
-    if (scope !== 'review' && scope !== 'maybe') return { deny: refusal }
+    if (scope !== 'review') return { deny: refusal }
     // The findings are about the commit the round began at: when the repository changed before they
     // are recorded, the round cannot say what the review read, and records nothing.
     if (pending.record === undefined) {

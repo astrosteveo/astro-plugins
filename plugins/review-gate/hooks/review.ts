@@ -420,7 +420,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     }
     if (ask.signal.aborted) return refuse(STOPPED)
     // A round's findings are about the commit it began at. When HEAD moved, or files changed before the
-    // review recorded, or at all without --fix, when the review only reads, the round cannot say what
+    // review recorded, or at all without --fix, when the review changes none, the round cannot say what
     // the review read, and records nothing. With --fix, files changed after the record are its fixes.
     const drifted = pending.drifted ?? (await driftOf(git, place, !ask.fix))
     if (drifted !== undefined) return refuse(drifted)

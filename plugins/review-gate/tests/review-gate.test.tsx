@@ -594,7 +594,7 @@ test("a review's task notification is kept out of the conversation, and others p
   const { one } = await act($, reviews, 0)
   await call
   const notice = (id: string) => $.prompt.submit({ text: `<task-notification><task-id>${id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
-  expect(await notice(one.id)).toEqual({ drop: "review-gate: the review finished; the round's result has its findings." })
+  expect(await notice(one.id)).toEqual({ drop: 'review-gate: duplicate review report skipped' })
   expect((await notice('other-agent')).text).toContain('<task-id>other-agent</task-id>')
   expect((await $.prompt.submit({ text: `about ${one.id}`, wait: false, origin: { kind: 'composer' } })).text).toBe(`about ${one.id}`)
 })
@@ -1274,7 +1274,7 @@ test("a delivery keeps other tasks' notices, and drops the review's whole when t
   const mine = `<task-notification id="n1"><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`
   expect((await submit(`${mine}\n${other}`)).text?.trim()).toBe(other)
   // Framing with no other notice left, and the id in a form the hook does not read, are dropped.
-  const dropped = { drop: "review-gate: the review finished; the round's result has its findings." }
+  const dropped = { drop: 'review-gate: duplicate review report skipped' }
   expect(await submit(`A background task finished:\n${mine}`)).toEqual(dropped)
   expect(await submit(`<notice><task-id>${one.id}</task-id>[raw]</notice>\n${other}`)).toEqual(dropped)
 })
@@ -1334,7 +1334,7 @@ test('an agent the main conversation starts during a round is never taken for th
   expect(String((await call).result)).toContain('R1-1')
   const notice = (id: string) => $.prompt.submit({ text: `<task-notification><task-id>${id}</task-id></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
   expect((await notice('tests-1')).text).toContain('<task-id>tests-1</task-id>')
-  expect(await notice(one.id)).toEqual({ drop: "review-gate: the review finished; the round's result has its findings." })
+  expect(await notice(one.id)).toEqual({ drop: 'review-gate: duplicate review report skipped' })
 })
 
 test('no agent answers at the gate for the whole round, the risk check included', async ($, on) => {
@@ -1382,7 +1382,7 @@ test("a review the round ends before its first tool call still has its notice ke
   const one = reviews[0] as Review
   expect(String((await call).deny)).toContain('so review-gate did not run it as its review')
   const notice = await $.prompt.submit({ text: `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
-  expect(notice).toEqual({ drop: "review-gate: the review finished; the round's result has its findings." })
+  expect(notice).toEqual({ drop: 'review-gate: duplicate review report skipped' })
 })
 
 test("another task's notice that names the review's output file passes beside the review's", async ($, on) => {
@@ -1408,4 +1408,16 @@ test('a review never answers at the gate, during its round or after it', async (
     'review-gate: findings are answered from the main conversation: not by an agent while a review round runs, and never by a review. A review hands back what it found with record.',
   )
   expect(String((await $.tool.call({ tool: DISMISS, agentId: 'agent-q', ids: ['R1-1'], reason: 'Another agent read it and it holds up.' })).result)).toContain('Dismissed R1-1')
+})
+
+test("an agent the list does not show cannot record, even with the round's name, and the review still can", async ($, on) => {
+  const { reviews } = engine(on, world())
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  expect(String((await $.tool.call({ tool: RECORD, agentId: 'fork-9', round: one.token, findings: [OVERLAP] })).deny)).toContain('record takes the findings')
+  const { recorded } = await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
+  expect(recorded).toContain('Recorded round 1: R1-1')
+  await call
 })
