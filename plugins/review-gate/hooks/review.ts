@@ -10,9 +10,6 @@ import type { Context, Fix, Plan } from './prompts'
 /** The skill a round runs: Claude Code's own code review. */
 export const SKILL = 'code-review'
 
-/** How long a round waits for a review the Skill tool started in the background before it stops it. */
-const REVIEW_LIMIT_MS = 30 * 60_000
-
 /** How long a round waits for the reply of a review that ran in the foreground, which has landed by then as a rule. */
 const REPLY_LIMIT_MS = 5_000
 
@@ -92,6 +89,8 @@ export type Pending = {
   agentId?: string
   /** The review's tool calls so far. */
   calls: number
+  /** What the review's turns have cost so far. */
+  tokens: Tokens
   /** Set when a new agent no plugin named made calls while the review was unknown: likely the review, untagged. */
   untagged?: boolean
   /**
@@ -252,17 +251,39 @@ async function stop($: EngineInterface, agentId: string) {
   await $.tool.call({ tool: 'TaskStop', task_id: agentId }).catch(() => undefined)
 }
 
+// What the agent list says of an agent that has ended.
+const ENDED = new Set(['completed', 'failed', 'killed'])
+
 /**
- * The review's reply. One that ran in the foreground has replied by the time the Skill tool answers;
- * one the Skill tool started in the background is waited for, and stopped once the round stops
- * waiting for it.
+ * Waits until a review the Skill tool started in the background has ended, as long as that takes, as
+ * /code-review run by hand does: a pause between its turns, such as while agents of its own work, is
+ * not its end. Gives whether the wait could not run, as where `sleep` cannot.
+ */
+async function untilEnded($: EngineInterface, agentId: string, signal: AbortSignal): Promise<{ isStuck: boolean }> {
+  while (!signal.aborted) {
+    const agent = (await $.agent.list().catch(() => [])).find(one => one.id === agentId)
+    if (agent === undefined || ENDED.has(agent.status)) return { isStuck: false }
+    if (!(await pause($))) return { isStuck: true }
+  }
+  return { isStuck: false }
+}
+
+/**
+ * The review's last reply. One that ran in the foreground has replied by the time the Skill tool
+ * answers; one the Skill tool started in the background is waited for until it has ended.
  */
 async function replyOf($: EngineInterface, ask: RoundAsk, run: Forked): Promise<{ reply?: Reply; isStuck: boolean }> {
-  const got = await waitFor($, ask.mail.take(run.agentId), ask.signal, run.background === true ? REVIEW_LIMIT_MS : REPLY_LIMIT_MS)
+  if (run.background === true) {
+    const ended = await untilEnded($, run.agentId, ask.signal)
+    if (ended.isStuck) {
+      await stop($, run.agentId)
+      return { isStuck: true }
+    }
+  }
+  const got = await waitFor($, ask.mail.take(run.agentId), ask.signal, REPLY_LIMIT_MS)
   if (got.value !== undefined) return { reply: got.value, isStuck: false }
   ask.mail.drop(run.agentId)
-  if (run.background === true) await stop($, run.agentId)
-  return { isStuck: got.isStuck && run.background === true }
+  return { isStuck: false }
 }
 
 /**
@@ -358,7 +379,6 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   let cap: number | undefined
   let calls: number | undefined
   let report = ''
-  let isUnfinished = false
   let isStuck = false
   // Why the review did not succeed, in its words or a stand-in.
   let failed: string | undefined
@@ -378,6 +398,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       isSkipped: file => skipped.some(test => test(file)),
       isBriefed: false,
       calls: 0,
+      tokens: NONE,
       drift: () => driftOf(git, place, true),
     }
     ask.desk.pending = pending
@@ -412,12 +433,11 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
         if (run.background === true) await stop($, run.agentId)
       } else {
         const got = await replyOf($, ask, run)
-        tokens = plus(tokens, got.reply?.usage)
         // A review in the background hands back word of its start, not its result.
         report = (got.reply?.answer ?? (run.background === true ? '' : run.result)).trim()
         isStuck = got.isStuck
-        isUnfinished = got.reply === undefined && run.background === true && !isStuck
       }
+      tokens = sum(tokens, pending.tokens)
       calls = pending.calls
     }
     if (ask.signal.aborted) return refuse(STOPPED)
@@ -504,8 +524,6 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   })
   if (typeof saved === 'string') return refuse(saved)
   const notes: string[] = []
-  if (isUnfinished)
-    notes.push(`The review had not finished after ${REVIEW_LIMIT_MS / 60_000} minutes, so it was stopped; it had recorded its findings before that.`)
   if (isStuck) notes.push(`${STUCK} It had recorded its findings before that.`)
   if (failed !== undefined) notes.push(`The review recorded its findings, then failed: ${failed}`)
   // A review that said what it fixed is shown by the summary; one that did not is quoted.

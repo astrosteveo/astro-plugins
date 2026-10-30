@@ -64,6 +64,8 @@ type World = {
   holdRisk?: Promise<void>
   /** Whether the agent list shows the review without naming review-gate as its starter. */
   untagged?: boolean
+  /** Whether a review's turn end is a pause, as while agents of its own work, and not its end. */
+  pauses?: boolean
 }
 
 /** A run of /code-review the round started: what it was asked, and the hand that ends it. */
@@ -89,6 +91,8 @@ function engine(on: On, repo: World) {
   const store = new Map<string, unknown>()
   const files = new Map<string, string>()
   const reviews: Review[] = []
+  // The reviews that have ended, as the agent list shows them.
+  const ended = new Set<string>()
   const asked: string[] = []
   // The agents stopped.
   const stops: string[] = []
@@ -162,14 +166,18 @@ function engine(on: On, repo: World) {
         id: review.id,
         type: 'general-purpose',
         description: '/code-review',
-        status: 'running' as const,
+        status: ended.has(review.id) ? ('completed' as const) : ('running' as const),
         ...(repo.untagged === true ? {} : { spawnedBy: 'review-gate' }),
       })),
     ],
   }))
   // A skill's prompt as the engine computes it, before any plugin adds to it.
   on('skill.prompt', (_, e) => ({ text: e.text }))
-  on('turn.complete', (_, e) => ({ text: e.answer }))
+  // A review's turn end is its end, unless the test says it pauses.
+  on('turn.complete', (_, e) => {
+    if (e.agentId !== undefined && repo.pauses !== true) ended.add(e.agentId)
+    return { text: e.answer }
+  })
   // The engine's own verdict on a tool call, beneath the plugin's: every call may run.
   on('tool.check', () => ({ decision: 'allow' as const }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
@@ -297,6 +305,8 @@ const seed = (store: Map<string, unknown>, over: Partial<Ledger>) => store.set(K
 
 // One tick of a wait: an event through the engine, and a millisecond, so the plugin's own calls and
 // its sleeps go round.
+const tick$ = (engine: Engine) => tick(engine)
+
 async function tick($: Engine) {
   await $.turn.start({ text: '', turnId: 'tick', agentId: 'tick' })
   await new Promise<void>(resolve => setTimeout(resolve, 1))
@@ -677,29 +687,33 @@ test('a review the Skill tool starts in the background is waited for, and the ba
   expect(ledgerOf(store).rounds[0]?.tokens).toEqual({ input: 1001, output: 101, cached: 500 })
 })
 
-test('a review in the background that has not answered after thirty minutes is stopped, and what it recorded stands', async ($, on) => {
-  const repo = world({ background: true })
+test('a review in the background is waited for as long as it runs: a pause between its turns is not its end', async ($, on) => {
+  const repo = world({ background: true, pauses: true })
   const { store, reviews, stops } = engine(on, repo)
   await start($)
   const call = $.tool.call({ tool: REVIEW, fix: true })
   await until($, 'the review', () => reviews.length === 1)
   const one = reviews[0] as Review
   await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
+  // It ends a turn to wait for agents of its own, and two hours pass.
+  await reply($, one.id, 'Waiting for my angle agents.')
   let finished = false
   void call.then(() => {
     finished = true
   })
-  // A minute of clock a tick, and no reply.
-  await until($, 'the round to end', () => {
+  for (let tick = 0; tick < 120; tick++) {
     repo.now += 60_000
-    return finished
-  })
-  expect(stops).toEqual([one.id])
+    await tick$($)
+  }
+  expect(finished).toBe(false)
+  // Its last turn ends it.
+  repo.pauses = false
+  await reply($, one.id, 'Done.')
   const text = String((await call).result)
-  expect(text).toContain('The review had not finished after 30 minutes, so it was stopped; it had recorded its findings before that.')
-  // Word of the start is no report of fixes.
-  expect(text.includes('Its report')).toBe(false)
+  expect(stops).toEqual([])
+  expect(text).toContain('Its report:\n\nDone.')
   expect(ledgerOf(store).findings.map(finding => [finding.id, finding.status])).toEqual([['R1-1', 'open']])
+  expect(ledgerOf(store).rounds[0]?.tokens).toEqual({ input: 2001, output: 201, cached: 1000 })
 })
 
 test('a review that records nothing, or cannot run, leaves no round', async ($, on) => {
@@ -1405,17 +1419,21 @@ test("another task's notice that names the review's output file passes beside th
   expect(passed.text?.trim()).toBe(monitor)
 })
 
-test('a review never answers at the gate, during its round or after it', async ($, on) => {
+test('no agent answers at the gate, the review and its agents included, during a round or after it', async ($, on) => {
   const { store, reviews } = engine(on, world())
   seed(store, { rounds: [round(1, BASE, 1)], findings: [finding({})], reviewed: BASE })
   await start($)
   const call = $.tool.call({ tool: REVIEW })
   const { one } = await act($, reviews, 0)
   await call
-  expect(String((await $.tool.call({ tool: DISMISS, agentId: one.id, ids: ['R1-1'], reason: 'The review thinks it is fine as it is.' })).deny)).toBe(
-    'review-gate: findings are answered from the main conversation: not by an agent while a review round runs, and never by a review. A review hands back what it found with record.',
+  const refusal = 'review-gate: findings are answered from the main conversation, not by an agent. A review hands back what it found with record.'
+  expect(String((await $.tool.call({ tool: DISMISS, agentId: one.id, ids: ['R1-1'], reason: 'The review thinks it is fine as it is.' })).deny)).toBe(refusal)
+  // An agent the review started, or any other, is refused alike, after the round as during it.
+  expect(String((await $.tool.call({ tool: DISMISS, agentId: 'angle-4', ids: ['R1-1'], reason: 'An angle read it and it holds up.' })).deny)).toBe(refusal)
+  expect(String((await $.tool.call({ tool: PULL_REQUEST, agentId: 'angle-4', action: 'open', title: 'App' })).deny)).toBe(
+    'review-gate: pull requests are opened and merged from the main conversation, not by an agent.',
   )
-  expect(String((await $.tool.call({ tool: DISMISS, agentId: 'agent-q', ids: ['R1-1'], reason: 'Another agent read it and it holds up.' })).result)).toContain('Dismissed R1-1')
+  expect(String((await $.tool.call({ tool: DISMISS, ids: ['R1-1'], reason: 'The main conversation read it and it holds up.' })).result)).toContain('Dismissed R1-1')
 })
 
 test("an agent the list does not show cannot record, even with the round's name, and the review still can", async ($, on) => {

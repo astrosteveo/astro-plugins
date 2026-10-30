@@ -6,7 +6,7 @@ import type { Place } from './git'
 import { opensOrMerges } from './guard'
 import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, openFindings, recordKey, recordPrefix, riskNow, sortOut, toLedger, whereOf } from './ledger'
 import { RECORD, capOf, readFixes, readRecord, reviewSection } from './prompts'
-import { SKILL, isLevel, mailbox, runRound, summary } from './review'
+import { SKILL, isLevel, mailbox, plus, runRound, summary } from './review'
 import type { Pending, RoundAsk } from './review'
 import { band, card } from './views'
 
@@ -430,9 +430,9 @@ async function scopeOf($: EngineInterface, agentId: string): Promise<Scope> {
   return 'other'
 }
 
-// An agent answers nothing at the gate while a round runs, and a review never does: a finding's answer
-// and a pull request are the session's main conversation's to give.
-const isRoundAgent = async ($: EngineInterface, agentId: string | undefined) => agentId !== undefined && (busy || (await scopeOf($, agentId)) !== 'other')
+// No agent answers at the gate: a finding's answer and a pull request are the session's main
+// conversation's to give, so a review, or an agent it started, never can.
+const isRoundAgent = (agentId: string | undefined) => agentId !== undefined
 
 // The review's tool call as a few words for the band.
 function describeCall(e: { tool: string } & Record<string, unknown>) {
@@ -531,7 +531,11 @@ export const register: Register = (on, options) => {
 
   // A subagent's reply is its turn's end; the main thread's end is a moment to look at git again.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId !== undefined) mail.settle(e.agentId, e.answer, e.usage)
+    if (e.agentId !== undefined) {
+      mail.settle(e.agentId, e.answer, e.usage)
+      const pending = desk.pending
+      if (pending !== undefined && pending.agentId === e.agentId) pending.tokens = plus(pending.tokens, e.usage)
+    }
     else await refresh($).catch(() => undefined)
     return next(e)
   })
@@ -634,10 +638,7 @@ export const register: Register = (on, options) => {
   }).catch(() => ({ deny: 'review-gate: the findings could not be recorded.' }))
 
   on('tool.call', { tool: PULL_REQUEST }, async ($, e) => {
-    if (await isRoundAgent($, e.agentId))
-      return {
-        deny: 'review-gate: pull requests are opened and merged from the main conversation: not by an agent while a review round runs, and never by a review.',
-      }
+    if (isRoundAgent(e.agentId)) return { deny: 'review-gate: pull requests are opened and merged from the main conversation, not by an agent.' }
     const place = await locate($, await cwdOf($, e.path))
     if (typeof place === 'string') return { deny: place }
     if (e.action === 'open') return openPullRequest($, place, e)
@@ -663,9 +664,9 @@ export const register: Register = (on, options) => {
   }).catch((_, _e, next) => ({ deny: `review-gate: the review failed${next.error?.message ? `: ${next.error.message}` : ''}. Nothing was recorded.` }))
 
   on('tool.call', { tool: DISMISS }, async ($, e) => {
-    if (await isRoundAgent($, e.agentId))
+    if (isRoundAgent(e.agentId))
       return {
-        deny: 'review-gate: findings are answered from the main conversation: not by an agent while a review round runs, and never by a review. A review hands back what it found with record.',
+        deny: 'review-gate: findings are answered from the main conversation, not by an agent. A review hands back what it found with record.',
       }
     const ids = (Array.isArray(e.ids) ? e.ids : [e.ids]).map(id => asText(id).trim().toUpperCase()).filter(id => id !== '')
     const reason = asText(e.reason).trim()
