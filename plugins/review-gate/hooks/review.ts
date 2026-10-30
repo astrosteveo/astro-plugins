@@ -85,10 +85,20 @@ export type Pending = {
   isBriefed: boolean
   /** The most findings the review's level lets it report, as its prompt says. */
   cap?: number
-  /** The review's agent, once it is known. */
+  /**
+   * The review's agent, once something proves it: the agent list says this plugin started it, the
+   * Skill tool names it, or it records with the round's name.
+   */
   agentId?: string
-  /** The review's tool calls so far. */
-  calls: number
+  /** Tool calls so far by each agent that is or may be the review, so the review's count is whole once it is known. */
+  calls: Map<string, number>
+  /**
+   * Why the repository is no longer as the round found it, or undefined while it is: HEAD moved, or a
+   * file changed. The record call asks before it takes the findings.
+   */
+  drift: () => Promise<string | undefined>
+  /** Why the record call found the repository changed, so the round records nothing. */
+  drifted?: string
   /** Whether a file is one REVIEW.md skips, so a finding in it is left out. */
   isSkipped: (file: string) => boolean
   /**
@@ -130,6 +140,8 @@ export type RoundAsk = {
   desk: { pending?: Pending }
   /** Changes the round in progress, which the band draws. */
   progress: (change: (run: Run | null) => Run | null) => Promise<void>
+  /** Takes an agent as the round's review, on proof such as the Skill tool naming it. */
+  bind: (agentId: string) => Promise<void>
   /**
    * Changes the branch's record as it stands when the round ends: `change` gives the new record, or
    * why the round may not add to it, which comes back and leaves the record as it was.
@@ -212,6 +224,14 @@ async function pause($: EngineInterface) {
 }
 
 const STUCK = 'review-gate could not wait for the review, since the `sleep` program could not run here, so it stopped the review.'
+
+// Why HEAD is no longer where the round began, or undefined while it is.
+async function headMove(git: Place['git'], place: Place) {
+  const now = await headNow(git)
+  if (now.head === place.head && now.branch === place.branch) return undefined
+  const where = now.branch === '' ? `a detached HEAD at ${short(now.head)}` : `${now.branch} at ${short(now.head)}`
+  return `HEAD moved while the round ran: it began on ${place.branch} at ${short(place.head)}, and HEAD is now ${where}.`
+}
 
 // Ends a review the round no longer waits for, so it spends nothing more. Best effort: one that has
 // ended already, or a session that will not stop it, is left as it is.
@@ -333,16 +353,35 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   // not to make without. The tree was clean when the round began.
   let touched: string[] = []
   let fixes: Fix[] | undefined
+  // Findings the review said it fixed though no file changed.
+  let claimed: string[] = []
   // Commits that change only files REVIEW.md skips leave the review nothing to read, unless it has
   // open findings to look at again: a fix may sit in a skipped file.
   const isReviewed = roundFiles.length > 0 || open.length > 0
   if (isReviewed) {
-    const pending: Pending = { plan, changed: new Set(files), isSkipped: file => skipped.some(test => test(file)), isBriefed: false, calls: 0 }
+    const pending: Pending = {
+      plan,
+      changed: new Set(files),
+      isSkipped: file => skipped.some(test => test(file)),
+      isBriefed: false,
+      calls: new Map(),
+      // The tree was clean when the round began, so any file changed since is a change the review may
+      // have read: by the person, by another agent, or by the review against its instructions.
+      drift: async () => {
+        const moved = await headMove(git, place)
+        if (moved !== undefined) return moved
+        const changed = await uncommitted(git)
+        return changed.length === 0 ? undefined : `Files changed while the review read the commit: ${listed(changed)}.`
+      },
+    }
     ask.desk.pending = pending
     await ask.progress(run => (run === null ? run : { ...run, phase: 'reviewing', level }))
     const args = [level, `${from}..${place.head}`, ...(ask.fix ? ['--fix'] : []), ...(ask.maxFindings === undefined ? [] : ['--max-findings', ask.maxFindings])]
     const called = await $.tool.call({ tool: 'Skill', skill: SKILL, args: args.join(' ') }).catch((error: unknown) => error)
     const run = forked(typeof called === 'object' && called !== null ? (called as { result?: unknown }).result : undefined)
+    // The Skill tool names the review's agent: known from here, whatever happens next, so its notices
+    // are the round's and the band follows it.
+    if (run !== undefined) await ask.bind(run.agentId)
     if (ask.signal.aborted) {
       // A review the round started runs on once the round stops: stopped, it spends nothing more and
       // changes no file after the person has said stop.
@@ -361,11 +400,6 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     if (failure !== undefined && pending.record === undefined) return refuse(`/code-review could not run: ${failure}. Nothing was recorded.`)
     failed = failure
     if (run !== undefined) {
-      // A review the Skill tool started in the background is known from here, and the band follows it.
-      if (pending.agentId === undefined) {
-        pending.agentId = run.agentId
-        await ask.progress(current => (current === null ? current : { ...current, agentId: run.agentId }))
-      }
       // One that did not succeed, or did not start, is not waited for.
       if (run.success === false) {
         failed = run.result.trim() || 'it gave no reason'
@@ -378,18 +412,15 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
         isStuck = got.isStuck
         isUnfinished = got.reply === undefined && run.background === true && !isStuck
       }
-      calls = pending.calls
+      calls = pending.calls.get(run.agentId) ?? 0
     }
     if (ask.signal.aborted) return refuse(STOPPED)
-    // A round's findings are about the commit it began at. A review that moved HEAD, by a commit, a
-    // checkout or a reset, leaves the round unsure what it read, so the round records nothing.
-    const now = await headNow(git)
-    if (now.head !== place.head || now.branch !== place.branch) {
-      const where = now.branch === '' ? `a detached HEAD at ${short(now.head)}` : `${now.branch} at ${short(now.head)}`
-      return refuse(
-        `The review moved HEAD while it ran: the round began on ${place.branch} at ${short(place.head)}, and HEAD is now ${where}. Nothing was recorded. Put HEAD where you want the review to read, then review again.`,
-      )
-    }
+    // A round's findings are about the commit it began at. When HEAD moved, or files changed before
+    // the review recorded, the round cannot say what the review read, so it records nothing.
+    const moved = await headMove(git, place)
+    if (moved !== undefined) return refuse(`${moved} Nothing was recorded. Put HEAD where you want the review to read, then review again.`)
+    if (pending.drifted !== undefined)
+      return refuse(`${pending.drifted} The review may have read them, so nothing was recorded. Commit or undo them, then review again.`)
     if (pending.record === undefined)
       return refuse(
         `/code-review ended without recording its findings${
@@ -399,8 +430,14 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     record = pending.record
     cap = pending.cap
     touched = await uncommitted(git)
-    // A fix is in the working tree or nowhere: a review that changed nothing applied none.
-    fixes = ask.fix ? pending.fixes?.map(one => (touched.length === 0 ? { ...one, applied: false } : one)) : undefined
+    // Without --fix the review only reads, so a file changed by the end was changed by someone else,
+    // and the review may have read it.
+    if (!ask.fix && touched.length > 0)
+      return refuse(`Files changed while the round ran: ${listed(touched)}. The review may have read them, so nothing was recorded. Commit or undo them, then review again.`)
+    // A fix is in the working tree or nowhere: with no file changed, the fixes the review claims are
+    // not kept, and the round says so.
+    claimed = touched.length === 0 ? (pending.fixes ?? []).filter(one => one.applied).map(one => one.id) : []
+    fixes = ask.fix ? pending.fixes?.filter(one => !claimed.includes(one.id)) : undefined
   }
 
   const added = record.added
@@ -466,16 +503,22 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   if (failed !== undefined) notes.push(`The review recorded its findings, then failed: ${failed}`)
   // A review that said what it fixed is shown by the summary; one that did not is quoted.
   const quoted = report === '' ? '' : ` Its report:\n\n${report}`
-  // A round whose files are all skipped ran no review, so it has no fixes to speak of.
+  // A round whose files are all skipped ran no review, so it has no fixes to speak of. Files changed
+  // once the review recorded are its fixes as a rule, but anything else running may have changed
+  // them too, so they are named as changed, not as the review's.
   if (ask.fix && isReviewed) {
-    if (touched.length === 0) notes.push(`The review changed no file, though --fix let it.${fixes === undefined ? quoted : ''}`)
-    else if (fixes !== undefined) notes.push(`The review's changes, in the working tree and not committed: ${listed(touched, 10)}.`)
+    if (touched.length === 0)
+      notes.push(
+        `No file changed while the round ran, though --fix let the review change files.${
+          claimed.length > 0 ? ` The review said it fixed ${claimed.join(', ')}, so ${claimed.length === 1 ? 'that finding stays' : 'those findings stay'} open as before.` : ''
+        }${fixes === undefined ? quoted : ''}`,
+      )
+    else if (fixes !== undefined) notes.push(`Files changed while the round ran, in the working tree and not committed: ${listed(touched, 10)}.`)
     else
       notes.push(
-        `The review then changed ${listed(touched)}, as --fix asks, but did not say which findings it fixed.${quoted}\n\nCommit the fixes you keep and review again: the next round confirms each fix.`,
+        `Files changed while the round ran: ${listed(touched)}. The review did not say which findings it fixed.${quoted}\n\nCommit the fixes you keep and review again: the next round confirms each fix.`,
       )
-  } else if (touched.length > 0)
-    notes.push(`The review changed ${listed(touched)}, though it was asked to change no file. Look at those changes before you commit them, or undo them.`)
+  }
   return { ok: true, ledger: saved, round: n, text: [summary(saved, n), ...notes].join('\n\n') }
 }
 

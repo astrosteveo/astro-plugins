@@ -375,13 +375,12 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
       progress: async change => {
         await update($, run, change)
       },
+      bind: agentId => bind($, agentId),
       edit: change => edit($, place, change),
     })
   } finally {
     busy = false
     activeRoot = undefined
-    const reviewed = (await read($, run))?.agentId
-    if (reviewed !== undefined) reviews.add(reviewed)
     await update($, run, () => null)
     await refresh($).catch(() => undefined)
   }
@@ -399,29 +398,75 @@ function mayBeTheReview(agent: { id: string; parentId?: string; spawnedBy?: stri
 }
 
 /**
- * Whether an agent is the round's review: the /code-review agent this plugin started. A tool call of
- * an agent not known yet asks the session's list of agents.
+ * Takes an agent as the round's review, on proof: the agent list says this plugin started it, the
+ * Skill tool names it, or it records with the round's name. The first proof wins. Every agent proved
+ * a review is remembered, so its task notices are the round's, and no later round takes it for its own.
  */
-async function isTheReview($: EngineInterface, agentId: string) {
+async function bind($: EngineInterface, agentId: string) {
+  reviews.add(agentId)
   const pending = desk.pending
-  if (pending === undefined) return false
-  if (pending.agentId !== undefined) return pending.agentId === agentId
-  if (others.has(agentId)) return false
-  const agent = (await $.agent.list()).find(one => one.id === agentId)
-  // An agent the list does not show yet is asked about again at its next call.
-  if (agent === undefined) return false
-  if (!mayBeTheReview(agent)) {
-    others.add(agentId)
-    return false
-  }
+  if (pending === undefined || pending.agentId !== undefined) return
   pending.agentId = agentId
   await update($, run, current => (current === null ? current : { ...current, agentId }))
-  return true
 }
+
+/**
+ * What an agent is to the round: its review, an agent that may be it, or neither. Only proof makes an
+ * agent the review; until then, an agent that began during the round from the main conversation may
+ * be it, and an agent the list does not show yet is asked about again at its next call.
+ */
+async function roleOf($: EngineInterface, agentId: string): Promise<'review' | 'maybe' | 'other'> {
+  const pending = desk.pending
+  if (pending === undefined) return 'other'
+  if (pending.agentId !== undefined) return pending.agentId === agentId ? 'review' : 'other'
+  if (others.has(agentId)) return 'other'
+  const agent = (await $.agent.list()).find(one => one.id === agentId)
+  if (agent === undefined) return 'maybe'
+  if (!mayBeTheReview(agent)) {
+    others.add(agentId)
+    return 'other'
+  }
+  if (agent.spawnedBy !== PLUGIN) return 'maybe'
+  await bind($, agentId)
+  return 'review'
+}
+
+/**
+ * Whether the round's limits cover an agent's calls: it is the review, may be, or was started under
+ * either, as when the review hands work to agents of its own. One the list cannot place is covered.
+ */
+async function isUnderReview($: EngineInterface, agentId: string) {
+  const pending = desk.pending
+  if (pending === undefined) return false
+  const list = await $.agent.list()
+  for (let id: string | undefined = agentId, hops = 0; id !== undefined && hops < 32; hops++) {
+    if (id === pending.agentId) return true
+    const agent = list.find(one => one.id === id)
+    if (agent === undefined) return true
+    if (pending.agentId === undefined && mayBeTheReview(agent)) return true
+    id = agent.parentId
+  }
+  return false
+}
+
+// Tools a review that only reads may use whatever the engine says of them: they change nothing in the
+// repository, and record is how it hands back its findings.
+const HARMLESS = new Set([RECORD, 'Read', 'Grep', 'Glob', 'TodoWrite'])
+
+// Tools that read from outside the session, which a review could be steered into sending data with.
+const OUTSIDE = new Set(['WebFetch', 'WebSearch'])
+
+// Whether a call only reads, by Claude Code's own check: an MCP server's word for its own tool is no
+// proof, and a fetch reaches outside, so neither counts.
+const onlyReads = (tool: string, isReadOnly: boolean) => HARMLESS.has(tool) || (isReadOnly && !tool.startsWith('mcp__') && !OUTSIDE.has(tool))
+
+const READ_ONLY =
+  'review-gate: this review only reads. It may read files, search, and run commands that only read, such as git diff and git show; it may not change files, run other commands, or reach outside the session.'
+const RECORD_FIRST = 'review-gate: record the findings with the record tool first, then fix them.'
 
 // While a round runs, an agent, the review above all, answers nothing at the gate: a finding's answer
 // and a pull request are the session's main conversation's to give.
-const isRoundAgent = (agentId: string | undefined) => agentId !== undefined && desk.pending !== undefined
+const isRoundAgent = (agentId: string | undefined) => agentId !== undefined && busy
 
 // The review's tool call as a few words for the band.
 function describeCall(e: { tool: string } & Record<string, unknown>) {
@@ -513,7 +558,7 @@ export const register: Register = (on, options) => {
     const text = e.text.replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g, notice =>
       ids.some(id => notice.includes(`<task-id>${id}</task-id>`)) ? '' : notice,
     )
-    const isClean = !ids.some(id => text.includes(id))
+    const isClean = !ids.some(id => text.includes(`<task-id>${id}</task-id>`))
     if (isClean && /<task-notification\b/.test(text)) return next({ ...e, text })
     return { drop: "review-gate: the review finished; the round's result has its findings." }
   }).catch((_, e, next) => next(e))
@@ -549,16 +594,29 @@ export const register: Register = (on, options) => {
     next.called ? next(e) : { deny: RAW_PR_REFUSAL },
   )
 
-  // What the review's agent is doing, for the band: its calls so far, and its latest.
+  // What the review's agent is doing, for the band: its calls so far, and its latest. An agent that may
+  // be the review is counted too, so the review's count is whole once something proves it.
   on('tool.call', async ($, e, next) => {
     const pending = desk.pending
-    if (e.agentId !== undefined && pending !== undefined && (await isTheReview($, e.agentId))) {
-      pending.calls += 1
+    if (e.agentId !== undefined && pending !== undefined && (await roleOf($, e.agentId)) !== 'other') {
+      pending.calls.set(e.agentId, (pending.calls.get(e.agentId) ?? 0) + 1)
       const doing = describeCall(e)
       await update($, memberOf(activity, { requestId: e.agentId }), last => ({ calls: (last?.calls ?? 0) + 1, doing }))
     }
     return next(e)
   }).catch((_, e, next) => next(e))
+
+  // The review reads the branch, which may be someone else's: without --fix it only reads, and with
+  // it, it changes nothing before it has recorded what it read. The engine's own check says which
+  // calls only read, before they run; this holds in every permission mode, bypass included.
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    const pending = desk.pending
+    if (pending === undefined || e.agentId === undefined || verdict.decision === 'deny') return verdict
+    if (onlyReads(e.tool, e.isReadOnly === true) || (pending.plan.fix && pending.record !== undefined)) return verdict
+    if (!(await isUnderReview($, e.agentId))) return verdict
+    return { decision: 'deny' as const, reason: pending.plan.fix ? RECORD_FIRST : READ_ONLY }
+  }).catch((_, e, next) => (desk.pending !== undefined && e.agentId !== undefined ? { decision: 'deny' as const, reason: READ_ONLY } : next(e)))
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
@@ -585,6 +643,15 @@ export const register: Register = (on, options) => {
       const agent = (await $.agent.list()).find(one => one.id === e.agentId)
       if (agent !== undefined && !mayBeTheReview(agent)) return { deny: refusal }
     }
+    // The findings are about the commit the round began at: when the repository changed before they
+    // are recorded, the round cannot say what the review read, and records nothing.
+    if (pending.record === undefined) {
+      const drifted = await pending.drift()
+      if (drifted !== undefined) {
+        pending.drifted = drifted
+        return { deny: `${drifted} So this round records nothing: finish without recording.` }
+      }
+    }
     // With --fix, a second call says what the review fixed.
     const fixes = readFixes(e)
     if (pending.record !== undefined) {
@@ -607,10 +674,7 @@ export const register: Register = (on, options) => {
     const skippedOut = read.findings.length - kept.length
     const record = { raised: read.findings.length, rechecked: read.rechecked, added, repeats, nitsLeft, skippedOut }
     pending.record = record
-    if (pending.agentId === undefined) {
-      pending.agentId = e.agentId
-      await update($, run, current => (current === null ? current : { ...current, agentId: e.agentId }))
-    }
+    await bind($, e.agentId)
     const left = [
       repeats > 0 ? `${repeats} the branch has had before` : '',
       nitsLeft > 0 ? `${nitsLeft} nit${nitsLeft === 1 ? '' : 's'} past the ${NIT_CAP} a round raises` : '',

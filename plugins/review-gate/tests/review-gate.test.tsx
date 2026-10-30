@@ -35,7 +35,7 @@ type World = {
   guide?: string
   /** The commit whose tree holds the REVIEW.md `guide` is: the base, unless the branch added it. */
   guideAt?: string
-  agents?: { id: string; type: string; description?: string; spawnedBy?: string }[]
+  agents?: { id: string; type: string; description?: string; spawnedBy?: string; parentId?: string }[]
   /** What the person picks when the gate asks. */
   answer?: string
   /** The risk classifier's reply; undefined for no answer at all. */
@@ -60,6 +60,8 @@ type World = {
   skillFails?: 'error' | 'unsuccessful'
   /** Whether the sleep program cannot run. */
   noSleep?: boolean
+  /** Holds the risk classifier's reply until it settles. */
+  holdRisk?: Promise<void>
 }
 
 /** A run of /code-review the round started: what it was asked, and the hand that ends it. */
@@ -160,10 +162,13 @@ function engine(on: On, repo: World) {
   // A skill's prompt as the engine computes it, before any plugin adds to it.
   on('skill.prompt', (_, e) => ({ text: e.text }))
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  // The engine's own verdict on a tool call, beneath the plugin's: every call may run.
+  on('tool.check', () => ({ decision: 'allow' as const }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
-  on('model.complete', (_, e) => {
+  on('model.complete', async (_, e) => {
     judged.push({ model: e.model, prompt: e.prompt, cached: e.promptBlocks?.some(block => block.cache === true) === true })
+    if (repo.holdRisk !== undefined) await repo.holdRisk
     const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
     return {
       value:
@@ -298,14 +303,16 @@ async function until($: Engine, what: string, done: () => boolean) {
 const reply = ($: Engine, agentId: string, answer: string) =>
   $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: `turn-${agentId}`, agentId, reason: 'answer', usage: USAGE })
 
-type Act = { findings?: unknown[]; rechecked?: unknown[]; answer?: string; record?: boolean }
+type Act = { findings?: unknown[]; rechecked?: unknown[]; answer?: string; record?: boolean; between?: () => void }
 
 // The review's part, once the round has started it: it records what it found, replies, and the
 // Skill tool hands back its result.
-async function act($: Engine, reviews: Review[], at: number, { findings = [], rechecked = [], answer = 'Done.', record = true }: Act = {}) {
+async function act($: Engine, reviews: Review[], at: number, { findings = [], rechecked = [], answer = 'Done.', record = true, between }: Act = {}) {
   await until($, 'the review', () => reviews.length > at)
   const one = reviews[at] as Review
   const recorded = record ? await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings, rechecked }) : undefined
+  // What happens once the review has recorded, before it answers: its fixes, or someone else's edit.
+  between?.()
   await reply($, one.id, answer)
   one.finish(answer)
   return { one, recorded: String(recorded?.result ?? recorded?.deny ?? '') }
@@ -508,14 +515,18 @@ test("with --fix, a review that does not say what it fixed has its report quoted
   const { store, reviews } = engine(on, repo)
   await start($)
   const call = $.tool.call({ tool: REVIEW, fix: true })
-  await until($, 'the review', () => reviews.length === 1)
   // The review's fix, once it has recorded its findings.
-  repo.dirty = ['src/app.ts']
-  const { one } = await act($, reviews, 0, { findings: [SKIPPED_PAGE], answer: 'Fixed R1-1: the loop now runs to pages.' })
+  const { one } = await act($, reviews, 0, {
+    findings: [SKIPPED_PAGE],
+    answer: 'Fixed R1-1: the loop now runs to pages.',
+    between: () => {
+      repo.dirty = ['src/app.ts']
+    },
+  })
   expect(one.args).toBe(`high ${BASE}..${ONE} --fix`)
   const text = String((await call).result)
   expect(text).toContain(
-    'The review then changed src/app.ts, as --fix asks, but did not say which findings it fixed. Its report:\n\nFixed R1-1: the loop now runs to pages.\n\nCommit the fixes you keep and review again: the next round confirms each fix.',
+    'Files changed while the round ran: src/app.ts. The review did not say which findings it fixed. Its report:\n\nFixed R1-1: the loop now runs to pages.\n\nCommit the fixes you keep and review again: the next round confirms each fix.',
   )
   expect(ledgerOf(store).findings.map(one => [one.id, one.status, one.fix])).toEqual([['R1-1', 'open', undefined]])
 })
@@ -554,7 +565,7 @@ test('with --fix, the review records what it fixed, and the round shows those fi
   )
   expect(text).toContain('The other 1 needs your answer.')
   expect(text).toContain('  The review left it: the overlap is what the API returns')
-  expect(text).toContain("The review's changes, in the working tree and not committed: src/app.ts.")
+  expect(text).toContain('Files changed while the round ran, in the working tree and not committed: src/app.ts.')
   // The raw report is the review's own, and the round has said all it holds.
   expect(text.includes('```json')).toBe(false)
   expect(ledgerOf(store).findings.map(one => [one.id, one.status, one.fix?.applied])).toEqual([
@@ -588,18 +599,37 @@ test("a review's task notification is kept out of the conversation, and others p
   expect((await $.prompt.submit({ text: `about ${one.id}`, wait: false, origin: { kind: 'composer' } })).text).toBe(`about ${one.id}`)
 })
 
-test('a review that changes no file with --fix, or changes one without it, is reported as it is', async ($, on) => {
+test('a --fix round where no file changed says so; a round where files change before the record, or without --fix at all, records nothing', async ($, on) => {
   const repo = world()
-  const { reviews } = engine(on, repo)
+  const { store, reviews } = engine(on, repo)
   await start($)
   const fixing = $.tool.call({ tool: REVIEW, fix: true })
   await act($, reviews, 0, { answer: '[]' })
-  expect(String((await fixing).result)).toContain('The review changed no file, though --fix let it. Its report:\n\n[]')
-  const reviewing = $.command.run({ command: 'review-gate', args: '', ...person })
-  await until($, 'the review', () => reviews.length === 2)
+  expect(String((await fixing).result)).toContain('No file changed while the round ran, though --fix let the review change files. Its report:\n\n[]')
+  const rounds = () => ledgerOf(store).rounds.length
+
+  // Someone edits a file while the review reads, before it records: the record is refused.
+  const early = $.command.run({ command: 'review-gate', args: '--fix', ...person })
+  await until($, 'the second review', () => reviews.length === 2)
   repo.dirty = ['src/app.ts']
-  await act($, reviews, 1)
-  expect((await reviewing).text).toContain('The review changed src/app.ts, though it was asked to change no file.')
+  const { recorded } = await act($, reviews, 1)
+  expect(recorded).toBe('Files changed while the review read the commit: src/app.ts. So this round records nothing: finish without recording.')
+  expect((await early).text).toBe(
+    'Files changed while the review read the commit: src/app.ts. The review may have read them, so nothing was recorded. Commit or undo them, then review again.',
+  )
+
+  // Without --fix the review only reads, so a file changed by the end was changed by someone else.
+  repo.dirty = []
+  const late = $.command.run({ command: 'review-gate', args: '', ...person })
+  await act($, reviews, 2, {
+    between: () => {
+      repo.dirty = ['src/app.ts']
+    },
+  })
+  expect((await late).text).toBe(
+    'Files changed while the round ran: src/app.ts. The review may have read them, so nothing was recorded. Commit or undo them, then review again.',
+  )
+  expect(rounds()).toBe(1)
 })
 
 test('while a round runs, no agent answers a finding or opens a pull request', async ($, on) => {
@@ -1153,7 +1183,7 @@ test('with --fix, a file the review creates counts as a fix', async ($, on) => {
   await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, fixes: [{ id: 'R1-1', applied: true, why: 'a test pins the last page' }] })
   await reply($, one.id, 'Done.')
   one.finish('Done.')
-  expect(String((await call).result)).toContain("The review's changes, in the working tree and not committed: src/app.test.ts.")
+  expect(String((await call).result)).toContain('Files changed while the round ran, in the working tree and not committed: src/app.test.ts.')
   expect(ledgerOf(store).findings[0]?.fix?.applied).toBe(true)
 })
 
@@ -1182,7 +1212,7 @@ test('a review that moves HEAD, by a commit, a checkout or a reset, leaves the r
   await reply($, one.id, 'Done.')
   one.finish('Done.')
   expect(String((await call).deny)).toBe(
-    'The review moved HEAD while it ran: the round began on feat/app at 1111111, and HEAD is now feat/app at 2222222. Nothing was recorded. Put HEAD where you want the review to read, then review again.',
+    'HEAD moved while the round ran: it began on feat/app at 1111111, and HEAD is now feat/app at 2222222. Nothing was recorded. Put HEAD where you want the review to read, then review again.',
   )
   expect(store.has(KEY)).toBe(false)
 
@@ -1262,4 +1292,124 @@ test('open findings are looked at again when the new commits change only skipped
   expect(text).toContain('Found fixed this round: R1-1')
   expect(text).toContain('1 finding was in files REVIEW.md skips, so it was left out.')
   expect(ledgerOf(store).findings.map(one => [one.id, one.status])).toEqual([['R1-1', 'fixed']])
+})
+
+test('without --fix the review only reads; with it, it changes nothing until it has recorded; agents outside the round are free', async ($, on) => {
+  const repo = world({ agents: [{ id: 'helper-0', type: 'general-purpose' }] })
+  const { reviews } = engine(on, repo)
+  await start($)
+  const verdict = (agentId: string, tool: string, isReadOnly = false) => $.tool.check({ tool, input: {}, agentId, ...(isReadOnly ? { isReadOnly: true as const } : {}) })
+  const check = async (agentId: string, tool: string, isReadOnly = false) => (await verdict(agentId, tool, isReadOnly)).decision
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  expect(await check(one.id, 'Edit')).toBe('deny')
+  expect(await check(one.id, 'Bash')).toBe('deny')
+  expect(await check(one.id, 'Bash', true)).toBe('allow')
+  expect(await check(one.id, 'Read')).toBe('allow')
+  expect(await check(one.id, RECORD)).toBe('allow')
+  // A fetch reaches outside, and an MCP server's word that its tool only reads is no proof.
+  expect(await check(one.id, 'WebFetch', true)).toBe('deny')
+  expect(await check(one.id, 'mcp__docs__publish', true)).toBe('deny')
+  // An agent the review starts is held to the same; one the session had before the round is not.
+  repo.agents = [
+    { id: 'helper-0', type: 'general-purpose' },
+    { id: 'angle-1', type: 'general-purpose', parentId: one.id },
+  ]
+  expect(await check('angle-1', 'Write')).toBe('deny')
+  expect(await check('helper-0', 'Write')).toBe('allow')
+  expect((await verdict(one.id, 'Edit')).reason).toContain('review-gate: this review only reads.')
+  await act($, reviews, 0)
+  await call
+
+  const fixing = $.command.run({ command: 'review-gate', args: '--fix', ...person })
+  await until($, 'the second review', () => reviews.length === 2)
+  const two = reviews[1] as Review
+  expect(await verdict(two.id, 'Edit')).toEqual({ decision: 'deny', reason: 'review-gate: record the findings with the record tool first, then fix them.' })
+  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [SKIPPED_PAGE] })
+  expect(await check(two.id, 'Edit')).toBe('allow')
+  await reply($, two.id, 'Done.')
+  two.finish('Done.')
+  await fixing
+  // Outside a round, the gate leaves every call to the session's own rules.
+  expect(await check(two.id, 'Edit')).toBe('allow')
+})
+
+test('an agent the main conversation starts during a round is never taken for the review', async ($, on) => {
+  const repo = world()
+  const { reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  // A test run the model started alongside the review, with no plugin behind it.
+  repo.agents = [{ id: 'tests-1', type: 'general-purpose' }]
+  await $.tool.call({ tool: 'Read', agentId: 'tests-1', file_path: '/repo/src/app.ts' })
+  expect(String((await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })).result)).toContain('Recorded round 1')
+  await reply($, one.id, 'Done.')
+  one.finish('Done.')
+  expect(String((await call).result)).toContain('R1-1')
+  const notice = (id: string) => $.prompt.submit({ text: `<task-notification><task-id>${id}</task-id></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
+  expect((await notice('tests-1')).text).toContain('<task-id>tests-1</task-id>')
+  expect(await notice(one.id)).toEqual({ drop: "review-gate: the review finished; the round's result has its findings." })
+})
+
+test('no agent answers at the gate for the whole round, the risk check included', async ($, on) => {
+  let release: () => void = () => undefined
+  const repo = world({
+    holdRisk: new Promise<void>(resolve => {
+      release = resolve
+    }),
+  })
+  const { store, reviews, judged } = engine(on, repo)
+  seed(store, { rounds: [round(1, BASE, 1)], findings: [finding({})], reviewed: BASE })
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the risk check', () => judged.length === 1)
+  expect(String((await $.tool.call({ tool: DISMISS, agentId: 'agent-x', ids: ['R1-1'], reason: 'An agent thinks it is fine as it is.' })).deny)).toContain(
+    'findings are answered from the main conversation',
+  )
+  release()
+  await act($, reviews, 0)
+  await call
+  expect(ledgerOf(store).findings.map(one => one.status)).toEqual(['open'])
+})
+
+test('a fix the review claims with no file changed is not kept, and the round names it', async ($, on) => {
+  const { store, reviews } = engine(on, world())
+  await start($)
+  const call = $.tool.call({ tool: REVIEW, fix: true })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, findings: [SKIPPED_PAGE] })
+  await $.tool.call({ tool: RECORD, agentId: one.id, round: one.token, fixes: [{ id: 'R1-1', applied: true, why: 'the loop runs to pages' }] })
+  await reply($, one.id, 'Done.')
+  one.finish('Done.')
+  const text = String((await call).result)
+  expect(text).toContain('No file changed while the round ran, though --fix let the review change files. The review said it fixed R1-1, so that finding stays open as before.')
+  expect(text.includes('The review left it')).toBe(false)
+  expect(ledgerOf(store).findings.map(finding => [finding.id, finding.status, finding.fix])).toEqual([['R1-1', 'open', undefined]])
+})
+
+test("a review the round ends before its first tool call still has its notice kept out", async ($, on) => {
+  const { reviews } = engine(on, world({ background: true, skillSource: 'projectSettings' }))
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  expect(String((await call).deny)).toContain('so review-gate did not run it as its review')
+  const notice = await $.prompt.submit({ text: `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
+  expect(notice).toEqual({ drop: "review-gate: the review finished; the round's result has its findings." })
+})
+
+test("another task's notice that names the review's output file passes beside the review's", async ($, on) => {
+  const { reviews } = engine(on, world({ background: true }))
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  const { one } = await act($, reviews, 0)
+  await call
+  const monitor = `<task-notification><task-id>mon-2</task-id><summary>Watched /tmp/tasks/${one.id}.output to its end</summary></task-notification>`
+  const mine = `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`
+  const passed = await $.prompt.submit({ text: `${mine}\n${monitor}`, wait: false, origin: { kind: 'task-notification' } })
+  expect(passed.text?.trim()).toBe(monitor)
 })

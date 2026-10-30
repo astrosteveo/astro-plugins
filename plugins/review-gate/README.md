@@ -12,7 +12,9 @@ The first round reads the whole branch. Later rounds read only the commits since
 
 Every finding needs an answer. Claude fixes it and commits, and the next round confirms the fix; or it dismisses the finding with a reason through the `dismiss` tool, and the reason shows in the card. Called with `fix`, the review also fixes what it found in the working tree once it has recorded it, then tells the gate which findings it fixed and why it left the rest. The round, its card and the band show those findings as fixed by the review and not yet confirmed, apart from the ones that still need an answer. The fixes stay uncommitted: Claude commits the ones it keeps, and the next round confirms each fix and closes its finding, or leaves it open.
 
-A round reviews one commit. It refuses to start while files have changes that commit does not hold, new files included, and it records nothing if the review moves HEAD by a commit, a checkout or a reset.
+A round reviews one commit, which may be someone else's: a pull request checked out to review it. So the review only reads. The engine's own check says which tool calls only read before they run, and the gate refuses the rest to the review and to any agent the review starts: no file changes, no command that is not a read, nothing fetched from outside the session, in any permission mode. With `fix`, the review may change files once it has recorded its findings, and not before; use it on code you trust, since a fix may run commands such as tests.
+
+The round refuses to start while files have changes the commit does not hold, new files included. It records nothing if HEAD moves while it runs, or if files change before the review records what it read, or, without `fix`, at any point: the review may have read the change. Files that change once a `fix` review has recorded are listed as changed while the round ran; the gate cannot tell the review's edits from anyone else's, so the review's fixes stay its word until the next round confirms them.
 
 ## Risk
 
