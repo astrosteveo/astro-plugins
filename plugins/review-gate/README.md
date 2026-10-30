@@ -34,7 +34,7 @@ A shell command that runs `gh pr create`, `gh pr new` or `gh pr merge` is refuse
 
 - The review runs on the session's model, as `/code-review` does, and the risk classifier on Haiku unless `/config` says otherwise.
 - A round is one review agent, so it costs about what `/code-review` at that level costs on its own, plus the classifier's few thousand tokens. Later rounds read only the new commits, so they cost less.
-- Each round records how long it took, the tokens the review and the classifier spent with the share read from the cache, and the review's tool calls. The card shows them.
+- Each round records how long it took, the tokens the review, the agents it started and the classifier spent with the share read from the cache, and the review's tool calls. The card shows them.
 
 ## In the terminal
 

@@ -1337,6 +1337,26 @@ test('an agent list that cannot be read is read again, not taken for the end of 
   expect(stops).toEqual([(reviews[1] as Review).id])
 })
 
+test("the round's cost counts the turns of the agents the review starts, and of no other agent", async ($, on) => {
+  const repo = world()
+  const { store, reviews } = engine(on, repo)
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  const one = reviews[0] as Review
+  await $.tool.call({ tool: 'Read', agentId: one.id, file_path: `${ROOT}/src/app.ts` })
+  repo.agents = [
+    { id: 'angle-1', type: 'general-purpose', parentId: one.id },
+    { id: 'angle-1a', type: 'general-purpose', parentId: 'angle-1' },
+    { id: 'helper', type: 'general-purpose' },
+  ]
+  for (const id of ['angle-1', 'angle-1a', 'helper']) await reply($, id, 'Found nothing.')
+  await act($, reviews, 0)
+  await call
+  // The classifier's turn, the review's and its two agents': the main conversation's helper is left out.
+  expect(ledgerOf(store).rounds[0]?.tokens).toEqual({ input: 3001, output: 301, cached: 1500 })
+})
+
 test('where sleep cannot run, the round stops waiting for a background review at once and says why', async ($, on) => {
   const repo = world({ background: true, noSleep: true })
   const { reviews, stops } = engine(on, repo)

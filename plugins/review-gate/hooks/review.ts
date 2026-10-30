@@ -89,8 +89,10 @@ export type Pending = {
   agentId?: string
   /** The review's tool calls so far. */
   calls: number
-  /** What the review's turns have cost so far. */
+  /** What the turns of the review and the agents it started have cost so far. */
   tokens: Tokens
+  /** The agents the review started, as far as the agent list has shown them, whose turns count in its cost. */
+  team: Set<string>
   /** A new agent no plugin named that made calls while the review was unknown: likely the review, untagged. */
   untagged?: string
   /**
@@ -449,6 +451,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       isBriefed: false,
       calls: 0,
       tokens: NONE,
+      team: new Set(),
       drift: () => driftOf(git, place, true),
     }
     ask.desk.pending = pending

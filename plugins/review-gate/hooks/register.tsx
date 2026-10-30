@@ -6,7 +6,7 @@ import type { Place } from './git'
 import { opensOrMerges } from './guard'
 import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, openFindings, recordKey, recordPrefix, riskNow, sortOut, toLedger, wantsReread, whereOf } from './ledger'
 import { RECORD, capOf, readFixes, readRecord, reviewSection } from './prompts'
-import { SKILL, isLevel, mailbox, plus, runRound, summary } from './review'
+import { SKILL, isLevel, mailbox, plus, runRound, summary, teamOf } from './review'
 import type { Pending, RoundAsk } from './review'
 import { band, card } from './views'
 
@@ -437,6 +437,18 @@ async function scopeOf($: EngineInterface, agentId: string): Promise<Scope> {
   return 'other'
 }
 
+/**
+ * Whether an agent is the round's review or one under it, as /code-review max's angle agents are, so
+ * its turns count in the round's cost.
+ */
+async function isReviewTeam($: EngineInterface, pending: Pending, agentId: string) {
+  if (pending.agentId === undefined) return false
+  if (pending.agentId === agentId || pending.team.has(agentId)) return true
+  const team = teamOf(await $.agent.list().catch(() => []), pending.agentId)
+  for (const id of team) if (id !== pending.agentId) pending.team.add(id)
+  return team.has(agentId)
+}
+
 // No agent answers at the gate: a finding's answer and a pull request are the session's main
 // conversation's to give, so a review, or an agent it started, never can.
 const isRoundAgent = (agentId: string | undefined) => agentId !== undefined
@@ -543,7 +555,7 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) {
       mail.settle(e.agentId, e.answer, e.usage)
       const pending = desk.pending
-      if (pending !== undefined && pending.agentId === e.agentId) pending.tokens = plus(pending.tokens, e.usage)
+      if (pending !== undefined && (await isReviewTeam($, pending, e.agentId))) pending.tokens = plus(pending.tokens, e.usage)
     }
     else await refresh($).catch(() => undefined)
     return next(e)
