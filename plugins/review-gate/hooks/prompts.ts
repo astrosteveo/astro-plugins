@@ -111,6 +111,7 @@ export function reviewSection(plan: Plan) {
     `- Review ${scope}`,
     `- The repository is at \`${plan.root}\`, its working tree at ${short(plan.head)}: run git and read files there.${plan.fix ? '' : ' Change no file.'} Leave HEAD where it is: read other commits with git show or git diff, and do not commit, check out or reset, or the round records nothing.`,
     `- What the author says the change is for: ${intentLine(plan.intent)}`,
+    `- Work alone${plan.fix ? ' until you have recorded your findings' : ''}: read and search files yourself, and run only shell commands that read. The gate refuses agents of your own, messages to others, and any tool that changes things.`,
   ]
   if (plan.skip.length > 0) lines.push(`- Leave out the files these globs match, as the repository's REVIEW.md asks: ${plan.skip.map(glob => `\`${glob}\``).join(', ')}.`)
   if (plan.guides.length > 0) lines.push('', guides(plan.guides).trimStart())

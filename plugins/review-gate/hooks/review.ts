@@ -90,8 +90,8 @@ export type Pending = {
    * Skill tool names it, or it records with the round's name.
    */
   agentId?: string
-  /** Tool calls so far by each agent that is or may be the review, so the review's count is whole once it is known. */
-  calls: Map<string, number>
+  /** The review's tool calls so far. */
+  calls: number
   /**
    * Why the round records nothing because the repository is no longer as it found it, or undefined
    * while it is: HEAD moved, or a file changed. The record call asks before it takes the findings.
@@ -375,7 +375,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       changed: new Set(files),
       isSkipped: file => skipped.some(test => test(file)),
       isBriefed: false,
-      calls: new Map(),
+      calls: 0,
       drift: () => driftOf(git, place, true),
     }
     ask.desk.pending = pending
@@ -416,7 +416,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
         isStuck = got.isStuck
         isUnfinished = got.reply === undefined && run.background === true && !isStuck
       }
-      calls = pending.calls.get(run.agentId) ?? 0
+      calls = pending.calls
     }
     if (ask.signal.aborted) return refuse(STOPPED)
     // A round's findings are about the commit it began at. When HEAD moved, or files changed before the

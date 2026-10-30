@@ -613,9 +613,7 @@ test('a --fix round where no file changed says so; a round where files change be
   await until($, 'the second review', () => reviews.length === 2)
   repo.dirty = ['src/app.ts']
   const { recorded } = await act($, reviews, 1)
-  expect(recorded).toBe(
-    'Files changed while the round ran: src/app.ts. The review may have read them, so nothing was recorded. Commit or undo them, then review again. Finish without recording.',
-  )
+  expect(recorded).toBe('The repository changed while you read it, so this round records nothing. Finish without recording.')
   expect((await early).text).toBe(
     'Files changed while the round ran: src/app.ts. The review may have read them, so nothing was recorded. Commit or undo them, then review again.',
   )
@@ -1296,7 +1294,7 @@ test('open findings are looked at again when the new commits change only skipped
   expect(ledgerOf(store).findings.map(one => [one.id, one.status])).toEqual([['R1-1', 'fixed']])
 })
 
-test('without --fix the review only reads; with it, it changes nothing until it has recorded; a review changes nothing once its round is over; other agents are free', async ($, on) => {
+test('without --fix the review only reads, alone; with it, it changes nothing until it has recorded; a review changes nothing once its round is over; other agents are free', async ($, on) => {
   const repo = world({ agents: [{ id: 'helper-0', type: 'general-purpose' }] })
   const { reviews } = engine(on, repo)
   await start($)
@@ -1305,25 +1303,19 @@ test('without --fix the review only reads; with it, it changes nothing until it 
   const call = $.tool.call({ tool: REVIEW })
   await until($, 'the review', () => reviews.length === 1)
   const one = reviews[0] as Review
+  expect(one.prompt).toContain('- Work alone: read and search files yourself, and run only shell commands that read.')
   expect(await check(one.id, 'Edit')).toBe('deny')
   expect(await check(one.id, 'Bash')).toBe('deny')
   expect(await check(one.id, 'Bash', true)).toBe('allow')
   expect(await check(one.id, 'Read')).toBe('allow')
   expect(await check(one.id, RECORD)).toBe('allow')
-  // Only listed tools, shell reads and foreground agents of its own: a message could act for it, an
-  // agent in the background or elsewhere would outlive the rule, and an MCP server's word is no proof.
+  // It works alone, with the read tools and shell reads: no agent of its own in any form, no message to
+  // another, no fetch, and no MCP tool, whatever each says of itself.
+  expect(await check(one.id, 'Agent', true)).toBe('deny')
+  expect(await check(one.id, 'SendMessage', true)).toBe('deny')
   expect(await check(one.id, 'WebFetch', true)).toBe('deny')
   expect(await check(one.id, 'mcp__docs__publish', true)).toBe('deny')
-  expect(await check(one.id, 'SendMessage', true)).toBe('deny')
-  expect((await $.tool.check({ tool: 'Agent', input: { prompt: 'look', run_in_background: true }, agentId: one.id, isReadOnly: true })).decision).toBe('deny')
-  expect((await $.tool.check({ tool: 'Agent', input: { prompt: 'look', isolation: 'remote' }, agentId: one.id, isReadOnly: true })).decision).toBe('deny')
-  expect((await $.tool.check({ tool: 'Agent', input: { prompt: 'look' }, agentId: one.id, isReadOnly: true })).decision).toBe('allow')
-  // An agent the review starts is held to the same; one the session had before the round is not.
-  repo.agents = [
-    { id: 'helper-0', type: 'general-purpose' },
-    { id: 'angle-1', type: 'general-purpose', parentId: one.id },
-  ]
-  expect(await check('angle-1', 'Write')).toBe('deny')
+  // An agent the session had before the round is not the review.
   expect(await check('helper-0', 'Write')).toBe('allow')
   expect((await verdict(one.id, 'Edit')).reason).toContain('review-gate: this review only reads.')
   await act($, reviews, 0)
@@ -1332,22 +1324,15 @@ test('without --fix the review only reads; with it, it changes nothing until it 
   const fixing = $.command.run({ command: 'review-gate', args: '--fix', ...person })
   await until($, 'the second review', () => reviews.length === 2)
   const two = reviews[1] as Review
-  expect(await verdict(two.id, 'Edit')).toEqual({ decision: 'deny', reason: 'review-gate: record the findings with the record tool first, then fix them.' })
+  expect(await verdict(two.id, 'Edit')).toEqual({ decision: 'deny', reason: 'review-gate: record the findings with the record tool first, then fix them. Until then the review only reads, and works alone.' })
   await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [SKIPPED_PAGE] })
   expect(await check(two.id, 'Edit')).toBe('allow')
   await reply($, two.id, 'Done.')
   two.finish('Done.')
   await fixing
-  // A review woken after its round, by a notice or a message, and any agent it started, change nothing.
-  repo.agents = [
-    { id: 'helper-0', type: 'general-purpose' },
-    { id: 'angle-1', type: 'general-purpose', parentId: one.id },
-  ]
-  expect(await verdict(two.id, 'Edit')).toEqual({
-    decision: 'deny',
-    reason: 'review-gate: this agent is a review whose round is over, or one a review started, so it changes nothing now.',
-  })
-  expect(await check('angle-1', 'Bash')).toBe('deny')
+  // A review woken after its round, by a notice or a message, changes nothing.
+  expect(await verdict(two.id, 'Edit')).toEqual({ decision: 'deny', reason: 'review-gate: this agent is a review whose round is over, so it changes nothing now.' })
+  expect(await check(one.id, 'Bash')).toBe('deny')
   // Outside a round, the gate leaves every other agent's call to the session's own rules.
   expect(await check('helper-0', 'Edit')).toBe('allow')
   expect(await check('agent-z', 'Edit')).toBe('allow')
@@ -1432,14 +1417,22 @@ test("another task's notice that names the review's output file passes beside th
   expect(passed.text?.trim()).toBe(monitor)
 })
 
-test('an agent the list does not show is no review, and goes free during a round', async ($, on) => {
+test('an agent the list does not show is held only until the review is known', async ($, on) => {
   const { reviews } = engine(on, world())
   await start($)
   const call = $.tool.call({ tool: REVIEW })
   await until($, 'the review', () => reviews.length === 1)
-  // A workflow's agent, or one whose parent has ended: no list names it.
+  const one = reviews[0] as Review
+  // A workflow's agent, which no list names, may be the review while the round has yet to learn which
+  // agent its review is.
+  expect(await $.tool.check({ tool: 'Edit', input: {}, agentId: 'workflow-7' })).toEqual({
+    decision: 'deny',
+    reason: "review-gate: the gate could not tell whether this agent is the round's review, so it holds it to the review's rule: it may only read.",
+  })
+  // The review's first call names it, and from then on only the review is held.
+  await $.tool.call({ tool: 'Read', agentId: one.id, file_path: '/repo/src/app.ts' })
   expect((await $.tool.check({ tool: 'Edit', input: {}, agentId: 'workflow-7' })).decision).toBe('allow')
-  expect((await $.tool.check({ tool: 'Edit', input: {}, agentId: (reviews[0] as Review).id })).decision).toBe('deny')
+  expect((await $.tool.check({ tool: 'Edit', input: {}, agentId: one.id })).decision).toBe('deny')
   await act($, reviews, 0)
   await call
 })
@@ -1451,8 +1444,8 @@ test('a review never answers at the gate, during its round or after it', async (
   const call = $.tool.call({ tool: REVIEW })
   const { one } = await act($, reviews, 0)
   await call
-  expect(String((await $.tool.call({ tool: DISMISS, agentId: one.id, ids: ['R1-1'], reason: 'The review thinks it is fine as it is.' })).deny)).toContain(
-    'findings are answered from the main conversation',
+  expect(String((await $.tool.call({ tool: DISMISS, agentId: one.id, ids: ['R1-1'], reason: 'The review thinks it is fine as it is.' })).deny)).toBe(
+    'review-gate: findings are answered from the main conversation: not by an agent while a review round runs, and never by a review. A review hands back what it found with record.',
   )
   expect(String((await $.tool.call({ tool: DISMISS, agentId: 'agent-q', ids: ['R1-1'], reason: 'Another agent read it and it holds up.' })).result)).toContain('Dismissed R1-1')
 })
