@@ -93,11 +93,11 @@ export type Pending = {
   /** Tool calls so far by each agent that is or may be the review, so the review's count is whole once it is known. */
   calls: Map<string, number>
   /**
-   * Why the repository is no longer as the round found it, or undefined while it is: HEAD moved, or a
-   * file changed. The record call asks before it takes the findings.
+   * Why the round records nothing because the repository is no longer as it found it, or undefined
+   * while it is: HEAD moved, or a file changed. The record call asks before it takes the findings.
    */
   drift: () => Promise<string | undefined>
-  /** Why the record call found the repository changed, so the round records nothing. */
+  /** What the record call's drift said, so the round records nothing. */
   drifted?: string
   /** Whether a file is one REVIEW.md skips, so a finding in it is left out. */
   isSkipped: (file: string) => boolean
@@ -142,6 +142,7 @@ export type RoundAsk = {
   progress: (change: (run: Run | null) => Run | null) => Promise<void>
   /** Takes an agent as the round's review, on proof such as the Skill tool naming it. */
   bind: (agentId: string) => Promise<void>
+
   /**
    * Changes the branch's record as it stands when the round ends: `change` gives the new record, or
    * why the round may not add to it, which comes back and leaves the record as it was.
@@ -225,12 +226,22 @@ async function pause($: EngineInterface) {
 
 const STUCK = 'review-gate could not wait for the review, since the `sleep` program could not run here, so it stopped the review.'
 
-// Why HEAD is no longer where the round began, or undefined while it is.
-async function headMove(git: Place['git'], place: Place) {
+/**
+ * Why the round records nothing, as the person reads it, or undefined while the repository is as the
+ * round found it: HEAD where it was, and, with `files`, no file changed. The tree was clean when the
+ * round began, so a changed file is one the review may have read: changed by the person, by another
+ * agent, or by the review against its instructions.
+ */
+async function driftOf(git: Place['git'], place: Place, files: boolean) {
   const now = await headNow(git)
-  if (now.head === place.head && now.branch === place.branch) return undefined
-  const where = now.branch === '' ? `a detached HEAD at ${short(now.head)}` : `${now.branch} at ${short(now.head)}`
-  return `HEAD moved while the round ran: it began on ${place.branch} at ${short(place.head)}, and HEAD is now ${where}.`
+  if (now.head !== place.head || now.branch !== place.branch) {
+    const where = now.branch === '' ? `a detached HEAD at ${short(now.head)}` : `${now.branch} at ${short(now.head)}`
+    return `HEAD moved while the round ran: it began on ${place.branch} at ${short(place.head)}, and HEAD is now ${where}. Nothing was recorded. Put HEAD where you want the review to read, then review again.`
+  }
+  if (!files) return undefined
+  const changed = await uncommitted(git)
+  if (changed.length === 0) return undefined
+  return `Files changed while the round ran: ${listed(changed)}. The review may have read them, so nothing was recorded. Commit or undo them, then review again.`
 }
 
 // Ends a review the round no longer waits for, so it spends nothing more. Best effort: one that has
@@ -365,14 +376,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       isSkipped: file => skipped.some(test => test(file)),
       isBriefed: false,
       calls: new Map(),
-      // The tree was clean when the round began, so any file changed since is a change the review may
-      // have read: by the person, by another agent, or by the review against its instructions.
-      drift: async () => {
-        const moved = await headMove(git, place)
-        if (moved !== undefined) return moved
-        const changed = await uncommitted(git)
-        return changed.length === 0 ? undefined : `Files changed while the review read the commit: ${listed(changed)}.`
-      },
+      drift: () => driftOf(git, place, true),
     }
     ask.desk.pending = pending
     await ask.progress(run => (run === null ? run : { ...run, phase: 'reviewing', level }))
@@ -415,12 +419,11 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       calls = pending.calls.get(run.agentId) ?? 0
     }
     if (ask.signal.aborted) return refuse(STOPPED)
-    // A round's findings are about the commit it began at. When HEAD moved, or files changed before
-    // the review recorded, the round cannot say what the review read, so it records nothing.
-    const moved = await headMove(git, place)
-    if (moved !== undefined) return refuse(`${moved} Nothing was recorded. Put HEAD where you want the review to read, then review again.`)
-    if (pending.drifted !== undefined)
-      return refuse(`${pending.drifted} The review may have read them, so nothing was recorded. Commit or undo them, then review again.`)
+    // A round's findings are about the commit it began at. When HEAD moved, or files changed before the
+    // review recorded, or at all without --fix, when the review only reads, the round cannot say what
+    // the review read, and records nothing. With --fix, files changed after the record are its fixes.
+    const drifted = pending.drifted ?? (await driftOf(git, place, !ask.fix))
+    if (drifted !== undefined) return refuse(drifted)
     if (pending.record === undefined)
       return refuse(
         `/code-review ended without recording its findings${
@@ -430,10 +433,6 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     record = pending.record
     cap = pending.cap
     touched = await uncommitted(git)
-    // Without --fix the review only reads, so a file changed by the end was changed by someone else,
-    // and the review may have read it.
-    if (!ask.fix && touched.length > 0)
-      return refuse(`Files changed while the round ran: ${listed(touched)}. The review may have read them, so nothing was recorded. Commit or undo them, then review again.`)
     // A fix is in the working tree or nowhere: with no file changed, the fixes the review claims are
     // not kept, and the round says so.
     claimed = touched.length === 0 ? (pending.fixes ?? []).filter(one => one.applied).map(one => one.id) : []
