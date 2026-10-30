@@ -1,25 +1,21 @@
-import type { Depth, Finding, FindingKind, Ledger, Risk, Round, Severity } from '../types'
+import type { Finding, FindingKind, Ledger, Level, Risk, Round, Severity } from '../types'
 
 /** Rounds in a row that may end with findings open before the review asks the author to step back. */
 export const ROUND_CAP = 3
 
-/** The most nits one round reports: past a few, a nit costs an agent author more than it gives. */
-export const NIT_CAP = 3
-
-/** How many reviewers, each with its own focus, and how many checkers vote, at each depth. */
-export const DEPTHS: Record<Depth, { focuses: readonly string[]; checkers: number }> = {
-  quick: { focuses: ['logic', 'security'], checkers: 1 },
-  standard: { focuses: ['logic', 'failure', 'fit', 'security'], checkers: 3 },
-  deep: { focuses: ['logic', 'failure', 'fit', 'security', 'state'], checkers: 3 },
-}
+/** The /code-review levels, least to most: a person may pick any, the model all but max. */
+export const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const satisfies readonly Level[]
 
 /** The verdict when the classifier gives none: a person looks, as a gate that cannot tell refuses. */
 export const UNJUDGED: Risk = { tier: 'high', why: ['the classifier gave no verdict on its risk, so a person looks'] }
 
-/** The depth a risk calls for: a change that can do more harm gets more eyes. */
-export const depthFor = (risk: Risk): Depth => (risk.tier === 'low' ? 'quick' : risk.tier === 'high' ? 'deep' : 'standard')
+/** The level a risk calls for: a change that can do more harm gets a deeper read. */
+export const levelFor = (risk: Risk): Level => (risk.tier === 'low' ? 'medium' : risk.tier === 'high' ? 'xhigh' : 'high')
 
-export const emptyLedger = (branch: string): Ledger => ({ version: 1, branch, rounds: [], findings: [], streakFrom: 0 })
+/** `level`, held to `most` at the deepest. */
+export const atMost = (level: Level, most: Level): Level => (LEVELS.indexOf(level) > LEVELS.indexOf(most) ? most : level)
+
+export const emptyLedger = (branch: string): Ledger => ({ version: 2, branch, rounds: [], findings: [], streakFrom: 0 })
 
 /** A branch's key in the plugin's own store, named by its repository's git folder and the branch. */
 export const recordPrefix = (store: string) => `record:${store}:`
@@ -29,11 +25,15 @@ export const recordKey = (store: string, branch: string) => `${recordPrefix(stor
 export function toLedger(value: unknown, branch: string): Ledger {
   if (typeof value !== 'object' || value === null) return emptyLedger(branch)
   const record = value as Partial<Ledger>
-  if (record.version !== 1 || !Array.isArray(record.rounds) || !Array.isArray(record.findings)) return emptyLedger(branch)
+  if (record.version !== 2 || !Array.isArray(record.rounds) || !Array.isArray(record.findings)) return emptyLedger(branch)
   return { ...emptyLedger(branch), ...record, branch }
 }
 
 export const openFindings = (ledger: Ledger) => ledger.findings.filter(finding => finding.status === 'open')
+
+/** Whether a review run with --fix says it fixed an open finding, which a later round has yet to confirm. */
+export const isApplied = (finding: Finding) => finding.status === 'open' && finding.fix?.applied === true
+
 
 /** Rounds in a row, counted back from the last, that ended with findings open: what the cap reads. */
 export function streak(ledger: Ledger) {
@@ -46,6 +46,69 @@ export function streak(ledger: Ledger) {
 }
 
 export const lastRound = (ledger: Ledger): Round | undefined => ledger.rounds[ledger.rounds.length - 1]
+
+/** Whether a round's review reported as many findings as its level lets it, so it may have left some out. */
+export const isCapped = (round: Round | undefined) => round?.cap !== undefined && round.raised >= round.cap
+
+const depth = (level: Level) => LEVELS.indexOf(level)
+
+/** `level`, raised to `least` at the shallowest. */
+export const atLeast = (level: Level, least: Level): Level => (depth(level) < depth(least) ? least : level)
+
+/**
+ * The level the branch's reviewed commit wants a second read at before the gate vouches for it, or
+ * undefined when it wants none: a round over that commit reported as many findings as its level
+ * allows, and no later round over it read as deep. Such a read settles it, capped or not, so the gate
+ * never waits for ever; a shallower one settles nothing, since it may miss what the deeper one left out.
+ */
+export function rereadLevel(ledger: Ledger): Level | undefined {
+  const head = lastRound(ledger)?.head
+  let owed: Level | undefined
+  for (const round of ledger.rounds) {
+    if (round.head !== head) continue
+    if (owed !== undefined && depth(round.level) >= depth(owed)) owed = undefined
+    else if (isCapped(round)) owed = owed === undefined ? round.level : atLeast(round.level, owed)
+  }
+  return owed
+}
+
+/** Where a commit stands at the gate: what its pull request waits for, or that it waits for nothing. */
+export type Standing =
+  | { kind: 'unreviewed' }
+  | { kind: 'open'; open: Finding[] }
+  | { kind: 'reread'; level: Level }
+  | { kind: 'approval'; risk: Risk }
+  | { kind: 'ready' }
+
+/**
+ * Where the branch at `head` stands, by the one rule the gate and every view share: the commit was
+ * reviewed, no finding is open, a round that hit its finding limit was read again as deep, and a
+ * high-risk change has the person's approval for that commit.
+ */
+export function standing(ledger: Ledger, head: string): Standing {
+  if (ledger.reviewed !== head) return { kind: 'unreviewed' }
+  const open = openFindings(ledger)
+  if (open.length > 0) return { kind: 'open', open }
+  const level = rereadLevel(ledger)
+  if (level !== undefined) return { kind: 'reread', level }
+  const risk = riskNow(ledger)
+  if (risk?.tier === 'high' && ledger.approved?.sha !== head) return { kind: 'approval', risk }
+  return { kind: 'ready' }
+}
+
+/** Why a commit wants a second read, as the gate and the views say it. */
+export const rereadWhy = (level: Level) => `a round over this commit reported as many findings as /code-review ${level} allows, so it may have left some out`
+
+/** What the branch at `head` waits for once nothing is open, as the model and the person read it. */
+export function nothingOpen(ledger: Ledger, head: string) {
+  const now = standing(ledger, head)
+  const at = head.slice(0, 7)
+  if (now.kind === 'unreviewed') return `Nothing is open, but the commits since ${(ledger.reviewed ?? '').slice(0, 7)} have not been reviewed.`
+  if (now.kind === 'reread')
+    return `Nothing is open, but ${rereadWhy(now.level)}. Review again before the pull request: one more round over ${at} at /code-review ${now.level} settles it.`
+  const approval = now.kind === 'approval' ? ' It is high risk, so the gate asks the user to approve it when the pull request is opened or merged.' : ''
+  return `Nothing is open. ${ledger.branch} at ${at} is ready for a pull request.${approval}`
+}
 
 const compact = (count: number) => (count >= 1e6 ? `${(count / 1e6).toFixed(1)}M` : count >= 1e3 ? `${Math.round(count / 1e3)}k` : String(count))
 
@@ -71,31 +134,65 @@ export const securityReason = (findings: readonly Finding[]) =>
   `it has security finding${findings.length === 1 ? '' : 's'} ${findings.map(finding => finding.id).join(', ')} not fixed`
 
 /** A security finding, open or dismissed, puts a person in the loop whatever the classifier said. */
-export function riskNow(ledger: Ledger): Risk | undefined {
-  const risk = lastRound(ledger)?.risk
-  if (risk === undefined) return undefined
-  const security = ledger.findings.filter(finding => finding.kind === 'security' && finding.status !== 'fixed')
+export function riskWith(risk: Risk, findings: readonly Finding[]): Risk {
+  const security = findings.filter(finding => finding.kind === 'security' && finding.status !== 'fixed')
   if (security.length === 0 || risk.tier === 'high') return risk
   return { tier: 'high', why: [...risk.why, securityReason(security)] }
 }
 
-/** A defect a reviewer raised, before the checkers vote on it. */
-export type Candidate = {
-  file: string
-  line: number
-  title: string
-  detail: string
-  evidence: string
-  severity: 'important' | 'nit'
-  introduced: boolean
-  kind: FindingKind
-  /** The focus of the reviewer that raised it first. */
-  focus: string
-  /** How many reviewers raised it. */
-  raisedBy: number
+export function riskNow(ledger: Ledger): Risk | undefined {
+  const risk = lastRound(ledger)?.risk
+  return risk === undefined ? undefined : riskWith(risk, ledger.findings)
 }
 
-const words = (text: string) => new Set(text.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? [])
+/** A finding as the review reported it through the record tool, before the round gives it an id. */
+export type Reported = {
+  file: string
+  line: number
+  summary: string
+  shortSummary: string
+  scenario: string
+  category: string
+  verdict?: 'confirmed' | 'plausible'
+  security: boolean
+  introduced: boolean
+}
+
+/** What the review said of an open finding it looked at again. */
+export type Recheck = { id: string; fixed: boolean; why: string }
+
+// The review's own words for findings that cost upkeep rather than break behaviour, as the first
+// whole word of its category. A deadlock, a deadline, a Dockerfile or a duplicated side effect is not
+// cleanup, though its word starts like one.
+const CLEANUP =
+  /^(?:reuse|simplif(?:y|ication)|efficien(?:cy|t)|altitude|style|naming|readab(?:ility|le)|maintainab(?:ility|le)|tests?|testing|docs?|documentation|dead[-_ ]code|duplication|duplicated?[-_ ]code|cleanup)(?:$|[-_ ])/
+
+// The review's words for a security hole. A memory or resource leak, dependency or fault injection
+// and an author are not one; a leak or disclosure of data, a secret or a token is, and so is a hole
+// in access control, privileges, permissions or a sandbox. A word that also names a thing counts
+// alone or with the hole named (sandbox, a sandbox escape; traversal, a path traversal), not as part
+// of another thing's name, such as a permission prompt, a sandbox's setup or a tree's traversal.
+const SECURITY =
+  /secur|(?<!(?:dependency|fault)[-_ ])inject|(?:^|[-_ ])o?auth(?:n|z|entication|ori[sz]ation)?(?:[-_ ]|$)|secret|credential|privilege|^permissions?$|permissions?[-_ ](?:bypass|check|escalation)|access[-_ ]control|^sandbox(?:ing)?$|sandbox[-_ ](?:escape|bypass)|(?:^|[-_ ])rce(?:[-_ ]|$)|code[-_ ]execution|(?:data|info|information|pii|token|key|password)s?[-_ ](?:leak|disclosure|exposure)|xss|ssrf|csrf|^traversal$|(?:path|directory|file)[-_ ]traversal/
+
+export function kindOf(reported: Reported): FindingKind {
+  if (reported.security || SECURITY.test(reported.category)) return 'security'
+  return /convention|claude/.test(reported.category) ? 'convention' : 'bug'
+}
+
+export function severityOf(reported: Reported): Severity {
+  if (!reported.introduced) return 'pre-existing'
+  return CLEANUP.test(reported.category) ? 'nit' : 'important'
+}
+
+// Words that say nothing of a defect, so two findings that share only these are not alike.
+const STOP = new Set(
+  'the and are but for not nor its was were has had have this that these those then than when what which while with from into onto over under once only also each every any all one two can may will would could should does did doing been being their there they them his her our out off own same some such too very just more most other about after before again'.split(
+    ' ',
+  ),
+)
+
+const words = (text: string) => new Set((text.toLowerCase().match(/[a-z0-9_]{3,}/g) ?? []).filter(word => !STOP.has(word)))
 
 /** How much two texts share, by their words: 0 for nothing, 1 for the same words. */
 export function overlap(a: string, b: string) {
@@ -119,110 +216,56 @@ export function sameDefect(a: Located, b: Located) {
   return (Math.abs(a.line - b.line) <= 3 && alike >= 0.15) || alike >= 0.45
 }
 
-/** One candidate per defect: a defect raised by several reviewers keeps the gravest word on it. */
-export function merge(list: readonly Candidate[]) {
-  const kept: Candidate[] = []
-  for (const candidate of list) {
-    const twin = kept.find(other => sameDefect(other, candidate))
-    if (twin === undefined) {
-      kept.push({ ...candidate })
-      continue
-    }
-    twin.raisedBy += candidate.raisedBy
-    if (candidate.severity === 'important') twin.severity = 'important'
-    if (candidate.kind === 'security') twin.kind = 'security'
-    if (candidate.introduced) twin.introduced = true
-  }
-  return kept
-}
+/** Where a finding is, as `src/app.ts:12`, or the file alone when it names no line. */
+export const whereOf = (finding: { file: string; line: number }) => (finding.line > 0 ? `${finding.file}:${finding.line}` : finding.file)
 
-/** Candidates the branch has not had before, in any state: a round never raises a finding twice. */
-export const fresh = (list: readonly Candidate[], earlier: readonly Finding[]) =>
-  list.filter(candidate => !earlier.some(finding => sameDefect(finding, candidate)))
-
-export type Verdict = { id: string; real: boolean; severity: 'important' | 'nit'; introduced: boolean; kind?: FindingKind; why: string }
-export type Recheck = { id: string; fixed: boolean; why: string }
-export type CheckerReply = { verdicts: Verdict[]; earlier: Recheck[] }
-
-/** A majority of the checkers that answered. */
-export const quorum = (answered: number) => Math.floor(answered / 2) + 1
-
-export type Kept = Candidate & { votes: { real: number; of: number }; grade: Severity }
-
-// The kind most yes votes name; where none has the most, the kind it was raised as.
-function kindOf(candidate: Candidate, yes: readonly Verdict[]): FindingKind {
-  const counts = new Map<FindingKind, number>()
-  for (const verdict of yes) if (verdict.kind !== undefined) counts.set(verdict.kind, (counts.get(verdict.kind) ?? 0) + 1)
-  const most = Math.max(0, ...counts.values())
-  const leaders = [...counts.keys()].filter(kind => counts.get(kind) === most)
-  return leaders.length === 1 && leaders[0] !== undefined ? leaders[0] : candidate.kind
-}
-
-/**
- * The candidates a majority of the checkers held real, `C1` being the first, the majority counted
- * over the checkers `started` (a phase that stopped once the vote was decided has fewer replies). A
- * finding most of its yes votes say was there before the change is pre-existing; one most call
- * small is a nit. Its kind is the checkers' too: a reviewer's word that it is a security hole is a
- * claim they check.
- */
-export function tally(candidates: readonly Candidate[], replies: readonly CheckerReply[], started = replies.length): Kept[] {
-  if (replies.length === 0) return []
-  const need = quorum(started)
-  return candidates.flatMap((candidate, index) => {
-    const id = `C${index + 1}`
-    const yes = replies.flatMap(reply => {
-      const verdict = reply.verdicts.find(one => one.id === id)
-      return verdict?.real === true ? [verdict] : []
-    })
-    if (yes.length < need) return []
-    const before = yes.filter(verdict => !verdict.introduced).length * 2 > yes.length
-    const small = yes.filter(verdict => verdict.severity === 'nit').length * 2 > yes.length
-    const grade: Severity = before ? 'pre-existing' : small ? 'nit' : 'important'
-    return [{ ...candidate, kind: kindOf(candidate, yes), votes: { real: yes.length, of: replies.length }, grade }]
-  })
-}
-
-/** The earlier open findings a majority of the checkers found fixed at the reviewed commit. */
-export function fixedIds(open: readonly Finding[], replies: readonly CheckerReply[], started = replies.length) {
-  if (replies.length === 0) return []
-  const need = quorum(started)
-  return open
-    .filter(finding => replies.filter(reply => reply.earlier.some(one => one.id === finding.id && one.fixed)).length >= need)
-    .map(finding => finding.id)
-}
-
-/**
- * Whether the replies so far settle every vote, so the checkers still at work could change nothing:
- * each candidate and each earlier finding has the yes votes it needs, or too few checkers are left
- * for it to get them.
- */
-export function decided(candidates: number, open: readonly string[], replies: readonly CheckerReply[], started: number) {
-  const need = quorum(started)
-  const left = started - replies.length
-  const settles = (yes: number) => yes >= need || yes + left < need
-  for (let index = 1; index <= candidates; index++) {
-    const yes = replies.filter(reply => reply.verdicts.some(verdict => verdict.id === `C${index}` && verdict.real)).length
-    if (!settles(yes)) return false
-  }
-  return open.every(id => settles(replies.filter(reply => reply.earlier.some(one => one.id === id && one.fixed)).length))
-}
+/** What the review called a finding, as `correctness, confirmed`; empty when it said nothing. */
+export const aboutOf = (finding: Finding) => [finding.category, finding.verdict].filter(word => word !== undefined && word !== '').join(', ')
 
 const RANK: Record<Severity, number> = { important: 0, 'pre-existing': 1, nit: 2 }
 
-/** Gravest first, security first among equals; nits past the cap dropped, the best-agreed kept. */
-export function rank(list: readonly Kept[], nitCap = NIT_CAP) {
-  const nits = list
-    .filter(finding => finding.grade === 'nit')
-    .sort((a, b) => b.votes.real - a.votes.real)
-    .slice(0, nitCap)
-  return list
-    .filter(finding => finding.grade !== 'nit' || nits.includes(finding))
-    .sort(
-      (a, b) =>
-        RANK[a.grade] - RANK[b.grade] ||
-        Number(b.kind === 'security') - Number(a.kind === 'security') ||
-        b.votes.real - a.votes.real,
-    )
+/** The most nits a round raises: each one raised needs an answer before the pull request. */
+export const NIT_CAP = 3
+
+/**
+ * Round `n`'s new findings, gravest first and security first among equals, leaving out those the
+ * branch has had before in any state, so a round never raises a finding twice, and the nits past
+ * NIT_CAP. The review's list is otherwise kept whole: it has merged its repeats already, and two
+ * findings a few lines apart can differ. Gives how many were repeats and how many nits were left out.
+ */
+export function sortOut(reported: readonly Reported[], n: number, earlier: readonly Finding[]) {
+  const fresh = graded(reported, n, earlier)
+  const added = fresh.filter((finding, at) => finding.severity !== 'nit' || fresh.slice(0, at).filter(one => one.severity === 'nit').length < NIT_CAP)
+  return {
+    added: added.map((finding, index) => ({ id: `R${n}-${index + 1}`, ...finding })),
+    repeats: reported.length - fresh.length,
+    nitsLeft: fresh.length - added.length,
+  }
+}
+
+/** Round `n`'s new findings, as sortOut keeps them. */
+export const newFindings = (reported: readonly Reported[], n: number, earlier: readonly Finding[]): Finding[] => sortOut(reported, n, earlier).added
+
+function graded(reported: readonly Reported[], n: number, earlier: readonly Finding[]): Omit<Finding, 'id'>[] {
+  const kept: Omit<Finding, 'id'>[] = []
+  for (const one of reported) {
+    const title = (one.shortSummary || one.summary).slice(0, 200)
+    const finding: Omit<Finding, 'id'> = {
+      round: n,
+      kind: kindOf(one),
+      severity: severityOf(one),
+      file: one.file,
+      line: one.line,
+      title,
+      detail: title === one.summary ? '' : one.summary,
+      scenario: one.scenario,
+      ...(one.category === '' ? {} : { category: one.category }),
+      ...(one.verdict === undefined ? {} : { verdict: one.verdict }),
+      status: 'open',
+    }
+    if (!earlier.some(other => sameDefect(other, finding))) kept.push(finding)
+  }
+  return kept.sort((a, b) => RANK[a.severity] - RANK[b.severity] || Number(b.kind === 'security') - Number(a.kind === 'security'))
 }
 
 /**
@@ -236,13 +279,6 @@ export function normalGlob(pattern: string) {
   else if (!glob.replace(/\/$/, '').includes('/')) glob = `**/${glob}`
   return glob.endsWith('/') ? `${glob}**` : glob
 }
-
-/** Pathspecs that leave the globs' files out of a git diff, a folder's contents with the folder. */
-export const excludes = (globs: readonly string[]) =>
-  globs.flatMap(pattern => {
-    const glob = normalGlob(pattern)
-    return glob.endsWith('/**') ? [`:(exclude,glob)${glob}`] : [`:(exclude,glob)${glob}`, `:(exclude,glob)${glob}/**`]
-  })
 
 /**
  * A glob as REVIEW.md and .gitignore spell one: `*` stays within a folder, `**` crosses folders, a
@@ -274,7 +310,7 @@ export function globTest(pattern: string): (path: string) => boolean {
   }
 }
 
-/** A REVIEW.md: its text for the agents, and the globs under its Skip heading. */
+/** A REVIEW.md: its text for the review, and the globs under its Skip heading. */
 export type Guide = { path: string; text: string; skip: string[] }
 
 // A glob in a folder's REVIEW.md speaks for that folder: a bare name matches at any depth below it,

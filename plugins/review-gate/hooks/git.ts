@@ -44,31 +44,37 @@ export type Place = {
   mainRef: string
   /** The commit the branch forked from the default branch at; empty when there is none. */
   base: string
+  /** Why git could not find that commit, in its words; empty when it found it, or the branch shares no history. */
+  forkError: string
   /** Commits on the branch past its base. */
   ahead: number
 }
 
-// The default branch: the one origin's HEAD names where the clone knows it, else the first of the
-// usual names that exists here or on origin.
-async function defaultBranch(git: Git) {
+// The default branch, and what a pull request compares against: origin's copy of it where there is
+// one, since that is what the pull request merges into, else the local one. The branch is the one
+// origin's HEAD names where the clone has it, else the first of the usual names that exists here or
+// on origin. origin's HEAD outlives the branch it names when that branch is renamed on origin and
+// pruned here.
+async function defaultBranch(git: Git): Promise<{ main: string; ref: string }> {
   const remote = await git(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
-  if (remote.ok && remote.out.trim().startsWith('origin/')) return remote.out.trim().slice('origin/'.length)
+  const named = remote.ok && remote.out.trim().startsWith('origin/') ? remote.out.trim().slice('origin/'.length) : ''
+  if (named !== '') {
+    const [onOrigin, local] = await Promise.all([
+      git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${named}`]),
+      git(['rev-parse', '--verify', '--quiet', `refs/heads/${named}`]),
+    ])
+    if (onOrigin.ok) return { main: named, ref: `origin/${named}` }
+    if (local.ok) return { main: named, ref: named }
+  }
   for (const name of ['main', 'master', 'trunk']) {
     const [local, onOrigin] = await Promise.all([
       git(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]),
       git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${name}`]),
     ])
-    if (local.ok || onOrigin.ok) return name
+    if (onOrigin.ok) return { main: name, ref: `origin/${name}` }
+    if (local.ok) return { main: name, ref: name }
   }
-  return ''
-}
-
-// What a pull request compares against: origin's copy of the default branch where there is one,
-// since that is what the pull request merges into, else the local one.
-async function mainRef(git: Git, main: string) {
-  if (main === '') return ''
-  if ((await git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${main}`])).ok) return `origin/${main}`
-  return (await git(['rev-parse', '--verify', '--quiet', `refs/heads/${main}`])).ok ? main : ''
+  return { main: '', ref: '' }
 }
 
 /** The repository `cwd` is in, or why there is none to review. */
@@ -84,10 +90,11 @@ export async function locate($: EngineInterface, cwd: string): Promise<Place | s
   ])
   if (!head.ok) return `${root} has no commits yet.`
   if (!common.ok) return `git could not say where ${root} keeps its data: ${common.err}`
-  const main = await defaultBranch(git)
-  const ref = await mainRef(git, main)
+  const { main, ref } = await defaultBranch(git)
   const fork = ref === '' ? undefined : await git(['merge-base', 'HEAD', ref])
   const base = fork?.ok === true ? fork.out.trim() : ''
+  // git merge-base fails with no words when the two share no history, and says why otherwise.
+  const forkError = fork === undefined || fork.ok ? '' : fork.err
   const count = base === '' ? undefined : await git(['rev-list', '--count', `${base}..HEAD`])
   return {
     root,
@@ -98,17 +105,27 @@ export async function locate($: EngineInterface, cwd: string): Promise<Place | s
     main,
     mainRef: ref,
     base,
+    forkError,
     ahead: count?.ok === true ? Number(count.out.trim()) || 0 : 0,
   }
 }
 
-/** Tracked files with changes no commit holds yet. */
+/**
+ * Files with changes no commit holds: changed tracked files, and new files git does not ignore. A
+ * rename reads as its two paths, each with its own status, so every entry is one path.
+ */
 export async function uncommitted(git: Git) {
-  const out = must(await git(['status', '--porcelain', '--untracked-files=no', '-z']), 'read the working tree')
+  const out = must(await git(['status', '--porcelain', '--untracked-files=all', '--no-renames', '-z']), 'read the working tree')
   return out
     .split('\0')
     .filter(entry => entry.length > 3)
     .map(entry => entry.slice(3))
+}
+
+/** Where HEAD is now: its commit, and its branch, empty when detached. */
+export async function headNow(git: Git) {
+  const [head, branch] = await Promise.all([git(['rev-parse', '--verify', 'HEAD']), git(['symbolic-ref', '--quiet', '--short', 'HEAD'])])
+  return { head: must(head, 'read HEAD').trim(), branch: branch.ok ? branch.out.trim() : '' }
 }
 
 /** The files a diff from `from` to `to` touches, deleted ones included. */
@@ -122,39 +139,13 @@ export async function changedFiles(git: Git, from: string, to: string) {
 const PREFIXES = ['--src-prefix=a/', '--dst-prefix=b/']
 
 /**
- * The lines of each file at `to` that the diff from `from` added or changed, as ranges: a hunk's
- * `+c,d` is lines c to c+d-1.
+ * The diff from `from` to `to`, as a stat and as patches with some context. No file is named on the
+ * command line, so no change is too big for it.
  */
-export async function changedLines(git: Git, from: string, to: string) {
-  const out = must(await git(['diff', '-U0', '--no-renames', '--no-color', '--no-ext-diff', ...PREFIXES, from, to]), 'read the changed lines')
-  const lines = new Map<string, [number, number][]>()
-  let file = ''
-  for (const line of out.split('\n')) {
-    if (line.startsWith('+++ ')) {
-      file = line === '+++ /dev/null' ? '' : line.slice(4).replace(/\t$/, '').replace(/^b\//, '')
-      continue
-    }
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line)
-    if (hunk === null || file === '') continue
-    const start = Number(hunk[1])
-    const count = hunk[2] === undefined ? 1 : Number(hunk[2])
-    if (count > 0) lines.set(file, [...(lines.get(file) ?? []), [start, start + count - 1]])
-  }
-  return lines
-}
-
-export const inRanges = (ranges: readonly [number, number][] | undefined, line: number) =>
-  ranges?.some(([first, last]) => line >= first && line <= last) === true
-
-/**
- * The diff from `from` to `to`, as a stat and as patches with some context, leaving out what the
- * pathspecs `excludes` name. No file is named on the command line, so no change is too big for it.
- */
-export async function diffOf(git: Git, from: string, to: string, excludes: readonly string[]) {
-  const paths = excludes.length === 0 ? [] : ['--', '.', ...excludes]
+export async function diffOf(git: Git, from: string, to: string) {
   const [stat, body] = await Promise.all([
-    git(['diff', '--stat=160', '--no-renames', '--no-ext-diff', from, to, ...paths]),
-    git(['diff', '--no-renames', '--no-color', '--no-ext-diff', '--unified=5', ...PREFIXES, from, to, ...paths]),
+    git(['diff', '--stat=160', '--no-renames', '--no-ext-diff', from, to]),
+    git(['diff', '--no-renames', '--no-color', '--no-ext-diff', '--unified=5', ...PREFIXES, from, to]),
   ])
   return { stat: must(stat, 'read the diff').trimEnd(), body: must(body, 'read the diff') }
 }

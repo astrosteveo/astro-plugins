@@ -1,29 +1,26 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderInput } from 'claude-code'
-import type { Activity, Depth, Ledger } from '../types'
+import type { Ledger, Level } from '../types'
 import { branches, firstCommit, locate, short } from './git'
 import type { Place } from './git'
-import { gitArgsRefusal, gitArgv, gitGrepArgv, opensOrMerges, rgArgv } from './guard'
-import type { Search } from './guard'
-import { ROUND_CAP, emptyLedger, openFindings, recordKey, recordPrefix, riskNow, toLedger } from './ledger'
-import { CHECKER, REVIEWER } from './prompts'
-import { CHECKER_TYPE, REVIEWER_TYPE, mailbox, runRound, summary } from './review'
-import type { RoundAsk } from './review'
+import { opensOrMerges } from './guard'
+import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, nothingOpen, openFindings, recordKey, recordPrefix, rereadWhy, sortOut, standing, toLedger, whereOf } from './ledger'
+import { RECORD, capOf, readFixes, readRecord, reviewSection } from './prompts'
+import { SKILL, bell, isLevel, mailbox, owesFixes, plus, runRound, summary, teamOf } from './review'
+import type { Pending, RoundAsk } from './review'
 import { band, card } from './views'
 
+const PLUGIN = 'review-gate'
 const REVIEW = 'mcp__review-gate__review'
 const DISMISS = 'mcp__review-gate__dismiss'
 const PULL_REQUEST = 'mcp__review-gate__pull_request'
-const GIT_TOOL = 'mcp__review-gate__review_git'
-const SEARCH_TOOL = 'mcp__review-gate__review_search'
 const COMMAND = 'review-gate'
 
 const repo = atom({ plugin: 'review-gate', key: 'repo' } as const, null, { shape: 'repo-1' })
-const ledgerState = atom({ plugin: 'review-gate', key: 'ledger' } as const, null, { shape: 'ledger-1' })
-const run = atom({ plugin: 'review-gate', key: 'run' } as const, null, { shape: 'run-2' })
+const ledgerState = atom({ plugin: 'review-gate', key: 'ledger' } as const, null, { shape: 'ledger-2' })
+const run = atom({ plugin: 'review-gate', key: 'run' } as const, null, { shape: 'run-3' })
 const activity = atom({ plugin: 'review-gate', key: 'activity' } as const, null)
 
-const DEPTH_NAMES = ['quick', 'standard', 'deep'] as const
 const METHODS = ['merge', 'squash', 'rebase'] as const
 
 const PATH = {
@@ -34,22 +31,84 @@ const PATH = {
 const REVIEW_TOOL = {
   name: 'review',
   description:
-    "Review the current branch's commits, as its pull request would show them, before you open the pull request. Reviewer agents, each with its own focus, look for defects in parallel; checker agents then vote, and only findings most of them hold real are kept. Call it once the change is committed and its checks pass: the pull_request tool opens and merges pull requests only for a commit that was reviewed with every finding answered. Answer each finding: fix it and commit, then review again (later rounds read only the new commits and confirm the fix); or dismiss it with the reason it can stay. After three rounds in a row end with findings open, it stops and asks you to step back with the user. A round takes minutes.",
+    "Review the current branch's commits, as its pull request would show them, before you open the pull request. It runs Claude Code's /code-review over the branch, at a level the change's risk picks, and keeps every finding in the branch's review record. Call it once the change is committed and its checks pass: the pull_request tool opens and merges pull requests only for a commit that was reviewed with every finding answered. A round that reports as many findings as its level allows may have left some out, so the gate then waits for one more round over the same commit. Answer each finding: fix it and commit, then review again (later rounds read only the new commits and confirm each fix); or dismiss it with the reason it can stay. After three rounds in a row end with findings open, it stops and asks you to step back with the user. A round takes minutes.",
   isDeferred: false,
   inputSchema: {
     type: 'object',
     properties: {
       intent: {
         type: 'string',
-        description: 'What the change is for, in a sentence or two: the problem it solves and how. Reviewers check the change against it.',
+        description: 'What the change is for, in a sentence or two: the problem it solves and how. The review checks the change against it.',
       },
-      depth: {
+      level: {
         type: 'string',
-        enum: [...DEPTH_NAMES],
-        description: "Leave it out and the change's risk picks: quick runs 2 reviewers and 1 checker, standard 4 and 3, deep 5 and 3.",
+        enum: LEVELS.filter(level => level !== 'max'),
+        description: "The /code-review level. Leave it out and the change's risk picks: medium for low risk, high for medium, xhigh for high.",
+      },
+      fix: {
+        type: 'boolean',
+        description: 'Let the review fix what it finds in the working tree once it has recorded the findings. You then commit the fixes you keep, and the next round confirms each one.',
       },
       path: PATH,
     },
+  },
+}
+
+const RECORD_TOOL = {
+  name: 'record',
+  description:
+    "For review-gate's own /code-review round only: hands the review's findings to the branch's review record. Call it only when a review-gate section of your instructions tells you to, with the round it names.",
+  isDeferred: false,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      round: { type: 'string', description: 'The round, as the instructions name it.' },
+      findings: {
+        type: 'array',
+        description: 'Every finding of the final list, empty when there are none.',
+        items: {
+          type: 'object',
+          properties: {
+            file: { type: 'string', description: "Its path from the repository's root." },
+            line: { type: 'number', description: 'The line it anchors to, counted from 1.' },
+            summary: { type: 'string', description: 'The defect in one sentence.' },
+            short_summary: { type: 'string', description: 'The claim alone, in at most 60 characters.' },
+            failure_scenario: { type: 'string', description: 'The input or state that sets it off, and what goes wrong.' },
+            category: { type: 'string', description: 'A kebab-case word for its kind, such as correctness, security or efficiency.' },
+            verdict: { type: 'string', enum: ['CONFIRMED', 'PLAUSIBLE'], description: 'Set when a verify pass ran.' },
+            security: {
+              type: 'boolean',
+              description: 'True when it lets someone do what they should not: read or change data that is not theirs, get past a check, run code, or learn a secret.',
+            },
+            introduced: { type: 'boolean', description: 'False when the defect was there before this branch.' },
+          },
+          required: ['file', 'summary', 'failure_scenario'],
+        },
+      },
+      rechecked: {
+        type: 'array',
+        description: 'One entry for each open finding the instructions list.',
+        items: {
+          type: 'object',
+          properties: { id: { type: 'string' }, fixed: { type: 'boolean' }, why: { type: 'string' } },
+          required: ['id', 'fixed'],
+        },
+      },
+      fixes: {
+        type: 'array',
+        description: 'With --fix, in a second call once you have changed every file you will: one entry for each finding, saying whether you fixed it in the working tree.',
+        items: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            applied: { type: 'boolean', description: 'True when you fixed it in the working tree.' },
+            why: { type: 'string', description: 'In one line: what you changed, or why you left it.' },
+          },
+          required: ['id', 'applied'],
+        },
+      },
+    },
+    required: ['round'],
   },
 }
 
@@ -72,7 +131,7 @@ const DISMISS_TOOL = {
 const PULL_REQUEST_TOOL = {
   name: 'pull_request',
   description:
-    "Open or merge a pull request: the only way to, as gh pr create, gh pr merge and gh api calls that do either are refused in Bash. open pushes the current branch to origin and opens its pull request. merge merges a pull request, and only while its head is still the commit that was reviewed. Both are refused until that commit has been reviewed and every finding answered, and a high-risk change also waits for the user's approval in a dialog. Ask the user before you open or merge one.",
+    "Open or merge a pull request: the only way to, as gh pr create, gh pr merge and gh api calls that do either are refused in Bash. open pushes the current branch to origin and opens its pull request. merge merges a pull request, and only while its head is still the commit that was reviewed. Both are refused until that commit has been reviewed and every finding answered, and after a round that hit its finding limit, until one more round has read it; a high-risk change also waits for the user's approval in a dialog. Ask the user before you open or merge one.",
   isDeferred: false,
   inputSchema: {
     type: 'object',
@@ -91,39 +150,7 @@ const PULL_REQUEST_TOOL = {
   },
 }
 
-const GIT_TOOL_SPEC = {
-  name: 'review_git',
-  description:
-    "For review-gate's reviewers and checkers only: run one of git's reading commands (log, show, diff, blame, grep, ls-files, ls-tree, rev-parse, cat-file and the like) in the repository under review. Give git's arguments as a list, without git itself.",
-  isDeferred: false,
-  inputSchema: {
-    type: 'object',
-    properties: {
-      args: { type: 'array', items: { type: 'string' }, description: 'git\'s arguments, such as ["log", "-p", "-3", "--", "src/app.ts"].' },
-    },
-    required: ['args'],
-  },
-}
-
-const SEARCH_TOOL_SPEC = {
-  name: 'review_search',
-  description: "For review-gate's reviewers and checkers only: search the repository under review for a pattern, with line numbers.",
-  isDeferred: false,
-  inputSchema: {
-    type: 'object',
-    properties: {
-      pattern: { type: 'string', description: 'A regular expression, or plain text when fixed is set.' },
-      path: { type: 'string', description: 'A file or folder to search; left out, the whole repository.' },
-      glob: { type: 'string', description: 'Only files whose names match it, such as "*.ts".' },
-      ignoreCase: { type: 'boolean' },
-      fixed: { type: 'boolean', description: 'Match the pattern as plain text.' },
-      context: { type: 'number', description: 'Lines to show around each match, up to 20.' },
-    },
-    required: ['pattern'],
-  },
-}
-
-const USAGE = `/review-gate runs a review round on this branch now; /review-gate quick, standard or deep picks its depth. /review-gate status shows where the review stands, /review-gate more allows ${ROUND_CAP} more rounds after the cap, and /review-gate reset forgets this branch's review record.`
+const USAGE = `/review-gate runs a review round on this branch now, at the level the change's risk picks; /review-gate low, medium, high, xhigh or max picks the level. Add --fix to let the review fix what it finds once it has recorded it, and --max-findings <n|all|default> to pass /code-review its limit. /review-gate status shows where the review stands, /review-gate more allows ${ROUND_CAP} more rounds after the cap, and /review-gate reset forgets this branch's review record.`
 
 const RAW_PR_REFUSAL = `review-gate: open and merge pull requests with ${PULL_REQUEST}, which checks the branch's review, then pushes and runs gh. If the command only mentions this in text, such as a commit message, put that text in a file and pass the file (git commit -F FILE).`
 
@@ -222,30 +249,25 @@ async function show($: EngineInterface, place: Place | string) {
   await update($, ledgerState, () => record)
 }
 
-function nothingOpen(ledger: Ledger, head: string) {
-  if (ledger.reviewed !== head) return `Nothing is open, but the commits since ${short(ledger.reviewed ?? '')} have not been reviewed.`
-  const high = riskNow(ledger)?.tier === 'high' && ledger.approved?.sha !== head
-  return `Nothing is open. ${ledger.branch} at ${short(head)} is ready for a pull request${high ? ', once the user approves it at the gate: it is high risk' : ''}.`
-}
-
 /**
- * Why a pull request may not be opened or merged for `branch` at `sha`, or undefined when it may:
- * the commit was reviewed, no finding is open, and a high-risk change has the person's approval for
- * that commit, asked for here when it has none.
+ * Why a pull request may not be opened or merged for `branch` at `sha`, or undefined when it may, by
+ * the rule `standing` gives: a high-risk change's approval is asked for here when it has none.
  */
 async function vouch($: EngineInterface, place: Place, branch: string, sha: string, action: 'open' | 'merge'): Promise<string | undefined> {
   const ledger = await load($, place, branch, sha)
-  if (ledger.reviewed !== sha)
+  const now = standing(ledger, sha)
+  if (now.kind === 'ready') return undefined
+  if (now.kind === 'unreviewed')
     return `Review first: ${branch} at ${short(sha)} has not been reviewed${
       ledger.reviewed === undefined ? '' : ` (the last round covered ${short(ledger.reviewed)})`
     }. Call ${REVIEW} with what the change is for, answer each finding, then try again.`
-  const open = openFindings(ledger)
-  if (open.length > 0)
-    return `${branch} has ${open.length} open review finding${open.length === 1 ? '' : 's'}: ${open
+  if (now.kind === 'open')
+    return `${branch} has ${now.open.length} open review finding${now.open.length === 1 ? '' : 's'}: ${now.open
       .map(finding => `${finding.id} (${finding.file}:${finding.line} ${finding.title})`)
       .join('; ')}. Fix each and commit, then call ${REVIEW} again; or dismiss it with ${DISMISS} and a reason.`
-  const risk = riskNow(ledger)
-  if (risk?.tier !== 'high' || ledger.approved?.sha === sha) return undefined
+  if (now.kind === 'reread')
+    return `Review again: ${rereadWhy(now.level)}. Call ${REVIEW} once more; it reads ${short(sha)} at /code-review ${now.level}, and that round settles it.`
+  const { risk } = now
 
   // A person's approval: the dialog is theirs to answer, never the model's.
   const dismissed = ledger.findings.filter(finding => finding.status === 'dismissed')
@@ -311,68 +333,139 @@ async function mergePullRequest($: EngineInterface, place: Place, input: Input):
   return { result: `Merged #${found.number}: ${found.headRefName} at ${short(found.headRefOid)}.` }
 }
 
-// What the reviewers' tools hand back: the output, cut where it runs long, and git's complaint.
-const OUTPUT_CAP = 30_000
-
-function shown(ran: Ran, empty: string) {
-  const out =
-    ran.stdout.length > OUTPUT_CAP
-      ? `${ran.stdout.slice(0, OUTPUT_CAP)}\n… cut at ${OUTPUT_CAP} of ${ran.stdout.length} characters: narrow the command.`
-      : ran.stdout
-  const failed = ran.exitCode !== 0 && ran.stderr.trim() !== '' ? `\n(exit ${ran.exitCode}) ${ran.stderr.trim()}` : ''
-  return `${out}${failed}`.trim() || empty
-}
-
-// The agents' replies, the review's own agents, the folder a round runs in, and whether one runs:
-// the session's, kept here.
+// Agents' replies, the round waiting on its review, the folder it runs in, and whether one runs: the
+// session's, kept here.
 const mail = mailbox()
-const reviewers = new Set<string>()
+// Rung on each event that may have ended a round's review, so the round looks at once.
+const doorbell = bell()
+const desk: { pending?: Pending } = {}
+// The review agents rounds have run, and the agents of theirs a round stopped: their task
+// notifications repeat what the round reported, and none of them is a later round's review.
+const reviews = new Set<string>()
+// Agents the round has found are not its review, so it does not ask about them again.
+const others = new Set<string>()
+// The agents the session had when the round began, none of which is its review.
+let before = new Set<string>()
 let activeRoot: string | undefined
 let busy = false
 
-async function isReviewer($: EngineInterface, agentId: string) {
-  if (reviewers.has(agentId)) return true
-  const agents = await $.agent.list()
-  return agents.some(agent => agent.id === agentId && (agent.type === REVIEWER_TYPE || agent.type === CHECKER_TYPE))
-}
+type Settings = { levelOption: 'auto' | Level; riskModel?: string }
 
-type Settings = { depthOption: 'auto' | Depth; model?: string; riskModel?: string }
+type Wishes = Pick<RoundAsk, 'intent' | 'level' | 'fix' | 'maxFindings' | 'force' | 'signal'>
 
 // One round, for the tool and the command alike; a second is refused while one runs.
-async function round($: EngineInterface, place: Place, settings: Settings, ask: Pick<RoundAsk, 'intent' | 'depth' | 'force' | 'signal'>) {
+async function round($: EngineInterface, place: Place, settings: Settings, wishes: Wishes) {
   if (busy) return { ok: false as const, text: 'A review round is running already: wait for it to finish.' }
   busy = true
   activeRoot = place.root
+  others.clear()
+  before = new Set((await $.agent.list().catch(() => [])).map(agent => agent.id))
+  let isSaved = false
   try {
-    return await runRound($, {
-      ...ask,
+    const now = await $.clock.now()
+    const outcome = await runRound($, {
+      ...wishes,
       ...settings,
       place,
       ledger: await load($, place),
+      token: `${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
       mail,
-      reviewers,
+      desk,
+      bell: doorbell,
       progress: async change => {
         await update($, run, change)
       },
-      callsOf: async agentId => (await read($, memberOf(activity, { requestId: agentId })))?.calls ?? 0,
+      bind: agentId => bind($, agentId),
+      quiet: agentIds => {
+        for (const id of agentIds) reviews.add(id)
+      },
       edit: change => edit($, place, change),
     })
+    isSaved = outcome.ok
+    return outcome
   } finally {
     busy = false
     activeRoot = undefined
-    await update($, run, () => null)
-    await refresh($).catch(() => undefined)
+    // The band's activity for the round's review goes with the round.
+    const shown = (await read($, run).catch(() => null))?.agentId
+    if (shown !== undefined) await update($, memberOf(activity, { requestId: shown }), () => null).catch(() => undefined)
+    await update($, run, () => null).catch(() => undefined)
+    // A round stopped before it saved changed no record, and right after Esc git cannot run, so the
+    // band would read as no repository at all: it keeps what it showed. One that saved is shown.
+    if (isSaved || !wishes.signal.aborted) await refresh($).catch(() => undefined)
   }
 }
 
-// A review agent's tool call as a few words for the band.
+/**
+ * Takes an agent as the round's review, on proof: the agent list says this plugin started it, or the
+ * Skill tool names it. The first proof wins. Every agent proved
+ * a review is remembered, so its task notices are the round's, no later round takes it for its own,
+ * and it never answers at the gate.
+ */
+async function bind($: EngineInterface, agentId: string) {
+  reviews.add(agentId)
+  const pending = desk.pending
+  if (pending === undefined || pending.agentId !== undefined) return
+  pending.agentId = agentId
+  await update($, run, current => (current === null ? current : { ...current, agentId }))
+}
+
+/**
+ * What an agent is to the gate: the round's review; a review of an earlier round, which a notice or a
+ * message can wake once its round is over; or neither. Agents the review starts, as /code-review max
+ * does, are neither: they neither record nor answer at the gate, since the review is known by then.
+ */
+type Scope = 'review' | 'past' | 'other'
+
+async function scopeOf($: EngineInterface, agentId: string): Promise<Scope> {
+  const pending = desk.pending
+  if (pending?.agentId === agentId) return 'review'
+  if (reviews.has(agentId)) return 'past'
+  // Only a round that has yet to learn its review's agent has anyone left to place.
+  if (pending === undefined || pending.agentId !== undefined || others.has(agentId)) return 'other'
+  // The review is listed with this plugin's name from its first call, as a live session shows, so
+  // that call names it. An agent the list does not show is asked about again at its next call.
+  const agent = (await $.agent.list()).find(one => one.id === agentId)
+  if (agent === undefined) return 'other'
+  if (!before.has(agentId) && agent.spawnedBy === PLUGIN) {
+    await bind($, agentId)
+    return 'review'
+  }
+  if (!before.has(agentId) && agent.spawnedBy === undefined && agent.parentId === undefined) pending.untagged.add(agentId)
+  others.add(agentId)
+  return 'other'
+}
+
+/**
+ * Whether an agent is the round's review or one under it, as /code-review max's angle agents are, so
+ * its turns count in the round's cost.
+ */
+async function isReviewTeam($: EngineInterface, pending: Pending, agentId: string) {
+  if (pending.agentId === undefined) return false
+  if (pending.agentId === agentId || pending.team.has(agentId)) return true
+  if (pending.strangers.has(agentId)) return false
+  const agents = await $.agent.list().catch(() => [])
+  const team = teamOf(agents, pending.agentId)
+  for (const id of team) if (id !== pending.agentId) pending.team.add(id)
+  // An agent listed outside the team stays outside it: its parent is fixed, and listed before it.
+  if (!team.has(agentId) && agents.some(one => one.id === agentId)) pending.strangers.add(agentId)
+  return team.has(agentId)
+}
+
+// No agent answers at the gate: a finding's answer and a pull request are the session's main
+// conversation's to give, so no subagent can, a review or an agent it started included.
+const isSubagent = (agentId: string | undefined) => agentId !== undefined
+
+// The review's tool call as a few words for the band.
 function describeCall(e: { tool: string } & Record<string, unknown>) {
   const root = activeRoot === undefined ? '' : `${activeRoot}/`
   const path = (value: unknown) => asText(value).replace(root, '')
-  if (e.tool === 'Read') return `reading ${path(e.file_path)}`
-  if (e.tool === GIT_TOOL) return `git ${(Array.isArray(e.args) ? e.args : []).map(asText).join(' ')}`.slice(0, 80)
-  if (e.tool === SEARCH_TOOL) return `searching "${asText(e.pattern).slice(0, 40)}"${asText(e.path) === '' ? '' : ` in ${path(e.path)}`}`
-  return e.tool
+  const tool = String(e.tool)
+  if (tool === 'Read') return `reading ${path(e.file_path)}`
+  if (tool === 'Bash') return `$ ${asText(e.command).split('\n')[0] ?? ''}`.slice(0, 80)
+  if (tool === 'Grep' || tool === 'Glob') return `searching "${asText(e.pattern).slice(0, 40)}"`
+  if (tool === RECORD) return 'recording its findings'
+  return tool
 }
 
 // A plugin tool's result as its row holds it: the text, or text blocks.
@@ -392,27 +485,49 @@ async function roundCard($: EngineInterface, e: RenderInput, text: string) {
   return card($, e, record, Number(named[1]), await read($, repo))
 }
 
+/**
+ * What the person asked of a round they started: a level, --fix, and --max-findings with its
+ * value. A pull request's number and --comment are refused with the reason, as is anything else.
+ */
+export function parseRun(args: string): Pick<Wishes, 'level' | 'fix' | 'maxFindings'> | string {
+  const words = args.trim().split(/\s+/).filter(word => word !== '')
+  let level: Level | undefined
+  let fix = false
+  let maxFindings: string | undefined
+  for (let at = 0; at < words.length; at++) {
+    const word = words[at] ?? ''
+    const lower = word.toLowerCase()
+    if (level === undefined && isLevel(lower)) level = lower
+    else if (lower === '--fix') fix = true
+    else if (lower === '--max-findings') {
+      const value = (words[at + 1] ?? '').toLowerCase()
+      if (!/^(\d+|all|default)$/.test(value)) return `--max-findings takes a number, all or default${value === '' ? '' : `, not ${words[at + 1]}`}. ${USAGE}`
+      maxFindings = value
+      at += 1
+    } else if (/^#?\d+$/.test(word))
+      return `review-gate reviews the branch checked out, so ${word} is not a target: check out the pull request's branch (gh pr checkout ${word.replace('#', '')}) and run /review-gate there.`
+    else if (lower === '--comment')
+      return 'review-gate does not pass --comment: its review runs before the pull request is opened. Run /code-review --comment on the pull request for that.'
+    else return `${word} is not something /review-gate takes. ${USAGE}`
+  }
+  return { ...(level === undefined ? {} : { level }), fix, ...(maxFindings === undefined ? {} : { maxFindings }) }
+}
+
 const choice = (value: unknown) => (typeof value === 'string' && value !== '' && value !== 'inherit' ? value : undefined)
 
 export const register: Register = (on, options) => {
-  const model = choice(options.model)
   const riskModel = choice(options.riskModel)
   const settings: Settings = {
-    depthOption: DEPTH_NAMES.find(name => name === options.depth) ?? 'auto',
-    ...(model === undefined ? {} : { model }),
+    levelOption: LEVELS.find(name => name === options.level) ?? 'auto',
     ...(riskModel === undefined ? {} : { riskModel }),
   }
 
   on('session.start', async ($, e, next) => {
-    for (const tool of [REVIEW_TOOL, DISMISS_TOOL, PULL_REQUEST_TOOL, GIT_TOOL_SPEC, SEARCH_TOOL_SPEC]) await $.tool.register(tool)
-    // Medium effort and a turn limit keep each agent's thinking and its context in bounds.
-    const agent = { tools: ['Read', GIT_TOOL, SEARCH_TOOL], model: 'inherit', effort: 'medium', maxTurns: 40 }
-    await $.agent.register({ name: 'reviewer', description: 'Reviews a change for one kind of defect. review-gate runs it.', prompt: REVIEWER, ...agent })
-    await $.agent.register({ name: 'checker', description: 'Votes on review findings. review-gate runs it.', prompt: CHECKER, ...agent })
+    for (const tool of [REVIEW_TOOL, RECORD_TOOL, DISMISS_TOOL, PULL_REQUEST_TOOL]) await $.tool.register(tool)
     await $.command.register({
       name: COMMAND,
-      description: 'Review this branch now, or see where its review stands',
-      argumentHint: '[quick | standard | deep | status | more | reset]',
+      description: 'Review this branch now with /code-review, or see where its review stands',
+      argumentHint: '[low | medium | high | xhigh | max] [--fix] [--max-findings <n|all>] | status | more | reset',
     })
     // A round a reload cut short left its progress behind.
     await update($, run, () => null)
@@ -420,15 +535,54 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // The review's own agents are its to run: the model is not offered them.
-  on('agent.offer', { agent: 'review-gate:reviewer' }, () => ({ isOffered: false })).catch(() => ({ isOffered: false }))
-  on('agent.offer', { agent: 'review-gate:checker' }, () => ({ isOffered: false })).catch(() => ({ isOffered: false }))
+  // A review's outcome reaches the conversation as the round's result. The notification the engine
+  // also sends for a review run in the background would hand the model /code-review's raw report a
+  // second time, findings the round left out included, so it is dropped.
+  on('prompt.submit', async (_, e, next) => {
+    if (e.origin.kind !== 'task-notification') return next(e)
+    const ids = [...reviews, desk.pending?.agentId].filter((one): one is string => one !== undefined && e.text.includes(`<task-id>${one}</task-id>`))
+    if (ids.length === 0) return next(e)
+    doorbell.ring()
+    // A delivery may carry other tasks' notices beside the review's: only the review's go, and the
+    // rest passes on. A review's id left outside any notice the hook can read, or a delivery with no
+    // other notice left, is dropped whole, so the review's raw report never reaches the model.
+    const text = e.text.replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g, notice =>
+      ids.some(id => notice.includes(`<task-id>${id}</task-id>`)) ? '' : notice,
+    )
+    const isClean = !ids.some(id => text.includes(`<task-id>${id}</task-id>`))
+    if (isClean && /<task-notification\b/.test(text)) return next({ ...e, text })
+    return { drop: 'review-gate: duplicate review report skipped' }
+  }).catch((_, e, next) => next(e))
 
   // A subagent's reply is its turn's end; the main thread's end is a moment to look at git again.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId !== undefined) mail.settle(e.agentId, e.answer, e.usage)
+    if (e.agentId !== undefined) {
+      // The turn's cost is counted before the round is woken, so the round never sums it too early.
+      const pending = desk.pending
+      if (pending !== undefined && (await isReviewTeam($, pending, e.agentId))) pending.tokens = plus(pending.tokens, e.usage)
+      mail.settle(e.agentId, e.answer, e.usage)
+      doorbell.ring()
+    }
     else await refresh($).catch(() => undefined)
     return next(e)
+  })
+
+  // The round's review is /code-review with a section of the round's added: its scope, what the
+  // branch has had, the findings to look at again, and how to hand back what it found.
+  on('skill.prompt', { skill: SKILL }, async (_, e, next) => {
+    const computed = await next(e)
+    const pending = desk.pending
+    if (pending === undefined || pending.isBriefed) return computed
+    pending.isBriefed = true
+    // Only Claude Code's own /code-review is the gate's review: another skill of its name, such as one
+    // the branch adds, is told to stop, and the round refuses it.
+    if (e.source !== 'built-in') {
+      pending.shadowed = e.pluginName === undefined ? `its ${e.source} skills` : `the ${e.pluginName} plugin`
+      return { text: `review-gate will not run this skill as its review. Do nothing, and answer only: "Not run: this is not Claude Code's own ${SKILL}."` }
+    }
+    const cap = capOf(computed.text)
+    if (cap !== undefined) pending.cap = cap
+    return { text: `${computed.text}\n\n${reviewSection(pending.plan)}` }
   })
 
   // A pull request is opened and merged by the gate's own tool: a shell command that does either is
@@ -437,21 +591,18 @@ export const register: Register = (on, options) => {
     next.called ? next(e) : { deny: RAW_PR_REFUSAL },
   )
 
-  // What each of the review's agents is doing, for the band: its calls so far, and its latest.
+  // What the review's agent is doing, for the band: its calls so far, and its latest. Its first call
+  // names it, so the count is whole. The round keeps its own count: the band's activity is display
+  // state, which the engine keeps for drawn rows.
   on('tool.call', async ($, e, next) => {
-    if (e.agentId !== undefined && reviewers.has(e.agentId)) {
+    const pending = desk.pending
+    if (e.agentId !== undefined && pending !== undefined && (await scopeOf($, e.agentId)) === 'review') {
+      pending.calls += 1
       const doing = describeCall(e)
       await update($, memberOf(activity, { requestId: e.agentId }), last => ({ calls: (last?.calls ?? 0) + 1, doing }))
     }
     return next(e)
   }).catch((_, e, next) => next(e))
-
-  // The review's agents have no shell: they read through review_git and review_search.
-  on('tool.call', { tool: 'Bash' }, async ($, e, next) =>
-    e.agentId !== undefined && (await isReviewer($, e.agentId))
-      ? { deny: 'review-gate: reviewers have no shell. Read files with Read, and use review_git and review_search.' }
-      : next(e),
-  ).catch((_, e, next) => (next.called || !reviewers.has(e.agentId ?? '') ? next(e) : { deny: 'review-gate: reviewers have no shell.' }))
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
@@ -459,35 +610,79 @@ export const register: Register = (on, options) => {
     return ran
   }).catch((_, e, next) => next(e))
 
-  on('tool.call', { tool: GIT_TOOL }, async ($, e) => {
-    if (e.agentId === undefined || !(await isReviewer($, e.agentId))) return { deny: "review_git is for review-gate's own reviewers and checkers." }
-    const args = (Array.isArray(e.args) ? e.args : []).filter((arg): arg is string => typeof arg === 'string')
-    const refusal = gitArgsRefusal(args)
-    if (refusal !== undefined) return { deny: `review-gate: ${refusal}.` }
-    const ran = await runIn($, gitArgv(args), activeRoot ?? (await $.session.cwd()), 60_000)
-    return { result: shown(ran, '(no output)') }
-  }).catch(() => ({ deny: 'review-gate: the git command could not be run.' }))
-
-  on('tool.call', { tool: SEARCH_TOOL }, async ($, e) => {
-    if (e.agentId === undefined || !(await isReviewer($, e.agentId))) return { deny: "review_search is for review-gate's own reviewers and checkers." }
-    const pattern = asText(e.pattern)
-    if (pattern === '') return { deny: 'Give a pattern to search for.' }
-    const search: Search = {
-      pattern,
-      path: asText(e.path),
-      glob: asText(e.glob),
-      ignoreCase: e.ignoreCase === true,
-      fixed: e.fixed === true,
-      context: typeof e.context === 'number' ? e.context : 0,
+  // The review hands back its findings here: only the round's own review, naming the round, once.
+  // Another agent that has the round's name, such as one the review started, or another /code-review
+  // briefed by mistake, records nothing. The agent list names the review at its first call; a review
+  // it does not name cannot record, and is told why.
+  on('tool.call', { tool: RECORD }, async ($, e) => {
+    const pending = desk.pending
+    const refusal = "record takes the findings of review-gate's own review round, from its review, with the round its instructions name."
+    if (pending === undefined || e.agentId === undefined || asText(e.round).trim() !== pending.plan.token) return { deny: refusal }
+    const scope = await scopeOf($, e.agentId)
+    if (scope !== 'review' && pending.untagged.has(e.agentId)) {
+      pending.isUnplaced = true
+      doorbell.ring()
     }
-    const cwd = activeRoot ?? (await $.session.cwd())
-    // ripgrep exits 1 for no match and 2 for an error; where it cannot start, git grep searches.
-    const rg = await $.process.run(rgArgv(search), { cwd, timeoutMs: 60_000 }).catch(() => undefined)
-    const ran = rg ?? (await runIn($, gitGrepArgv(search), cwd, 60_000))
-    return { result: shown(ran, 'No matches.') }
-  }).catch(() => ({ deny: 'review-gate: the search could not be run.' }))
+    if (scope !== 'review')
+      return {
+        deny:
+          pending.untagged.has(e.agentId)
+            ? `${refusal} The agent list does not name review-gate as this agent's starter, so the gate cannot tell it is the round's review. Say so in your answer.`
+            : refusal,
+      }
+    // The findings are about the commit the round began at: when the repository changed before they
+    // are recorded, the round cannot say what the review read, and records nothing.
+    if (pending.record === undefined) {
+      const drifted = await pending.drift()
+      if (drifted !== undefined) {
+        pending.drifted = drifted
+        doorbell.ring()
+        return { deny: 'The repository changed while you read it, so this round records nothing. Finish without recording.' }
+      }
+    }
+    // With --fix, a second call says what the review fixed.
+    const fixes = readFixes(e)
+    if (pending.record !== undefined) {
+      if (!pending.plan.fix || fixes === undefined || pending.fixes !== undefined)
+        return { deny: `Round ${pending.plan.n}'s findings are recorded already: finish as your instructions say.` }
+      const known = new Set([...pending.record.added.map(one => one.id), ...pending.plan.earlier.filter(one => one.status === 'open').map(one => one.id)])
+      const unknown = fixes.filter(one => !known.has(one.id)).map(one => one.id)
+      if (unknown.length > 0) return { deny: `Round ${pending.plan.n} has no open finding ${unknown.join(', ')}: give the ids its first reply named.` }
+      pending.fixes = fixes
+      mail.forget(e.agentId)
+      doorbell.ring()
+      const applied = fixes.filter(one => one.applied).length
+      return { result: `Recorded ${applied} fix${applied === 1 ? '' : 'es'} in the working tree. End with two or three sentences: review-gate shows the findings and fixes itself.` }
+    }
+    if (fixes !== undefined && !Array.isArray(e.findings)) return { deny: 'Record the findings first, then the fixes in a second call.' }
+    const read = readRecord(e, pending.changed, pending.plan.root)
+    if (typeof read === 'string') return { deny: read }
+    // A finding in a file REVIEW.md skips is left out, as the repository asked.
+    const kept = read.findings.filter(finding => !pending.isSkipped(finding.file))
+    // The ids the review is told here are the ones the round saves.
+    const { added, repeats, nitsLeft } = sortOut(kept, pending.plan.n, pending.plan.earlier)
+    const skippedOut = read.findings.length - kept.length
+    const record = { raised: read.findings.length, rechecked: read.rechecked, added, repeats, nitsLeft, skippedOut }
+    pending.record = record
+    // The review's closing words come in a turn's end after this call: one before it is stale.
+    mail.forget(e.agentId)
+    doorbell.ring()
+    const left = [
+      repeats > 0 ? `${repeats} the branch has had before` : '',
+      nitsLeft > 0 ? `${nitsLeft} nit${nitsLeft === 1 ? '' : 's'} past the ${NIT_CAP} a round raises` : '',
+      skippedOut > 0 ? `${skippedOut} in files REVIEW.md skips` : '',
+    ].filter(part => part !== '')
+    return {
+      result: `Recorded round ${pending.plan.n}: ${
+        added.length === 0 ? 'no new findings' : added.map(finding => `${finding.id} ${whereOf(finding)} ${finding.title}`).join('; ')
+      }.${left.length > 0 ? ` Left out: ${left.join(', ')}.` : ''} ${
+        owesFixes(pending) ? 'Now fix them, then record the fixes as your instructions say.' : pending.plan.fix ? 'There is nothing to fix: finish as your instructions say.' : 'Finish as your instructions say.'
+      }`,
+    }
+  }).catch(() => ({ deny: 'review-gate: the findings could not be recorded.' }))
 
   on('tool.call', { tool: PULL_REQUEST }, async ($, e) => {
+    if (isSubagent(e.agentId)) return { deny: 'review-gate: pull requests are opened and merged from the main conversation, not by an agent.' }
     const place = await locate($, await cwdOf($, e.path))
     if (typeof place === 'string') return { deny: place }
     if (e.action === 'open') return openPullRequest($, place, e)
@@ -498,17 +693,25 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: REVIEW }, async ($, e, next) => {
     const place = await locate($, await cwdOf($, e.path))
     if (typeof place === 'string') return { deny: place }
-    const depth = DEPTH_NAMES.find(name => name === e.depth)
+    // max is the person's to ask for: the model's tool offers the levels below it, and a call that
+    // names it anyway gets the level the risk picks.
+    const asked: unknown = e.level
+    const level = isLevel(asked) && asked !== 'max' ? asked : undefined
     const outcome = await round($, place, settings, {
       intent: asText(e.intent),
-      ...(depth === undefined ? {} : { depth }),
+      ...(level === undefined ? {} : { level }),
+      fix: e.fix === true,
       force: false,
       signal: next.signal,
     })
     return outcome.ok ? { result: outcome.text } : { deny: outcome.text }
-  }).catch((_, e, next) => ({ deny: `review-gate: the review failed${next.error?.message ? `: ${next.error.message}` : ''}. Nothing was recorded.` }))
+  }).catch((_, _e, next) => ({ deny: `review-gate: the review failed${next.error?.message ? `: ${next.error.message}` : ''}. Nothing was recorded.` }))
 
   on('tool.call', { tool: DISMISS }, async ($, e) => {
+    if (isSubagent(e.agentId))
+      return {
+        deny: 'review-gate: findings are answered from the main conversation, not by an agent. A review hands back what it found with record.',
+      }
     const ids = (Array.isArray(e.ids) ? e.ids : [e.ids]).map(id => asText(id).trim().toUpperCase()).filter(id => id !== '')
     const reason = asText(e.reason).trim()
     if (ids.length === 0) return { deny: 'Name the findings to dismiss, such as ["R2-1"].' }
@@ -536,7 +739,7 @@ export const register: Register = (on, options) => {
   }).catch(() => ({ deny: 'review-gate: the dismissal failed, so nothing changed.' }))
 
   on('command.run', { command: COMMAND }, async ($, e, next) => {
-    const verb = e.args.trim().split(/\s+/)[0]?.toLowerCase() || 'run'
+    const verb = e.args.trim().split(/\s+/)[0]?.toLowerCase() ?? ''
     const isPerson = e.origin?.kind === 'composer' || e.origin?.kind === 'bridge'
     const place = await locate($, await $.session.cwd())
     if (typeof place === 'string') return { text: place }
@@ -561,18 +764,17 @@ export const register: Register = (on, options) => {
       await update($, ledgerState, () => emptyLedger(place.branch))
       return { text: `Forgot ${place.branch}'s review record: ${ledger.rounds.length} rounds and ${ledger.findings.length} findings.` }
     }
-    const depth = DEPTH_NAMES.find(name => name === verb)
-    if (verb !== 'run' && depth === undefined) return { text: USAGE }
-    const outcome = await round($, place, settings, { intent: '', ...(depth === undefined ? {} : { depth }), force: isPerson, signal: next.signal })
+    const wishes = parseRun(e.args)
+    if (typeof wishes === 'string') return { text: wishes }
+    const outcome = await round($, place, settings, { intent: '', ...wishes, force: isPerson, signal: next.signal })
     return { text: outcome.text }
-  }).catch((_, e, next) => ({ text: `review-gate: the command failed${next.error?.message ? `: ${next.error.message}` : ''}.` }))
+  }).catch((_, _e, next) => ({ text: `review-gate: the command failed${next.error?.message ? `: ${next.error.message}` : ''}.` }))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
     const live = await read($, run)
-    const doing = new Map<string, Activity | null>()
-    for (const agent of live?.agents ?? []) doing.set(agent.id, await read($, memberOf(activity, { requestId: agent.id })))
+    const doing = live?.agentId === undefined ? null : await read($, memberOf(activity, { requestId: live.agentId }))
     const mine = band($, e, await read($, repo), await read($, ledgerState), live, doing, await $.clock.now())
     if (mine === undefined) return below
     const { Box } = $.ui.resolve(e)

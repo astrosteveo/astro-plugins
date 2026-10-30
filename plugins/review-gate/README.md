@@ -1,26 +1,32 @@
 # review-gate
 
-Reviews a branch before its pull request, and opens or merges the pull request only once the review passes. It follows [How the Claude Code team does code review](https://claude.dev/blog/solving-code-review-at-anthropic/): agents do most of the reading, every finding gets an answer, review stops when it no longer converges, and a person approves the changes that carry the most risk.
+Reviews a branch before its pull request, and opens or merges the pull request only once the review passes. The review is Claude Code's own `/code-review`: review-gate runs it, keeps what it finds in a record for the branch, and holds the pull request until every finding is answered. It follows [How the Claude Code team does code review](https://claude.dev/blog/solving-code-review-at-anthropic/): agents do most of the reading, every finding gets an answer, review stops when it no longer converges, and a person approves the changes that carry the most risk.
 
 ## How a review runs
 
-Claude calls the `review` tool once a change is committed and its checks pass. The tool compares the branch with the default branch (origin's copy where there is one) and sends reviewer agents over the diff in parallel, each with one focus: correctness, failure paths, fit with the rest of the code, and security, plus state and data in a deep round. Checker agents then vote on each candidate. A finding stands only when most of them hold it real, and they grade it important, nit or pre-existing and say whether it is a security hole.
+Claude calls the `review` tool once a change is committed and its checks pass. The tool compares the branch with the default branch (origin's copy where there is one), judges the change's risk, and runs `/code-review` through the Skill tool at the level that risk calls for. It adds a section to the skill's prompt that gives the round's scope and lists the findings the branch has had, marking the open ones to look at again. The section tells the review to hand its findings to the plugin's `record` tool before it writes its answer. The record tool takes them only from that review, for that round, once. Only Claude Code's own `/code-review` counts: a project's or a person's skill of the same name, which a branch could add, is told to stop, and the round refuses it.
 
-Reviewers leave out style, naming and missing tests, report a recurring mistake once with every place it occurs, and keep to three nits a round. They have no shell: they read files with Read, run git's reading commands through a `review_git` tool and search with a `review_search` tool. Both run their program by its arguments, with no shell to expand them, and `review_git` takes only the subcommands that read.
+When the Skill tool runs the review in the background, the round is done when the review has handed back everything it owes through `record`: its findings, and with `--fix` its fixes too, when it has any to fix. The round then waits up to a minute and a half for the review's closing words, whose turn also carries its cost, and stops it, with any agents it started, so none runs on unseen. A review that ends without recording is caught through the agent list: one listed as ended, or one left idle with nothing of its own at work for five minutes. The wait is that long because an idle review may only be waiting on a background agent or shell to wake it.
 
-The first round reads the whole branch. Later rounds read only the commits since the last one and run at most at standard depth, and their checkers look again at every open finding, since a fix may sit in another file. A finding the branch has had is never raised again. A round that loses agents keeps what it found but leaves its commit unreviewed, so the next round covers what they missed. After three rounds in a row end with findings open, the tool refuses a fourth and tells Claude to step back and talk to you.
+Each finding the review reports becomes `R<round>-<n>` in the branch's record, graded from what the review said. It is a security finding when it lets someone do what they should not, pre-existing when the defect was there before the branch, a nit when the review files it as cleanup (reuse, simplification, efficiency), and important otherwise. A finding the branch has had, in any state, is never raised again. A round raises at most three nits, since each one needs an answer before the pull request, and says how many it left out.
 
-Every finding needs an answer. Claude fixes it and commits, and the next round confirms the fix; or it dismisses the finding with a reason through the `dismiss` tool, and the reason shows in the card.
+The first round reads the whole branch. Later rounds read only the commits since the last one, and the review looks again at every open finding, since a fix may sit in another file. Those it finds fixed are closed. A review that reports as many findings as its level allows may have left some out, so the next round reads the whole branch again, at that review's level at least, and the pull request waits for it even when every finding is answered. After three rounds in a row end with findings open, the tool refuses a fourth and tells Claude to step back and talk to you.
+
+Every finding needs an answer. Claude fixes it and commits, and the next round confirms the fix; or it dismisses the finding with a reason through the `dismiss` tool, and the reason shows in the card. Called with `fix`, the review also fixes what it found in the working tree once it has recorded it, then tells the gate which findings it fixed and why it left the rest. The round, its card and the band show those findings as fixed by the review and not yet confirmed, apart from the ones that still need an answer. The fixes stay uncommitted: Claude commits the ones it keeps, and the next round confirms each fix and closes its finding, or leaves it open.
+
+The review works as `/code-review` does when you run it yourself: with the session's tools and permission mode, so `max` hands its angles to agents of their own, and a review may run a test to check a finding. Without `fix`, a command that leaves a file changed, such as a test that writes a snapshot git does not ignore, makes the round record nothing, as the rules below say. review-gate adds only what it needs to keep the record: the round's section in the prompt, the `record` tool, and the checks below. A branch may be someone else's, such as a pull request checked out to review it; review code you do not trust in a permission mode that asks before commands run, or in a sandbox, as you would with `/code-review`.
+
+A round reviews one commit. It refuses to start while files have changes the commit does not hold, new files included. It records nothing if HEAD moves while it runs, or if files change before the review records what it read, or, without `fix`, at any point: the review may have read the change, and the record would vouch for a commit the review did not read. Files that change once a `fix` review has recorded are listed as changed while the round ran; the gate cannot tell the review's edits from anyone else's, so the review's fixes stay its word until the next round confirms them.
 
 ## Risk
 
 Before each round a classifier reads the branch's whole diff, files REVIEW.md skips included, and judges its risk from the code, not from a list of paths. Low is a change where nothing that runs can break, such as docs or tests alone. Medium is an ordinary change to behaviour. High is code where a missed defect could do lasting harm: code that decides what may run or who may act, runs commands or reads outside input, handles secrets, deletes or migrates data, or changes how the project is built, released or installed. The classifier gives its reasons, and a security finding that is not fixed also makes a change high risk. If it gives no verdict after two tries, the change counts as high. A commit judged once keeps its verdict.
 
-Risk picks the depth: quick (2 reviewers, 1 checker) for low, standard (4 and 3) for medium, and deep (5 and 3) for high.
+Risk picks the level: `medium` for low, `high` for medium, and `xhigh` for high. A round over new commits alone runs at most at `high`, unless the `review` call or `/review-gate` names its level.
 
 ## Pull requests
 
-Claude opens and merges pull requests through the `pull_request` tool. `open` pushes the reviewed commit to the branch on origin, by its id, and runs `gh pr create`. `merge` runs `gh pr merge` with `--match-head-commit`, so gh refuses if the pull request's head moves away from the reviewed commit. Both are refused until that commit has been reviewed and no finding is open. A review covers one commit, so a commit made after it needs a round of its own.
+Claude opens and merges pull requests through the `pull_request` tool. `open` pushes the reviewed commit to the branch on origin, by its id, and runs `gh pr create`. `merge` runs `gh pr merge` with `--match-head-commit`, so gh refuses if the pull request's head moves away from the reviewed commit. Both are refused until that commit has been reviewed, no finding is open, and a round that reported as many findings as its level allows has been followed by one as deep over the same commit. A review covers one commit, so a commit made after it needs a round of its own.
 
 For a high-risk change, the tool asks you in Claude Code's question dialog to approve that commit before its pull request is opened or merged. Claude cannot answer the dialog, and the approval holds for that commit alone.
 
@@ -28,36 +34,32 @@ A shell command that runs `gh pr create`, `gh pr new` or `gh pr merge` is refuse
 
 ## Cost and time
 
-- Reviewers and checkers run on Sonnet, and the risk classifier on Haiku, unless `/config` says otherwise. The agents think at medium effort and take at most 40 turns, and a tool's output is cut at 30,000 characters, so their contexts stay small.
-- The checkers share one prompt. The first starts alone and the rest a few seconds later, so they read its prompt from the prompt cache. The classifier marks its prompt for the cache too, for a second try.
-- Once the votes so far settle every finding, the checkers still at work are stopped. Once all but one agent of a phase has answered, the last gets three more minutes, and no phase runs past ten.
-- Each round records how long it took and the tokens it spent, with the share read from the cache, and the card shows them.
+- The review runs on the session's model, as `/code-review` does, and the risk classifier on Haiku unless `/config` says otherwise.
+- A round is one review agent, so it costs about what `/code-review` at that level costs on its own, plus the classifier's few thousand tokens. Later rounds read only the new commits, so they cost less.
+- Each round records how long it took, the tokens the review, the agents it started and the classifier spent with the share read from the cache, and the review's tool calls. The card shows them.
 
 ## In the terminal
 
-While a round runs, the band above the prompt shows it agent by agent:
+While a round runs, the band above the prompt shows it:
 
 ```
-review · round 3 · reviewing 2 of 4 · 6m 10s
-  ✓ correctness     4m 02s · 31 calls · raised 2
-  ● failure paths   6m 10s · 44 calls · reading hooks/review.ts   [ watch ]
-  ✓ fit             3m 40s · 22 calls · raised 0
-  ● security        6m 10s · 38 calls · git log -p -- hooks/guard.ts   [ watch ]
-  raised so far: git grep cannot search one file · the push sends a commit made after the review
+review · round 2 · /code-review high · 3m 10s
+  ● 31 calls · reading src/app.ts   [ watch ]
 ```
 
-Each line is an agent of the phase: done or running, its time and tool calls, and what it is doing now or what it raised. A finding shows under "raised so far" as soon as a reviewer answers, before the checkers vote on it. `watch` opens that agent's own transcript.
+The second line is the review's agent: its tool calls so far, and what it is doing now. `watch` opens its transcript.
 
-Between rounds the band says where the branch stands: findings open, commits not reviewed yet, or a commit ready for its pull request, with a note when it waits for your approval. A review's row in the chat draws as a card that lists each finding with its grade, place and votes; fixed ones are ticked, and dismissed ones show their reason. Its last line gives each agent's time, so a slow round shows where its time went. ctrl+o shows the text Claude read.
+Between rounds the band says where the branch stands: fixes the review made, waiting for a round to confirm them, findings open, commits not reviewed yet, a round over the same commit owed after one that hit its finding limit, or a commit ready for its pull request, with a note when it waits for your approval. A review's row in the chat draws as a card that lists each finding with its grade, place and the review's category for it; fixed ones are ticked, the review's own fixes are marked as not yet confirmed, and dismissed ones show their reason. ctrl+o shows the text Claude read. When the review ran in the background, the engine's notice of its end is kept out of the conversation, since the round's result already holds its findings.
 
-- `/review-gate` runs a round now; `/review-gate quick`, `standard` or `deep` picks its depth. Your run goes past the cap and reviews a commit again.
+- `/review-gate` runs a round now. `/review-gate low`, `medium`, `high`, `xhigh` or `max` picks its level. Add `--fix` to let the review fix what it finds, and `--max-findings <n|all|default>` to pass `/code-review` its limit, which it keeps for later runs. Your run goes past the cap and reviews a commit again.
+- A pull request's number is not a target: the gate reviews the branch checked out, so run `gh pr checkout <n>` first. `--comment` is not passed, since the review runs before the pull request exists.
 - `/review-gate status` shows the latest round.
 - `/review-gate more` allows three more rounds after the cap.
 - `/review-gate reset` forgets the branch's record.
 
 ## REVIEW.md
 
-A REVIEW.md at the root, or in any folder above a changed file, goes to every reviewer and checker, and to the risk classifier. It is read as it stands where the branch forked from the default branch, so a branch cannot loosen its own review. Say what a defect looks like in that code. A Skip heading is read as a list of globs, written as in .gitignore and relative to the file's folder, for files to leave out of the diff the agents read:
+A REVIEW.md at the root, or in any folder above a changed file, goes to the review and to the risk classifier. It is read as it stands where the branch forked from the default branch, so a branch cannot loosen its own review. Say what a defect looks like in that code. A Skip heading is read as a list of globs, written as in .gitignore and relative to the file's folder, for files the review leaves out, and a finding the review reports in such a file is left out too. When every file a round covers is skipped, no review runs, unless the branch has open findings: a fix may sit in a skipped file, so the review still looks at them again.
 
 ```markdown
 ## Skip
@@ -67,23 +69,24 @@ A REVIEW.md at the root, or in any folder above a changed file, goes to every re
 
 ## Where the record lives
 
-Each branch's record of rounds, findings, answers and your approval is kept in the plugin's own store, outside the repository, so it lasts across sessions and is never committed. A record keeps who made the branch's first commit and when, which survives a rebase, so a later branch under the same name starts with none. A record goes when its branch is deleted.
+Each branch's record of rounds, findings, answers and your approval is kept in the plugin's own store, outside the repository, so it lasts across sessions and is never committed. A record keeps who made the branch's first commit and when, which survives a rebase, so a later branch under the same name starts with none. A record goes when its branch is deleted. A record from version 0.1, whose rounds ran review-gate's own reviewer agents, reads as none, so its branch is reviewed again.
 
 ## Options
 
 In `/config`:
 
-- **Review depth** is `auto` by default, which picks by risk, or always `quick`, `standard` or `deep`.
-- **Reviewer model** is `sonnet` by default; `inherit` runs the agents on the session's model.
-- **Risk model** is `haiku` by default; `inherit` uses the reviewer model.
+- **Review level** is `auto` by default, which picks by risk, or one of `low`, `medium`, `high`, `xhigh` or `max`. A round over new commits alone still runs at most at `high`.
+- **Risk model** is `haiku` by default; `inherit` uses the session's model.
 
 ## Limits
 
-- A round runs one agent per reviewer and per checker, 3, 7 or 8 of them, and one completion for the risk.
+- A round runs one `/code-review` agent and one completion for the risk.
+- The record depends on the review calling the `record` tool as the added section asks. A review that ends without doing so records no round, and Claude reviews again.
+- A review reports at most what its level allows, 10 findings at `high`. The next round then reads the whole branch, at that level at least, and the pull request waits for it.
 - The gate sees pull requests that a Claude Code session opens or merges. One opened on github.com, or from another shell, does not pass through it.
 - The record belongs to one machine; another clone or machine starts with none.
 - It guards a workflow and is not a sandbox. The match does not read a script file run by name, and a model that sets out to hide a gh command from it, or to forge the plugin's store, can.
-- It needs git, gh, and the `sleep` command; ripgrep is used when installed, and git grep when not. Windows is not supported.
+- It needs git, gh, and the `sleep` command. Windows is not supported.
 
 The article's other layers, a merge queue, feature flags, staged releases and an eval built from past incidents, belong to CI and release tooling, so this mod leaves them out.
 

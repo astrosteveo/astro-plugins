@@ -30,7 +30,7 @@
     {
       "name": "review-gate",
       "source": "./plugins/review-gate",
-      "description": "Reviews a branch before its pull request with parallel reviewer agents and checkers that vote, keeps every finding until it is fixed or dismissed with a reason, and opens and merges the pull request only for the reviewed commit."
+      "description": "Reviews a branch before its pull request with Claude Code's /code-review, keeps every finding until it is fixed or dismissed with a reason, and opens and merges the pull request only for the reviewed commit."
     }
   ]
 }
