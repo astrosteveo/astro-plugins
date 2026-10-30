@@ -2,7 +2,7 @@ import type { EngineInterface, ModelUsage } from 'claude-code'
 import type { Finding, Ledger, Level, Risk, Round, Run, Tokens } from '../types'
 import { changedFiles, commitLog, diffOf, firstCommit, guideFiles, headNow, isAncestor, short, uncommitted } from './git'
 import type { Place } from './git'
-import { LEVELS, NIT_CAP, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, isApplied, isCapped, levelFor, openFindings, parseGuide, riskNow, riskWith, spent, streak, whereOf } from './ledger'
+import { LEVELS, NIT_CAP, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, isApplied, isCapped, levelFor, openFindings, parseGuide, riskNow, riskWith, spent, streak, wantsReread, whereOf } from './ledger'
 import type { Recheck } from './ledger'
 import { RISK, readRisk, riskPrompt } from './prompts'
 import type { Context, Fix, Plan } from './prompts'
@@ -91,8 +91,8 @@ export type Pending = {
   calls: number
   /** What the review's turns have cost so far. */
   tokens: Tokens
-  /** Set when a new agent no plugin named made calls while the review was unknown: likely the review, untagged. */
-  untagged?: boolean
+  /** A new agent no plugin named that made calls while the review was unknown: likely the review, untagged. */
+  untagged?: string
   /**
    * Why the round records nothing because the repository is no longer as it found it, or undefined
    * while it is: HEAD moved, or a file changed. The record call asks before it takes the findings.
@@ -304,8 +304,12 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   const { place, ledger } = ask
   const git = place.git
   if (place.branch === '') return refuse('HEAD is detached: check out the branch the change is on, then review it.')
-  if (place.main === '' || place.base === '')
+  if (place.main === '' || place.mainRef === '')
     return refuse(`${place.root} has no default branch to compare against: no main, master or trunk, here or on origin.`)
+  if (place.base === '')
+    return refuse(
+      `git finds no commit ${place.branch} shares with ${place.mainRef}, so there is nothing to compare it against. In a shallow clone, fetch the history (git fetch --unshallow); a branch with no history in common with ${place.main} cannot be reviewed against it.`,
+    )
   if (place.branch === place.main)
     return refuse(`You are on ${place.main}. A review covers a branch's commits past ${place.main}: make a branch for the change, commit it there, then review it.`)
   if (place.ahead === 0) return refuse(`${place.branch} has no commits past ${place.main}: commit the change, then review it.`)
@@ -319,7 +323,8 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
 
   const last = ledger.rounds[ledger.rounds.length - 1]
   const open = openFindings(ledger)
-  if (!ask.force && last !== undefined && ledger.reviewed === place.head) {
+  // A commit is read again only by the person, or once after a round that hit its finding limit.
+  if (!ask.force && last !== undefined && ledger.reviewed === place.head && !wantsReread(ledger)) {
     return { ok: true, ledger, round: last.n, text: `${summary(ledger, last.n)}\n\nThis commit was reviewed already; nothing was run again.` }
   }
   if (!ask.force && streak(ledger) >= ROUND_CAP && open.length > 0) return refuse(stepBack(ledger))
@@ -340,7 +345,8 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   const isDelta =
     reviewed !== undefined && reviewed !== place.head && last !== undefined && !isCapped(last) && (await isAncestor(git, reviewed, place.head))
   const from = isDelta && reviewed !== undefined ? reviewed : place.base
-  const roundFiles = kept(isDelta ? await changedFiles(git, from, place.head) : files)
+  const span = isDelta ? await changedFiles(git, from, place.head) : files
+  const roundFiles = kept(span)
 
   // The change's risk picks the round's level, unless the call or the options name one. A commit
   // judged before keeps its verdict, and a round over new commits alone runs at most at high. Only
@@ -448,15 +454,13 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
     if (drifted !== undefined) return refuse(drifted)
     if (pending.record === undefined)
       return refuse(
-        `/code-review ended without recording its findings${
-          run === undefined
-            ? ', and it ran in no agent of its own'
-            : failed !== undefined
-              ? `, and it failed: ${failed}`
-              : pending.untagged === true && pending.agentId === run.agentId
-                ? ', and the agent list did not name review-gate as its starter, so the gate could not tell it was the review'
-                : ''
-        }, so the round has nothing to stand on.${isStuck ? ` ${STUCK}` : ''} Nothing was recorded; review again.`,
+        `${
+          run !== undefined && failed === undefined && pending.untagged === run.agentId
+            ? "/code-review ran, but the agent list did not name review-gate as its starter, so the gate could not tell it was the review and took no record from it."
+            : `/code-review ended without recording its findings${
+                run === undefined ? ', and it ran in no agent of its own' : failed !== undefined ? `, and it failed: ${failed}` : ''
+              }, so the round has nothing to stand on.`
+        }${isStuck ? ` ${STUCK}` : ''} Nothing was recorded; review again.`,
       )
     record = pending.record
     cap = pending.cap
@@ -510,7 +514,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
       durationMs: at - startedAt,
       tokens,
       ...(calls === undefined ? {} : { calls }),
-      ...(isReviewed ? {} : { skipped: true }),
+      ...(isReviewed ? {} : span.length === 0 ? { unchanged: true } : { skipped: true }),
     }
     // A classifier with no verdict is asked again next time.
     return {
@@ -617,9 +621,14 @@ export function summary(ledger: Ledger, n: number) {
       risk.tier === 'high' && ledger.approved?.sha !== round.head
         ? ' It is high risk, so the gate asks the user to approve it when the pull request is opened or merged.'
         : ''
-    lines.push(`Nothing is open. ${ledger.branch} at ${short(round.head)} is ready for a pull request.${approval}`)
+    lines.push(
+      wantsReread(ledger)
+        ? `Nothing is open, but the review reported as many findings as its level allows, so review again before the pull request: one more round over ${short(round.head)} settles it.`
+        : `Nothing is open. ${ledger.branch} at ${short(round.head)} is ready for a pull request.${approval}`,
+    )
   }
   if (round.skipped === true) lines.push(`Every file the round covers is on a REVIEW.md Skip list, so no review ran.`)
+  if (round.unchanged === true) lines.push('The commits the round covers change no file, so no review ran.')
   const cost = spent(round)
   const calls = round.calls === undefined ? '' : `, and the review made ${round.calls} tool call${round.calls === 1 ? '' : 's'}`
   if (cost !== '') lines.push(`The round took ${cost}${calls}.`)

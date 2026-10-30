@@ -1,7 +1,7 @@
 import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import type { Activity, Finding, Ledger, Repo, Run } from '../types'
 import { short } from './git'
-import { ROUND_CAP, aboutOf, duration, isApplied, isCapped, openFindings, riskNow, spent, streak } from './ledger'
+import { ROUND_CAP, aboutOf, duration, isApplied, isCapped, openFindings, riskNow, spent, streak, wantsReread } from './ledger'
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
@@ -87,7 +87,8 @@ export function band(
       {waiting.length > 0 && <Text dimColor> · fix and commit, or dismiss with a reason</Text>}
       {open.length > 0 && streak(ledger) >= ROUND_CAP && <Text color="warning"> · {ROUND_CAP} rounds without converging: step back</Text>}
       {!isCurrent && <Text color="warning">{open.length > 0 ? ' · ' : ''}○ new commits since {short(ledger.reviewed ?? '')}</Text>}
-      {isCurrent && open.length === 0 && <Text color="success">✓ {short(repo.head)} reviewed, ready for a pull request</Text>}
+      {isCurrent && open.length === 0 && !wantsReread(ledger) && <Text color="success">✓ {short(repo.head)} reviewed, ready for a pull request</Text>}
+      {isCurrent && open.length === 0 && wantsReread(ledger) && <Text color="warning">○ review once more: the last round hit its finding limit</Text>}
       {needsYou && <Text color="warning"> · high risk: you approve it at the gate</Text>}
     </Box>
   )
@@ -179,7 +180,7 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
             <Text color="error">{plural(waiting, 'finding')} open.</Text> Fix and commit, then review again; or dismiss each with a reason.
           </Text>
         )}
-        {open.length === 0 && !moved && <Text color="success">Nothing open: ready for a pull request.</Text>}
+        {open.length === 0 && !moved && !wantsReread(ledger) && <Text color="success">Nothing open: ready for a pull request.</Text>}
         {open.length === 0 && !moved && risk.tier === 'high' && ledger.approved?.sha !== round.head && (
           <Text color="warning">High risk: the gate asks you to approve it.</Text>
         )}

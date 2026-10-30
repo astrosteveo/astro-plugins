@@ -4,6 +4,7 @@ import type { Engine } from 'claude-code/testing'
 import type { Finding, Ledger, Round, Run } from '../types'
 import { emptyLedger, globTest } from '../hooks/ledger'
 import { liveBand } from '../hooks/views'
+import { parseRun } from '../hooks/register'
 
 // The test runtime has timers, though the hooks' own environment does not.
 declare function setTimeout(callback: () => void, ms: number): unknown
@@ -66,6 +67,8 @@ type World = {
   untagged?: boolean
   /** Whether a review's turn end is a pause, as while agents of its own work, and not its end. */
   pauses?: boolean
+  /** Whether git finds no commit the branch shares with main, as in a shallow clone. */
+  noBase?: boolean
 }
 
 /** A run of /code-review the round started: what it was asked, and the hand that ends it. */
@@ -123,7 +126,7 @@ function engine(on: On, repo: World) {
       const older = repo.history.indexOf(rest[1] ?? '')
       return older >= 0 && older <= repo.history.indexOf(rest[2] ?? '') ? ran(0) : ran(1)
     }
-    if (sub === 'merge-base') return ran(0, `${BASE}\n`)
+    if (sub === 'merge-base') return repo.noBase === true ? ran(1) : ran(0, `${BASE}\n`)
     if (sub === 'rev-list') return ran(0, `${repo.history.indexOf(repo.head)}\n`)
     if (sub === 'status') {
       const fresh = rest.includes('--untracked-files=no') ? [] : (repo.untracked ?? [])
@@ -1453,8 +1456,46 @@ test('a review the agent list does not name as review-gate\'s cannot record, and
   await start($)
   const call = $.tool.call({ tool: REVIEW })
   const { recorded } = await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
-  expect(recorded).toContain('record takes the findings')
+  expect(recorded).toContain("The agent list does not name review-gate as this agent's starter, so the gate cannot tell it is the round's review.")
   expect(String((await call).deny)).toBe(
-    '/code-review ended without recording its findings, and the agent list did not name review-gate as its starter, so the gate could not tell it was the review, so the round has nothing to stand on. Nothing was recorded; review again.',
+    '/code-review ran, but the agent list did not name review-gate as its starter, so the gate could not tell it was the review and took no record from it. Nothing was recorded; review again.',
   )
+})
+
+test('a round that hits its finding limit is read once more before the gate vouches, however its findings are answered', async ($, on) => {
+  const { store, reviews } = engine(on, world({ skillText: 'Return findings as a JSON array of at most 1 objects.' }))
+  await start($)
+  const first = $.tool.call({ tool: REVIEW })
+  await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
+  await first
+  await $.tool.call({ tool: DISMISS, ids: ['R1-1'], reason: 'The caller never passes the last page index.' })
+  expect(String((await $.tool.call(open())).deny)).toContain('Review again: the last round over 1111111 reported as many findings as its level allows')
+  // The model's next call runs the promised round over the same commit, and that one settles it.
+  const second = $.tool.call({ tool: REVIEW })
+  await act($, reviews, 1, { findings: [SKIPPED_PAGE] })
+  await second
+  expect(ledgerOf(store).rounds.length).toBe(2)
+  expect(String((await $.tool.call(open())).result)).toContain('Opened https://github.com/o/r/pull/7')
+})
+
+test('a round over commits that change no file says so, not that REVIEW.md skips them', async ($, on) => {
+  const repo = world({ history: [BASE, ONE, TWO], head: TWO, changes: { [ONE]: ['src/app.ts'], [TWO]: [] } })
+  const { store } = engine(on, repo)
+  seed(store, { rounds: [round(1, ONE, 0)], findings: [], reviewed: ONE })
+  await start($)
+  const text = String((await $.tool.call({ tool: REVIEW })).result)
+  expect(text).toContain('The commits the round covers change no file, so no review ran.')
+  expect(text.includes('Skip list')).toBe(false)
+})
+
+test('--max-findings with a missing or odd value is told what it takes', () => {
+  expect(parseRun('high --max-findings')).toContain('--max-findings takes a number, all or default.')
+  expect(parseRun('--max-findings ten')).toContain('--max-findings takes a number, all or default, not ten.')
+  expect(parseRun('--max-findings ALL')).toEqual({ fix: false, maxFindings: 'all' })
+})
+
+test('a branch git finds no shared history for is told why, not that main is missing', async ($, on) => {
+  engine(on, world({ noBase: true }))
+  await start($)
+  expect(String((await $.tool.call({ tool: REVIEW })).deny)).toContain('git finds no commit feat/app shares with main')
 })

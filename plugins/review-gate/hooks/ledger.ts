@@ -50,6 +50,16 @@ export const lastRound = (ledger: Ledger): Round | undefined => ledger.rounds[le
 /** Whether a round's review reported as many findings as its level lets it, so it may have left some out. */
 export const isCapped = (round: Round | undefined) => round?.cap !== undefined && round.raised >= round.cap
 
+/**
+ * Whether the branch's commit wants a second read before the gate vouches for it: its last round
+ * reported as many findings as its level allows, and was the first to read that commit. A second read
+ * settles it, capped or not, so the gate never waits for ever.
+ */
+export function wantsReread(ledger: Ledger) {
+  const last = lastRound(ledger)
+  return isCapped(last) && ledger.rounds[ledger.rounds.length - 2]?.head !== last?.head
+}
+
 const compact = (count: number) => (count >= 1e6 ? `${(count / 1e6).toFixed(1)}M` : count >= 1e3 ? `${Math.round(count / 1e3)}k` : String(count))
 
 /** A length of time as `4m 12s`, or `9s` under a minute. */

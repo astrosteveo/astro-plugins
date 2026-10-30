@@ -4,7 +4,7 @@ import type { Ledger, Level } from '../types'
 import { branches, firstCommit, locate, short } from './git'
 import type { Place } from './git'
 import { opensOrMerges } from './guard'
-import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, openFindings, recordKey, recordPrefix, riskNow, sortOut, toLedger, whereOf } from './ledger'
+import { LEVELS, NIT_CAP, ROUND_CAP, emptyLedger, openFindings, recordKey, recordPrefix, riskNow, sortOut, toLedger, wantsReread, whereOf } from './ledger'
 import { RECORD, capOf, readFixes, readRecord, reviewSection } from './prompts'
 import { SKILL, isLevel, mailbox, plus, runRound, summary } from './review'
 import type { Pending, RoundAsk } from './review'
@@ -251,6 +251,8 @@ async function show($: EngineInterface, place: Place | string) {
 
 function nothingOpen(ledger: Ledger, head: string) {
   if (ledger.reviewed !== head) return `Nothing is open, but the commits since ${short(ledger.reviewed ?? '')} have not been reviewed.`
+  if (wantsReread(ledger))
+    return `Nothing is open, but the last round reported as many findings as its level allows, so review again before the pull request: one more round over ${short(head)} settles it.`
   const high = riskNow(ledger)?.tier === 'high' && ledger.approved?.sha !== head
   return `Nothing is open. ${ledger.branch} at ${short(head)} is ready for a pull request${high ? ', once the user approves it at the gate: it is high risk' : ''}.`
 }
@@ -266,6 +268,8 @@ async function vouch($: EngineInterface, place: Place, branch: string, sha: stri
     return `Review first: ${branch} at ${short(sha)} has not been reviewed${
       ledger.reviewed === undefined ? '' : ` (the last round covered ${short(ledger.reviewed)})`
     }. Call ${REVIEW} with what the change is for, answer each finding, then try again.`
+  if (wantsReread(ledger))
+    return `Review again: the last round over ${short(sha)} reported as many findings as its level allows, so it may have left some out. Call ${REVIEW} once more; that round settles it.`
   const open = openFindings(ledger)
   if (open.length > 0)
     return `${branch} has ${open.length} open review finding${open.length === 1 ? '' : 's'}: ${open
@@ -425,7 +429,7 @@ async function scopeOf($: EngineInterface, agentId: string): Promise<Scope> {
     await bind($, agentId)
     return 'review'
   }
-  if (!before.has(agentId) && agent.spawnedBy === undefined && agent.parentId === undefined) pending.untagged = true
+  if (!before.has(agentId) && agent.spawnedBy === undefined && agent.parentId === undefined) pending.untagged = agentId
   others.add(agentId)
   return 'other'
 }
@@ -477,8 +481,10 @@ export function parseRun(args: string): Pick<Wishes, 'level' | 'fix' | 'maxFindi
     const lower = word.toLowerCase()
     if (level === undefined && isLevel(lower)) level = lower
     else if (lower === '--fix') fix = true
-    else if (lower === '--max-findings' && /^(\d+|all|default)$/i.test(words[at + 1] ?? '')) {
-      maxFindings = (words[at + 1] ?? '').toLowerCase()
+    else if (lower === '--max-findings') {
+      const value = (words[at + 1] ?? '').toLowerCase()
+      if (!/^(\d+|all|default)$/.test(value)) return `--max-findings takes a number, all or default${value === '' ? '' : `, not ${words[at + 1]}`}. ${USAGE}`
+      maxFindings = value
       at += 1
     } else if (/^#?\d+$/.test(word))
       return `review-gate reviews the branch checked out, so ${word} is not a target: check out the pull request's branch (gh pr checkout ${word.replace('#', '')}) and run /review-gate there.`
@@ -585,13 +591,20 @@ export const register: Register = (on, options) => {
 
   // The review hands back its findings here: only the round's own review, naming the round, once.
   // Another agent that has the round's name, such as one the review started, or another /code-review
-  // briefed by mistake, records nothing. The review's first call names it, so it is known by then.
+  // briefed by mistake, records nothing. The agent list names the review at its first call; a review
+  // it does not name cannot record, and is told why.
   on('tool.call', { tool: RECORD }, async ($, e) => {
     const pending = desk.pending
     const refusal = "record takes the findings of review-gate's own review round, from its review, with the round its instructions name."
     if (pending === undefined || e.agentId === undefined || asText(e.round).trim() !== pending.plan.token) return { deny: refusal }
     const scope = await scopeOf($, e.agentId)
-    if (scope !== 'review') return { deny: refusal }
+    if (scope !== 'review')
+      return {
+        deny:
+          pending.untagged === e.agentId
+            ? `${refusal} The agent list does not name review-gate as this agent's starter, so the gate cannot tell it is the round's review. Say so in your answer.`
+            : refusal,
+      }
     // The findings are about the commit the round began at: when the repository changed before they
     // are recorded, the round cannot say what the review read, and records nothing.
     if (pending.record === undefined) {

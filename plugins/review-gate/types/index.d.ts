@@ -74,6 +74,8 @@ export type Round = {
   calls?: number
   /** Set when every file the round covers is on a REVIEW.md Skip list, so no review ran. */
   skipped?: boolean
+  /** Set when the commits the round covers change no file, so no review ran. */
+  unchanged?: boolean
 }
 
 /** Tokens a round spent. `input` counts what was sent at full price, cache writes included. */
