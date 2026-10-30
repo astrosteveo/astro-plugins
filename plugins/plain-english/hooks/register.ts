@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { list, problems } from './check'
-import { type Piece, type Published, directories, gh, pieces, published, resolvePath } from './gate'
+import { type Piece, type Published, directories, gh, isTestPath, pieces, published, pushedRef, resolvePath } from './gate'
 import { report, scan } from './scan'
 import { STYLE_FILE, hasRules, parseStyle, withRules } from './style'
 
@@ -125,8 +125,11 @@ type Memory = {
   cleared: Set<string>
 }
 
-// The refusal for a call's pieces, if any, and the key the call is held by.
-async function gate($: EngineInterface, { held, cleared }: Memory, kind: string, found: readonly Piece[]) {
+const REWRITE = 'Rewrite them in plain English and make the call again.'
+
+// The refusal for a call's pieces, if any, and the key the call is held by. `advice` says how to
+// fix what was found.
+async function gate($: EngineInterface, { held, cleared }: Memory, kind: string, found: readonly Piece[], advice = REWRITE) {
   const ready = (await Promise.all(found.map(p => prepare($, p)))).map((p, i) => (p === undefined ? undefined : { ...p, what: found[i]!.what }))
   const known = ready.filter(p => p !== undefined)
   const key = hash(`${kind}\u0000${known.map(p => `${p.what}\u0000${flat(p.text)}`).join('\u0001')}`)
@@ -147,7 +150,7 @@ async function gate($: EngineInterface, { held, cleared }: Memory, kind: string,
   held.add(key)
   return {
     key,
-    deny: `plain-english held this call: its prose has Claudisms. Rewrite them in plain English and make the call again.\n\n${refusals.join('\n\n')}\n\nIf a finding is wrong, such as a word used literally, make the same call again unchanged and it goes through.`,
+    deny: `plain-english held this call: its prose has Claudisms. ${advice}\n\n${refusals.join('\n\n')}\n\nIf a finding is wrong, such as a word used literally or text that is not yours to change, make the same call again unchanged and it goes through.`,
   }
 }
 
@@ -178,9 +181,10 @@ async function readBack($: EngineInterface, item: Published, dirs: readonly stri
     return undefined
   }
   if (item.kind === 'comment') {
-    const json = parsed(await output($, ['gh', 'api', `repos/${item.repo}/issues/comments/${item.id}`], dirs[0]!))
+    const path = `repos/${item.repo}/issues/comments/${item.id}`
+    const json = parsed(await output($, ['gh', 'api', '--hostname', item.host, path], dirs[0]!))
     const text = asText(json.body)
-    return text === '' ? undefined : { what: `the comment ${item.url}`, text, fix: `Rewrite it with gh api -X PATCH repos/${item.repo}/issues/comments/${item.id} -F body=@FILE.` }
+    return text === '' ? undefined : { what: `the comment ${item.url}`, text, fix: `Rewrite it with gh api --hostname ${item.host} -X PATCH ${path} -F body=@FILE.` }
   }
   const json = parsed(await output($, ['gh', item.kind, 'view', item.url, '--json', 'title,body'], dirs[0]!))
   const text = [asText(json.title), asText(json.body)].filter(t => t !== '').join('\n\n')
@@ -188,21 +192,61 @@ async function readBack($: EngineInterface, item: Published, dirs: readonly stri
   return text === '' ? undefined : { what: `the ${what} ${item.url}`, text, fix: `Rewrite it with gh ${item.kind} edit ${item.url} --title and --body-file.` }
 }
 
-// What a finished shell command published that has Claudisms, as notes for the model to act on.
-async function afterShell($: EngineInterface, command: string, text: string) {
+// A repository's HEAD and its message, or undefined outside one.
+async function headOf($: EngineInterface, dir: string) {
+  const out = await output($, ['git', 'log', '-1', '--format=%H%x00%B'], dir)
+  if (out === undefined) return undefined
+  const [sha, message] = out.split('\0')
+  return { sha: sha!, message: (message ?? '').trim() }
+}
+
+// Commits by hash and message: `git log` over a range, each record split on a byte no message holds.
+async function commitsIn($: EngineInterface, dir: string, range: readonly string[]) {
+  const out = await output($, ['git', 'log', '--format=%H%x00%B%x1e', '--max-count=50', ...range], dir)
+  return (out ?? '')
+    .split('\x1e')
+    .map(r => r.trim())
+    .filter(r => r !== '')
+    .map(r => {
+      const [sha, message] = r.split('\0')
+      return { sha: sha!, message: (message ?? '').trim() }
+    })
+}
+
+// What a finished shell command published that has Claudisms, as notes for the model to act on. A
+// commit is found by comparing the session's repository before and after, and by the line git
+// prints for it, so a quiet commit and one made elsewhere are both read. A commit that kept the
+// message it replaced (`--amend --no-edit`) is not Claude's text to answer for.
+async function afterShell($: EngineInterface, command: string, text: string, cwd: string, before?: { sha: string; message: string }) {
   const items = published(command, text)
+  if (before !== undefined) {
+    const after = await headOf($, cwd)
+    if (after !== undefined && after.sha !== before.sha)
+      for (const c of (await commitsIn($, cwd, [`${before.sha}..${after.sha}`])).reverse())
+        if (!items.some(i => i.kind === 'commit' && c.sha.startsWith(i.sha))) items.push({ kind: 'commit', sha: c.sha.slice(0, 7) })
+  }
   if (items.length === 0) return []
-  const cwd = await $.session.cwd()
   const dirs = directories(command, cwd, await $.env.get('HOME'))
   const notes: string[] = []
   for (const item of items) {
     const back = await readBack($, item, dirs)
-    if (back === undefined) continue
+    if (back === undefined || (item.kind === 'commit' && before !== undefined && back.text === before.message)) continue
     const problem = await problems($, back.text)
     if (problem.length > 0)
       notes.push(`plain-english: ${back.what} has Claudisms. ${back.fix} Fix these, unless a finding is wrong (such as a word used literally):\n${list(problem)}`)
   }
   return notes
+}
+
+const REWORD =
+  'Reword those commits in plain English before you push: amend the last with git commit --amend, and reword an older one with git rebase -i using GIT_SEQUENCE_EDITOR and GIT_EDITOR set to commands that make the change, since no editor can be opened. Then push again.'
+
+// The check of a push: every commit it would send that no remote has yet, each message checked.
+// `ref` is what the push sends.
+async function checkPush($: EngineInterface, memory: Memory, dir: string, ref: string) {
+  const commits = await commitsIn($, dir, [ref, '--not', '--remotes'])
+  const found = commits.reverse().map(c => ({ what: `the message of commit ${c.sha.slice(0, 7)}`, text: c.message }))
+  return gate($, memory, `push\u0000${dir}`, found, REWORD)
 }
 
 export const register: Register = on => {
@@ -242,17 +286,32 @@ export const register: Register = on => {
   // A prose file, or a pull request or issue opened through a tool, is checked before it is
   // written, and a call that would publish Claudisms is refused with the list to fix. A shell
   // command is checked once it has run: what it published (a commit's message, a pull request,
-  // issue or comment) is read back, and Claude is told to fix any Claudisms in it. A check that
-  // fails lets the call through.
+  // issue or comment) is read back, and Claude is told to fix any Claudisms in it, even where a
+  // later step of the command failed. A push is checked before it runs: no commit with Claudisms
+  // leaves the machine, however it was made. A check that fails lets the call through.
   on('tool.call', async ($, e, next) => {
     if (e.tool === 'Bash') {
+      const command = asText(e.command)
+      const cwd = await $.session.cwd()
+      const usesGit = /\bgit\b/.test(command)
+      const push = usesGit && /\bpush\b/.test(command) ? await checkPush($, memory, cwd, 'HEAD') : undefined
+      if (push?.deny !== undefined) return { deny: push.deny }
+      const before = usesGit ? await headOf($, cwd) : undefined
       const result = await next(e)
-      if (result.deny !== undefined || result.isError === true) return result
-      const notes = await afterShell($, asText(e.command), result.text ?? '')
+      if (result.deny !== undefined) return result
+      if (push?.passed === true) memory.held.delete(push.key)
+      const notes = await afterShell($, command, result.text ?? '', cwd, before)
       return notes.length === 0 ? result : { ...result, context: [...(result.context ?? []), ...notes] }
     }
-    const found = pieces(e.tool, e as unknown as Record<string, unknown>, await $.session.cwd(), await $.env.get('HOME'))
+    const cwd = await $.session.cwd()
+    const found = pieces(e.tool, e as unknown as Record<string, unknown>, cwd, await $.env.get('HOME'))
     if (found.length === 0) return next(e)
+    // A doc in its project's test folders may hold Claudisms on purpose.
+    if (e.tool === 'Write' || e.tool === 'Edit') {
+      const path = found[0]!.what
+      const root = (await output($, ['git', 'rev-parse', '--show-toplevel'], path.slice(0, path.lastIndexOf('/')) || '/'))?.trim() || cwd
+      if (isTestPath(path, root)) return next(e)
+    }
     const checked = await gate($, memory, e.tool, found)
     if (checked.deny !== undefined) return { deny: checked.deny }
     const result = await next(e)
@@ -260,13 +319,23 @@ export const register: Register = on => {
     return result
   }).catch((_, e, next) => next(e))
 
-  // review-gate opens a pull request by running gh itself, from its own tool's hook, which may sit
-  // outside this mod's: the title and body are checked here too, as gh is run.
+  // review-gate opens a pull request by pushing and then running gh itself, from its own tool's
+  // hook, which may sit outside this mod's: the commits the push sends, and the title and body gh
+  // is given, are checked here too, as each is run.
   on('process.run', async ($, e, next) => {
     const program = e.argv[0] ?? ''
-    if (program !== 'gh' && !program.endsWith('/gh')) return next(e)
+    const isGit = program === 'git' || program.endsWith('/git')
+    if (!isGit && program !== 'gh' && !program.endsWith('/gh')) return next(e)
+    if (isGit && !e.argv.includes('push')) return next(e)
     const cwd = await $.session.cwd()
     const dir = e.init?.cwd === undefined ? cwd : resolvePath(cwd, e.init.cwd)
+    if (isGit) {
+      const push = await checkPush($, memory, dir, pushedRef(e.argv))
+      if (push.deny !== undefined) return { deny: push.deny }
+      const result = await next(e)
+      if (push.passed === true) memory.held.delete(push.key)
+      return result
+    }
     const found = gh(['gh', ...e.argv.slice(1)], dir, e.init?.stdin)
     if (found.length === 0) return next(e)
     const checked = await gate($, memory, 'gh', found)

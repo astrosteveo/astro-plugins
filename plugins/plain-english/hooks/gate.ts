@@ -21,11 +21,14 @@ export type Piece = {
 const PROSE_FILE = /\.(?:md|mdx|markdown|rst|adoc)$|(?:^|\/)(?:README|CHANGELOG|CONTRIBUTING|NOTES|HISTORY)(?:\.txt)?$/i
 const TEST_FOLDER = /(?:^|\/)(?:tests?|__tests__|fixtures?|__fixtures__|testdata|snapshots?|__snapshots__)\//i
 
-// Whether a file is prose. Only the part of the path below the working directory is looked at for
-// a test folder, so a project that itself sits under a folder named tests is still checked.
-export function isProseFile(path: string, cwd: string) {
-  const below = path.startsWith(`${cwd.replace(/\/$/, '')}/`) ? path.slice(cwd.replace(/\/$/, '').length + 1) : path.split('/').slice(-2).join('/')
-  return PROSE_FILE.test(path) && !TEST_FOLDER.test(below)
+export const isProseFile = (path: string) => PROSE_FILE.test(path)
+
+// Whether a file sits in a test folder of its project. Only the part of the path below the
+// project's root is looked at, so a project that itself sits under a folder named tests is still
+// checked.
+export function isTestPath(path: string, root: string) {
+  const top = root.replace(/\/$/, '')
+  return TEST_FOLDER.test(path.startsWith(`${top}/`) ? path.slice(top.length + 1) : path)
 }
 
 // An absolute path: `~` is the home folder, a relative path is under `dir`, and `.` and `..` are
@@ -55,7 +58,8 @@ export function gh(argv: readonly string[], dir: string, stdin?: string): Piece[
     const short = /^(-[a-zA-Z])([\s\S]*)$/.exec(w)
     const name = long?.[1] ?? short?.[1]
     if (name === undefined) continue
-    const attached = long !== null ? long[2] : short![2] === '' ? undefined : short![2]
+    // A short flag's value may follow it directly or after `=`, as gh's flag parser takes it.
+    const attached = long !== null ? long[2] : short![2] === '' ? undefined : short![2]!.replace(/^=/, '')
     const value = () => attached ?? argv[++i]
     if (name === '-t' || name === '--title') {
       const text = value()
@@ -80,7 +84,7 @@ export function pieces(tool: string, input: Record<string, unknown>, cwd: string
   const str = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : undefined)
   if (tool === 'Write' || tool === 'Edit') {
     const path = resolvePath(cwd, str('file_path') ?? '', home)
-    if (!isProseFile(path, cwd)) return []
+    if (!isProseFile(path)) return []
     if (tool === 'Write') return [{ what: path, text: str('content') ?? '', beforeFile: path }]
     const old = str('old_string') ?? ''
     const text = str('new_string') ?? ''
@@ -99,33 +103,48 @@ export function pieces(tool: string, input: Record<string, unknown>, cwd: string
 }
 
 // Something a shell command published, found in its output: a commit, by its hash, or a pull
-// request, issue or comment, by its URL.
+// request, issue or comment, by its URL on whatever host gh uses.
 export type Published =
   | { kind: 'commit'; sha: string }
   | { kind: 'pr' | 'issue'; url: string }
-  | { kind: 'comment'; url: string; repo: string; id: string }
+  | { kind: 'comment'; url: string; host: string; repo: string; id: string }
 
-// git prints `[branch abc1234] subject` for each commit it makes; gh prints the URL of what it made.
-// The command is only looked at for the words that say it can publish, never parsed.
+// git prints `[branch abc1234] subject` for each commit it makes, unless told to be quiet; the
+// session's own repository is compared before and after as well (`commitsBetween`). gh prints the
+// URL of what it made as its last line, and only what `create` or `comment` made is Claude's own
+// text: an `edit` may touch someone else's pull request. The command is only looked at for the
+// words that say it can publish, never parsed.
 export function published(command: string, output: string): Published[] {
   const found: Published[] = []
   if (/\bgit\b/.test(command) && /\bcommit\b/.test(command))
     for (const m of output.matchAll(/^\[[^\]\n]*? ([0-9a-f]{7,40})\] /gm)) found.push({ kind: 'commit', sha: m[1]! })
-  if (/\bgh\b/.test(command) && /\b(?:pr|issue)\b/.test(command) && /\b(?:create|edit|comment)\b/.test(command))
-    for (const m of output.matchAll(/https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(pull|issues)\/\d+(?:#issuecomment-(\d+))?/g)) {
-      const item: Published = m[3] !== undefined ? { kind: 'comment', url: m[0], repo: m[1]!, id: m[3] } : { kind: m[2] === 'pull' ? 'pr' : 'issue', url: m[0] }
-      if (!found.some(f => 'url' in f && f.url === item.url)) found.push(item)
-    }
+  if (/\bgh\b/.test(command) && /\b(?:pr|issue)\b/.test(command) && /\b(?:create|comment)\b/.test(command)) {
+    const last = output.trimEnd().split('\n').at(-1)?.trim() ?? ''
+    const m = /^https:\/\/([\w.-]+)\/([\w.-]+\/[\w.-]+)\/(pull|issues)\/\d+(?:#issuecomment-(\d+))?$/.exec(last)
+    if (m !== null)
+      found.push(m[4] !== undefined ? { kind: 'comment', url: m[0], host: m[1]!, repo: m[2]!, id: m[4] } : { kind: m[3] === 'pull' ? 'pr' : 'issue', url: m[0] })
+  }
   return found
 }
 
-// The directories a command may have made its commit in, after the session's own: those it
-// changes to with `cd` or names with `git -C`.
+// The directories a command may have made its commit in, after the session's own: each `cd` taken
+// from the one before it, and each `git -C`. A quoted path may hold spaces.
 export function directories(command: string, cwd: string, home?: string): string[] {
   const dirs = [cwd]
-  for (const m of command.matchAll(/(?:\bcd|\bgit\s+-C)\s+(["']?)([^\s"';&|]+)\1/g)) {
-    const dir = resolvePath(cwd, m[2]!, home)
+  let here = cwd
+  for (const m of command.matchAll(/\b(cd|git\s+-C)\s+(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))/g)) {
+    const dir = resolvePath(here, m[2] ?? m[3] ?? m[4]!, home)
+    if (m[1] === 'cd') here = dir
     if (!dirs.includes(dir)) dirs.push(dir)
   }
   return dirs
+}
+
+// The refspec's source of a `git push`: what it sends, `HEAD` when none is named.
+export function pushedRef(argv: readonly string[]): string {
+  const args = argv.slice(argv.indexOf('push') + 1).filter(a => !a.startsWith('-'))
+  const spec = args[1]
+  if (spec === undefined) return 'HEAD'
+  const source = spec.replace(/^\+/, '').split(':')[0]!
+  return source === '' ? 'HEAD' : source
 }

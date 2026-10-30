@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
-import { directories, gh, isProseFile, pieces, published, resolvePath } from '../hooks/gate'
+import { directories, gh, isTestPath, pushedRef, pieces, published, resolvePath } from '../hooks/gate'
 import { parseFindings } from '../hooks/judge'
 
 const STYLE = '---\nname: Plain English\ndescription: Plain words\n---\n\n# Plain English\n\nWrite plainly.\n'
@@ -12,6 +12,8 @@ type World = {
   reply?: string
   asked: string[]
   ran: string[]
+  // The commands the plugin ran itself.
+  runs: string[]
   verdict: 'allow' | 'ask'
   // What a Bash command prints, and whether it fails.
   output: string
@@ -20,6 +22,12 @@ type World = {
   commits: Map<string, { dir: string; message: string }>
   // What gh reads back, by the URL or API path it is given.
   github: Map<string, Record<string, unknown>>
+  // HEAD as each read finds it, the commits between two HEADs, the commits no remote has, and the
+  // repository's root.
+  heads: { sha: string; message: string }[]
+  between: { sha: string; message: string }[]
+  unpushed: { sha: string; message: string }[]
+  root?: string
 }
 
 const world = (over: Partial<World> = {}): World => ({
@@ -27,10 +35,14 @@ const world = (over: Partial<World> = {}): World => ({
   reply: '[]',
   asked: [],
   ran: [],
+  runs: [],
   verdict: 'allow',
   output: '',
   commits: new Map(),
   github: new Map(),
+  heads: [],
+  between: [],
+  unpushed: [],
   ...over,
 })
 
@@ -61,13 +73,23 @@ function engine(on: On, w: World) {
   on('classic.SubagentStop', () => ({}))
   on('process.run', (_, e) => {
     const argv = e.argv
-    w.ran.push(argv.join(' '))
+    w.runs.push(argv.join(' '))
+    if (argv[0] === 'git' && argv[1] === 'rev-parse') return w.root === undefined ? ran(128, '') : ran(0, `${w.root}\n`)
     if (argv[0] === 'git' && argv[1] === 'log') {
+      // HEAD before and after a command, then the commits between, then one commit's message.
+      if (argv.includes('--format=%H%x00%B')) {
+        const head = w.heads.shift()
+        return head === undefined ? ran(128, '') : ran(0, `${head.sha}\0${head.message}\n`)
+      }
+      if (argv.includes('--format=%H%x00%B%x1e')) {
+        const range = argv.includes('--remotes') ? w.unpushed : w.between
+        return ran(0, range.map(c => `${c.sha}\0${c.message}\n\x1e`).join(''))
+      }
       const commit = w.commits.get(argv.at(-1)!)
       return commit === undefined || commit.dir !== e.init?.cwd ? ran(128, '') : ran(0, `${commit.message}\n`)
     }
     if (argv[0] === 'gh' && (argv[2] === 'view' || argv[1] === 'api')) {
-      const json = w.github.get(argv[1] === 'api' ? argv[2]! : argv[3]!)
+      const json = w.github.get(argv[1] === 'api' ? argv.at(-1)! : argv[3]!)
       return json === undefined ? ran(1, '') : ran(0, JSON.stringify(json))
     }
     return ran(0, 'https://github.com/o/r/pull/1')
@@ -91,7 +113,7 @@ test('a commit is found by the line git prints for it, a pull request or comment
   expect(published('git log', '[main 1a2b3c4] feat: x')).toEqual([])
   expect(published('gh pr create -t T -b B', 'https://github.com/o/r/pull/7\n')).toEqual([{ kind: 'pr', url: 'https://github.com/o/r/pull/7' }])
   expect(published('gh issue comment 4 -b x', 'https://github.com/o/r/issues/4#issuecomment-99')).toEqual([
-    { kind: 'comment', url: 'https://github.com/o/r/issues/4#issuecomment-99', repo: 'o/r', id: '99' },
+    { kind: 'comment', url: 'https://github.com/o/r/issues/4#issuecomment-99', host: 'github.com', repo: 'o/r', id: '99' },
   ])
   expect(published('gh pr view 7', 'https://github.com/o/r/pull/7')).toEqual([])
 })
@@ -125,7 +147,7 @@ test('prose files and pull request tools are matched; code, config and test file
   expect(pieces('Edit', { file_path: 'docs/a.mdx', old_string: 'a', new_string: 'b' }, '/w')).toEqual([
     { what: '/w/docs/a.mdx', text: 'b', before: 'a', beforeFile: '/w/docs/a.mdx', edit: { old: 'a', new: 'b', all: false } },
   ])
-  for (const file_path of ['/w/src/a.ts', '/w/CMakeLists.txt', '/w/requirements.txt', '/w/tests/fixtures/claudish.md'])
+  for (const file_path of ['/w/src/a.ts', '/w/CMakeLists.txt', '/w/requirements.txt'])
     expect(pieces('Write', { file_path, content: 'robust' }, '/w')).toEqual([])
   expect(pieces('Write', { file_path: '/w/NOTES.txt', content: 'x' }, '/w')).toHaveLength(1)
   expect(pieces('mcp__review-gate__pull_request', { action: 'open', title: 'T', body: 'B' }, '/w')).toEqual([
@@ -137,8 +159,8 @@ test('prose files and pull request tools are matched; code, config and test file
 })
 
 test('a project that sits under a folder named tests is still prose', () => {
-  expect(isProseFile('/home/u/tests/app/README.md', '/home/u/tests/app')).toBe(true)
-  expect(isProseFile('/home/u/tests/app/tests/data.md', '/home/u/tests/app')).toBe(false)
+  expect(isTestPath('/home/u/tests/app/README.md', '/home/u/tests/app')).toBe(false)
+  expect(isTestPath('/home/u/tests/app/tests/data.md', '/home/u/tests/app')).toBe(true)
 })
 
 // The model's findings
@@ -219,16 +241,7 @@ test('a pull request, issue or comment made in the shell is read back from GitHu
   expect(notes(r)).toContain('gh pr edit https://github.com/o/r/pull/7')
   w.output = 'https://github.com/o/r/issues/4#issuecomment-99'
   w.github.set('repos/o/r/issues/comments/99', { body: 'Done. Hope this helps!' })
-  expect(notes(await call($, 'Bash', { command: 'gh issue comment 4 -b "Done. Hope this helps!"' }))).toContain('gh api -X PATCH repos/o/r/issues/comments/99')
-})
-
-test('a failed command gets no check', async ($, on) => {
-  const w = world()
-  engine(on, w)
-  w.failed = true
-  commit(w, 'feat: robust')
-  await call($, 'Bash', { command: 'git commit -m "feat: robust"' })
-  expect(w.ran.filter(c => c.startsWith('git log'))).toEqual([])
+  expect(notes(await call($, 'Bash', { command: 'gh issue comment 4 -b "Done. Hope this helps!"' }))).toContain('gh api --hostname github.com -X PATCH repos/o/r/issues/comments/99')
 })
 
 // Files and tools, checked before they run
@@ -370,4 +383,78 @@ test('a subagent report may quote the Claudisms it found', async ($, on) => {
   engine(on, w)
   const r = await $.classic.SubagentStop({ ...STOP, last_assistant_message: 'The commit says "a seamless handoff" and “Hope this helps”.' })
   expect(r.block).toBeUndefined()
+})
+
+// The fixes of review round 3
+
+const OLD = { sha: 'a'.repeat(40), message: 'feat: the person’s own words, robust and all' }
+const NEW = { sha: `b${'0'.repeat(39)}`, message: 'feat: a seamless handoff' }
+
+test('a quiet commit is found by comparing HEAD before and after', async ($, on) => {
+  const w = world({ heads: [OLD, NEW], between: [NEW] })
+  engine(on, w)
+  w.commits.set('b000000', { dir: '/work', message: NEW.message })
+  const r = await call($, 'Bash', { command: 'git commit -q -m "feat: a seamless handoff"' })
+  expect(notes(r)).toContain('commit b000000 has Claudisms')
+})
+
+test('an amend that keeps the message it replaced is not flagged', async ($, on) => {
+  const amended = { sha: `c${'0'.repeat(39)}`, message: OLD.message }
+  const w = world({ heads: [OLD, amended], between: [amended] })
+  engine(on, w)
+  w.commits.set('c000000', { dir: '/work', message: OLD.message })
+  expect(notes(await call($, 'Bash', { command: 'git commit --amend --no-edit' }))).toBe('')
+})
+
+test('a commit made before a later step failed is still read back', async ($, on) => {
+  const w = world({ failed: true })
+  engine(on, w)
+  commit(w, 'feat: a robust parser')
+  w.output += '\nerror: failed to push some refs'
+  const r = await call($, 'Bash', { command: 'git commit -m "feat: a robust parser" && git push' })
+  expect(notes(r)).toContain('"robust"')
+})
+
+test('a push that would send a commit with Claudisms is refused, and goes through when made again', async ($, on) => {
+  const w = world({ unpushed: [NEW] })
+  engine(on, w)
+  const r = await call($, 'Bash', { command: 'git push -u origin HEAD' })
+  expect(refusal(r)).toContain('In the message of commit b000000:')
+  expect(refusal(r)).toContain('git rebase -i')
+  expect(w.ran.includes('Bash')).toBe(false)
+  await call($, 'Bash', { command: 'git push -u origin HEAD' })
+  expect(w.ran.includes('Bash')).toBe(true)
+})
+
+test('a push sends what its refspec names', () => {
+  expect(pushedRef(['git', 'push', '-u', 'origin', 'abc123:refs/heads/feat'])).toBe('abc123')
+  expect(pushedRef(['git', 'push'])).toBe('HEAD')
+  expect(pushedRef(['git', 'push', 'origin', '+main'])).toBe('main')
+})
+
+test('a doc in its project test folder is not checked, wherever the shell is', async ($, on) => {
+  const w = world({ root: '/w' })
+  engine(on, w)
+  await call($, 'Write', { file_path: '/w/tests/fixtures/claudish.md', content: 'A robust, seamless parser.' })
+  expect(w.ran).toContain('Write')
+})
+
+test('gh edits and URLs that are not the last line are not read back; any host is', () => {
+  expect(published('gh pr edit 12 --add-label bug', 'https://github.com/o/r/pull/12')).toEqual([])
+  expect(published('cat CHANGELOG.md; gh issue comment 4 -b x', 'see https://github.com/o/r/pull/3\nhttps://github.com/o/r/issues/4#issuecomment-9')).toEqual([
+    { kind: 'comment', url: 'https://github.com/o/r/issues/4#issuecomment-9', host: 'github.com', repo: 'o/r', id: '9' },
+  ])
+  expect(published('gh pr create --fill', 'https://github.example.com/o/r/pull/7')).toEqual([{ kind: 'pr', url: 'https://github.example.com/o/r/pull/7' }])
+})
+
+test('a short flag value after = is read without it', () => {
+  expect(gh(['gh', 'pr', 'create', '-t=T', '-F=body.md'], '/r')).toEqual([
+    { what: 'the pull request title', text: 'T' },
+    { what: 'the pull request body', file: '/r/body.md' },
+  ])
+})
+
+test('cd paths chain, and a quoted path may hold spaces', () => {
+  expect(directories('cd ../other && cd pkg && git commit -m x', '/w/a')).toEqual(['/w/a', '/w/other', '/w/other/pkg'])
+  expect(directories('cd "/path/with space" && git commit -m x', '/w')).toEqual(['/w', '/path/with space'])
 })
