@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
-import { directories, gh, isTestPath, pushedRef, pieces, published, resolvePath } from '../hooks/gate'
+import { directories, gh, isTestPath, pieces, published, pushedRef, pushes, resolvePath } from '../hooks/gate'
 import { parseFindings } from '../hooks/judge'
 
 const STYLE = '---\nname: Plain English\ndescription: Plain words\n---\n\n# Plain English\n\nWrite plainly.\n'
@@ -25,8 +25,8 @@ type World = {
   // HEAD as each read finds it, the commits between two HEADs, the commits no remote has, and the
   // repository's root.
   heads: { sha: string; message: string }[]
-  between: { sha: string; message: string }[]
-  unpushed: { sha: string; message: string }[]
+  between: { sha: string; message: string; time?: number }[]
+  unpushed: { sha: string; message: string; time?: number }[]
   root?: string
 }
 
@@ -81,9 +81,9 @@ function engine(on: On, w: World) {
         const head = w.heads.shift()
         return head === undefined ? ran(128, '') : ran(0, `${head.sha}\0${head.message}\n`)
       }
-      if (argv.includes('--format=%H%x00%B%x1e')) {
+      if (argv.includes('--format=%H%x00%ct%x00%B%x1e')) {
         const range = argv.includes('--remotes') ? w.unpushed : w.between
-        return ran(0, range.map(c => `${c.sha}\0${c.message}\n\x1e`).join(''))
+        return ran(0, range.map(c => `${c.sha}\0${c.time ?? Math.floor(Date.now() / 1000)}\0${c.message}\n\x1e`).join(''))
       }
       const commit = w.commits.get(argv.at(-1)!)
       return commit === undefined || commit.dir !== e.init?.cwd ? ran(128, '') : ran(0, `${commit.message}\n`)
@@ -457,4 +457,65 @@ test('a short flag value after = is read without it', () => {
 test('cd paths chain, and a quoted path may hold spaces', () => {
   expect(directories('cd ../other && cd pkg && git commit -m x', '/w/a')).toEqual(['/w/a', '/w/other', '/w/other/pkg'])
   expect(directories('cd "/path/with space" && git commit -m x', '/w')).toEqual(['/w', '/path/with space'])
+})
+
+// The fixes of review round 4
+
+test('a pull or checkout that moves HEAD is not taken for Claude committing', async ($, on) => {
+  const w = world({ heads: [OLD, NEW], between: [{ ...NEW, time: 1000 }] })
+  engine(on, w)
+  w.commits.set('b000000', { dir: '/work', message: NEW.message })
+  expect(notes(await call($, 'Bash', { command: 'git pull' }))).toBe('')
+  expect(w.runs).toEqual([])
+})
+
+test('a commit pulled in by a git commit command is left out by its time', async ($, on) => {
+  const w = world({ heads: [OLD, NEW], between: [{ ...NEW, time: 1000 }] })
+  engine(on, w)
+  w.commits.set('b000000', { dir: '/work', message: NEW.message })
+  expect(notes(await call($, 'Bash', { command: 'git merge origin/main && git commit -q -m "x"' }))).toBe('')
+})
+
+test('a commit that reuses another message is not flagged', async ($, on) => {
+  const w = world()
+  engine(on, w)
+  commit(w, 'feat: a robust parser')
+  expect(notes(await call($, 'Bash', { command: 'git commit -C HEAD~1' }))).toBe('')
+  expect(notes(await call($, 'Bash', { command: 'git -c user.name=x commit -m "feat: a robust parser"' }))).toContain('"robust"')
+})
+
+test('push counts only as git push, in the directory and for the ref it names', () => {
+  expect(pushes('git stash push -m wip', '/w')).toEqual([])
+  expect(pushes('git commit -m "push the fix"', '/w')).toEqual([])
+  expect(pushes('git log | grep push', '/w')).toEqual([])
+  expect(pushes('git push', '/w')).toEqual([{ dir: '/w', ref: 'HEAD' }])
+  expect(pushes('cd ../lib && git push origin feature', '/w/a')).toEqual([{ dir: '/w/lib', ref: 'feature' }])
+  expect(pushes('git -C ../lib push -u origin HEAD', '/w/a')).toEqual([{ dir: '/w/lib', ref: 'HEAD' }])
+})
+
+test('a push option value is not taken for the remote; a delete or tags push sends no commits', () => {
+  expect(pushedRef(['git', 'push', '-o', 'ci.skip', 'origin', 'main'])).toBe('main')
+  expect(pushedRef(['git', 'push', '--repo', 'origin', 'origin', 'dev'])).toBe('dev')
+  expect(pushedRef(['git', 'push', 'origin', '--delete', 'old'])).toBeUndefined()
+  expect(pushedRef(['git', 'push', 'origin', ':old'])).toBeUndefined()
+  expect(pushedRef(['git', 'push', '--tags'])).toBeUndefined()
+})
+
+test('a push checks only commits made in this session', async ($, on) => {
+  const w = world({ unpushed: [{ ...NEW, time: 1000 }] })
+  engine(on, w)
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__plain-english__${e.name}` } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true } as never)
+  await call($, 'Bash', { command: 'git push -u origin main' })
+  expect(w.ran).toEqual(['Bash'])
+})
+
+test('a gh URL followed by more output is still read back', () => {
+  expect(published('gh pr create -t T -F b.md && echo done', 'https://github.com/o/r/pull/7\ndone')).toEqual([{ kind: 'pr', url: 'https://github.com/o/r/pull/7' }])
+})
+
+test('a file outside any project is never a test file', () => {
+  expect(isTestPath('/tmp/test/README.md')).toBe(false)
+  expect(isTestPath('/r/tests/README.md', '/r')).toBe(true)
 })

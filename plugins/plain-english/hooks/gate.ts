@@ -25,10 +25,10 @@ export const isProseFile = (path: string) => PROSE_FILE.test(path)
 
 // Whether a file sits in a test folder of its project. Only the part of the path below the
 // project's root is looked at, so a project that itself sits under a folder named tests is still
-// checked.
-export function isTestPath(path: string, root: string) {
-  const top = root.replace(/\/$/, '')
-  return TEST_FOLDER.test(path.startsWith(`${top}/`) ? path.slice(top.length + 1) : path)
+// checked. A file outside any project has no test folders, so it is always checked.
+export function isTestPath(path: string, root?: string) {
+  const top = root?.replace(/\/$/, '')
+  return top !== undefined && path.startsWith(`${top}/`) && TEST_FOLDER.test(path.slice(top.length + 1))
 }
 
 // An absolute path: `~` is the home folder, a relative path is under `dir`, and `.` and `..` are
@@ -109,20 +109,35 @@ export type Published =
   | { kind: 'pr' | 'issue'; url: string }
   | { kind: 'comment'; url: string; host: string; repo: string; id: string }
 
+// git and its global options, before a subcommand: `git -C dir -c k=v --no-pager`.
+const GIT = String.raw`\bgit((?:\s+(?:-[cC]\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)|--?[\w-]+(?:=[^\s;&|]+)?))*)\s+`
+
+// Whether a command runs `git commit`, the subcommand, not the word.
+export const commits = (command: string) => new RegExp(`${GIT}commit\\b`).test(command)
+
+// Whether a command's commit takes its message from an existing one, which is not Claude's text:
+// an option of `git commit` itself, not of git before it.
+export const reusesMessage = (command: string) =>
+  [...command.matchAll(new RegExp(`${GIT}commit\\b([^;&|\\n]*)`, 'g'))].some(m =>
+    /(?:^|\s)(?:--no-edit|-[cC]|--reuse-message|--reedit-message)(?=[\s=]|$)/.test(m[2]!),
+  )
+
 // git prints `[branch abc1234] subject` for each commit it makes, unless told to be quiet; the
-// session's own repository is compared before and after as well (`commitsBetween`). gh prints the
-// URL of what it made as its last line, and only what `create` or `comment` made is Claude's own
-// text: an `edit` may touch someone else's pull request. The command is only looked at for the
-// words that say it can publish, never parsed.
+// session's repository is compared before and after as well. gh prints the URL of what it made on
+// a line of its own, and only what `create` or `comment` made is Claude's own text: an `edit` may
+// touch someone else's pull request. The command is only looked at for the words that say it can
+// publish, never parsed.
 export function published(command: string, output: string): Published[] {
   const found: Published[] = []
-  if (/\bgit\b/.test(command) && /\bcommit\b/.test(command))
+  if (commits(command) && !reusesMessage(command))
     for (const m of output.matchAll(/^\[[^\]\n]*? ([0-9a-f]{7,40})\] /gm)) found.push({ kind: 'commit', sha: m[1]! })
   if (/\bgh\b/.test(command) && /\b(?:pr|issue)\b/.test(command) && /\b(?:create|comment)\b/.test(command)) {
-    const last = output.trimEnd().split('\n').at(-1)?.trim() ?? ''
-    const m = /^https:\/\/([\w.-]+)\/([\w.-]+\/[\w.-]+)\/(pull|issues)\/\d+(?:#issuecomment-(\d+))?$/.exec(last)
-    if (m !== null)
-      found.push(m[4] !== undefined ? { kind: 'comment', url: m[0], host: m[1]!, repo: m[2]!, id: m[4] } : { kind: m[3] === 'pull' ? 'pr' : 'issue', url: m[0] })
+    const urls = [...output.matchAll(/^\s*https:\/\/([\w.-]+)\/([\w.-]+\/[\w.-]+)\/(pull|issues)\/\d+(?:#issuecomment-(\d+))?\s*$/gm)]
+    const m = urls.at(-1)
+    if (m !== undefined) {
+      const url = m[0].trim()
+      found.push(m[4] !== undefined ? { kind: 'comment', url, host: m[1]!, repo: m[2]!, id: m[4] } : { kind: m[3] === 'pull' ? 'pr' : 'issue', url })
+    }
   }
   return found
 }
@@ -140,11 +155,40 @@ export function directories(command: string, cwd: string, home?: string): string
   return dirs
 }
 
-// The refspec's source of a `git push`: what it sends, `HEAD` when none is named.
-export function pushedRef(argv: readonly string[]): string {
-  const args = argv.slice(argv.indexOf('push') + 1).filter(a => !a.startsWith('-'))
+// git push's options that take their value as the next word.
+const PUSH_VALUED = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec'])
+
+// The refspec's source of a `git push`: what it sends, `HEAD` when none is named, or undefined for
+// a push that sends no commits (a delete, or tags alone).
+export function pushedRef(argv: readonly string[]): string | undefined {
+  const words = argv.slice(argv.indexOf('push') + 1)
+  const args: string[] = []
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i]!
+    if (['--delete', '-d', '--tags', '--prune'].includes(w)) return undefined
+    if (PUSH_VALUED.has(w)) i++
+    else if (!w.startsWith('-')) args.push(w)
+  }
   const spec = args[1]
   if (spec === undefined) return 'HEAD'
+  if (spec.startsWith(':')) return undefined
   const source = spec.replace(/^\+/, '').split(':')[0]!
   return source === '' ? 'HEAD' : source
+}
+
+const unquote = (w: string) => w.replace(/^(["'])(.*)\1$/, '$2')
+
+// Each `git push` in a shell line: the directory it runs in (its `-C`, else the last `cd` before
+// it) and what it sends (undefined when it sends no commits). `push` counts only as git's
+// subcommand, so `git stash push` and a message that says push are not pushes.
+export function pushes(command: string, cwd: string, home?: string): { dir: string; ref?: string }[] {
+  const found: { dir: string; ref?: string }[] = []
+  for (const m of command.matchAll(new RegExp(`${GIT}push\\b([^;&|\\n]*)`, 'g'))) {
+    let dir = cwd
+    for (const c of command.slice(0, m.index).matchAll(/\bcd\s+("[^"]*"|'[^']*'|[^\s;&|]+)/g)) dir = resolvePath(dir, unquote(c[1]!), home)
+    for (const c of m[1]!.matchAll(/-C\s+("[^"]*"|'[^']*'|[^\s;&|]+)/g)) dir = resolvePath(dir, unquote(c[1]!), home)
+    const args = (m[2]!.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map(unquote)
+    found.push({ dir, ref: pushedRef(['git', 'push', ...args]) })
+  }
+  return found
 }
