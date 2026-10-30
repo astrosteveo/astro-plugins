@@ -304,6 +304,15 @@ async function mergePullRequest($: EngineInterface, place: Place, input: Input):
 // Rung on each event that may have ended a round's review, so the round looks at once.
 const doorbell = bell()
 const desk: { pending?: Pending } = {}
+// What the round said of each review it ran: in place of the raw report in the review's notice, and
+// as the notice's row.
+const told = new Map<string, { note: string; label: string }>()
+// The review agent of the round running now, once known, and when that round ends.
+let current: string | undefined
+let ended: Promise<void> = Promise.resolve()
+
+const NOTICE = /<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g
+
 // The review agents rounds have run, and the agents of theirs a round stopped: their task
 // notifications repeat what the round reported, and none of them is a later round's review.
 const reviews = new Set<string>()
@@ -322,6 +331,9 @@ type Wishes = Pick<RoundAsk, 'intent' | 'level' | 'maxFindings' | 'force' | 'sig
 async function round($: EngineInterface, place: Place, settings: Settings, wishes: Wishes) {
   if (busy) return { ok: false as const, text: 'A review round is running already: wait for it to finish.' }
   busy = true
+  current = undefined
+  let settle = () => undefined as void
+  ended = new Promise<void>(resolve => (settle = resolve))
   activeRoot = place.root
   others.clear()
   before = new Set((await $.agent.list().catch(() => [])).map(agent => agent.id))
@@ -346,8 +358,10 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
       edit: change => edit($, place, change),
     })
     isSaved = outcome.ok
+    if (current !== undefined) told.set(current, tell(outcome, wishes.force, place.head))
     return outcome
   } finally {
+    settle()
     busy = false
     activeRoot = undefined
     // The band's activity for the round's review goes with the round.
@@ -361,6 +375,18 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
 }
 
 /**
+ * What a review's notice says once its round is over. The model that called the review tool has the
+ * round's result already; after the person's /review-gate, the notice starts a turn of its own and
+ * carries the result, so the model follows up with its suggestions.
+ */
+function tell(outcome: Awaited<ReturnType<typeof runRound>>, isPerson: boolean, head: string) {
+  if (!outcome.ok) return { note: `review-gate recorded nothing from this review: ${outcome.text}`, label: 'the round recorded nothing' }
+  const label = `round ${outcome.round} recorded`
+  if (!isPerson) return { note: `review-gate recorded this review as round ${outcome.round}, and the review tool's result holds its findings: nothing more to do for this notice.`, label }
+  return { note: `The user ran /review-gate, and review-gate recorded this review as round ${outcome.round}:\n\n${outcome.text}\n\n${followUp(outcome.ledger, head)}`, label }
+}
+
+/**
  * Takes an agent as the round's review, on proof: the agent list says this plugin started it, or the
  * Skill tool names it. The first proof wins. Every agent proved
  * a review is remembered, so its task notices are the round's, no later round takes it for its own,
@@ -371,6 +397,7 @@ async function bind($: EngineInterface, agentId: string) {
   const pending = desk.pending
   if (pending === undefined || pending.agentId !== undefined) return
   pending.agentId = agentId
+  current = agentId
   await update($, run, current => (current === null ? current : { ...current, agentId }))
 }
 
@@ -496,24 +523,39 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  // A review's outcome reaches the conversation as the round's result. The notification the engine
-  // also sends for a review run in the background would hand the model /code-review's raw report a
-  // second time, findings the round left out included, so it is dropped.
+  // The engine sends a notice when a review run in the background ends, and its result is
+  // /code-review's raw report, findings the round left out included. The round has reported the
+  // review already, so the notice carries the round's word in its place. A notice delivered into the
+  // turn that called the review tool tells the model only that; one that starts a turn of its own,
+  // after the person's /review-gate, carries the round's result and asks for suggestions. A drop
+  // would put a warning row on the person's screen instead.
   on('prompt.submit', async (_, e, next) => {
     if (e.origin.kind !== 'task-notification') return next(e)
     const ids = [...reviews, desk.pending?.agentId].filter((one): one is string => one !== undefined && e.text.includes(`<task-id>${one}</task-id>`))
     if (ids.length === 0) return next(e)
     doorbell.ring()
-    // A delivery may carry other tasks' notices beside the review's: only the review's go, and the
-    // rest passes on. A review's id left outside any notice the hook can read, or a delivery with no
-    // other notice left, is dropped whole, so the review's raw report never reaches the model.
-    const text = e.text.replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g, notice =>
-      ids.some(id => notice.includes(`<task-id>${id}</task-id>`)) ? '' : notice,
-    )
-    const isClean = !ids.some(id => text.includes(`<task-id>${id}</task-id>`))
-    if (isClean && /<task-notification\b/.test(text)) return next({ ...e, text })
-    return { drop: 'review-gate: duplicate review report skipped' }
+    // The notice can come while its round still checks and saves what the review found.
+    if (busy) await ended
+    const text = e.text.replace(NOTICE, notice => {
+      const id = ids.find(one => notice.includes(`<task-id>${one}</task-id>`))
+      if (id === undefined) return notice
+      const word = `<result>${told.get(id)?.note ?? 'review-gate handled this review already: nothing to do.'}</result>`
+      return /<result>[\s\S]*?<\/result>/.test(notice)
+        ? notice.replace(/<result>[\s\S]*?<\/result>/, () => word)
+        : notice.replace(/<\/task-notification>$/, () => `${word}</task-notification>`)
+    })
+    // A review's id outside any notice the hook can read may carry its raw report, so the delivery goes.
+    const outside = e.text.replace(NOTICE, '')
+    return !ids.some(id => outside.includes(id)) ? next({ ...e, text }) : { drop: 'review-gate: a review report it could not read was kept out' }
   }).catch((_, e, next) => next(e))
+
+  // A review's notice row is one dim line: the round's card above already shows what it found.
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    const id = e.props.task?.id
+    if (e.props.isExpanded || id === undefined || !reviews.has(id)) return next(e)
+    const { Text } = $.ui.resolve(e)
+    return <Text dimColor>  review-gate · {told.get(id)?.label ?? '/code-review ended'}</Text>
+  })
 
   // A subagent's turn's end may be the review's; the main thread's end is a moment to look at git again.
   on('turn.complete', async ($, e, next) => {

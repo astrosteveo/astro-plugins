@@ -571,15 +571,15 @@ test("a level the call or the person names wins, max is the person's alone, --ma
   expect(reviews.length).toBe(3)
 })
 
-test("a review's task notification is kept out of the conversation, and others pass", async ($, on) => {
+test("a review's task notification carries the round's word in place of its raw report, and others pass", async ($, on) => {
   const { reviews } = engine(on, world({ background: true }))
   await start($)
   const call = $.tool.call({ tool: REVIEW })
   const { one } = await act($, reviews, 0)
   await call
   const notice = (id: string) => $.prompt.submit({ text: `<task-notification><task-id>${id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
-  expect(await notice(one.id)).toEqual({ drop: 'review-gate: duplicate review report skipped' })
-  expect((await notice('other-agent')).text).toContain('<task-id>other-agent</task-id>')
+  expect((await notice(one.id)).text).toBe(`<task-notification><task-id>${one.id}</task-id><result>review-gate recorded this review as round 1, and the review tool's result holds its findings: nothing more to do for this notice.</result></task-notification>`)
+  expect((await notice('other-agent')).text).toContain('<task-id>other-agent</task-id><result>[raw]</result>')
   expect((await $.prompt.submit({ text: `about ${one.id}`, wait: false, origin: { kind: 'composer' } })).text).toBe(`about ${one.id}`)
 })
 
@@ -1153,7 +1153,7 @@ test('a review that recorded, then failed, keeps its record; one that failed to 
   expect(repo.now - now < 60_000).toBe(true)
 })
 
-test('a background review the round does not hear from is stopped, with the agents it started, and their notices stay out', async ($, on) => {
+test('a background review the round does not hear from is stopped, with the agents it started, and their raw reports stay out', async ($, on) => {
   const repo = world({ background: true })
   const { store, reviews, stops, ended } = engine(on, repo)
   await start($)
@@ -1169,7 +1169,9 @@ test('a background review the round does not hear from is stopped, with the agen
   expect(ledgerOf(store).findings.map(finding => finding.id)).toEqual(['R1-1'])
   const notice = (id: string) => `<task-notification><task-id>${id}</task-id><result>[raw]</result></task-notification>`
   const submitted = await $.prompt.submit({ text: `${notice('angle-1')}\n${notice('helper')}`, wait: false, origin: { kind: 'task-notification' } })
-  expect(submitted.text?.trim()).toBe(notice('helper'))
+  expect(submitted.text?.trim()).toBe(
+    `<task-notification><task-id>angle-1</task-id><result>review-gate handled this review already: nothing to do.</result></task-notification>\n${notice('helper')}`,
+  )
 })
 
 test('a stop the session refuses, as right after Esc, is asked again a moment later', async ($, on) => {
@@ -1259,7 +1261,7 @@ test('where sleep cannot run, the round stops waiting for a background review at
   expect(stops).toEqual([one.id])
 })
 
-test("a delivery keeps other tasks' notices, and drops the review's whole when the hook cannot cut it out", async ($, on) => {
+test("a delivery keeps other tasks' notices, and is dropped when the review's id sits outside any notice the hook reads", async ($, on) => {
   const { reviews } = engine(on, world({ background: true }))
   await start($)
   const call = $.tool.call({ tool: REVIEW })
@@ -1268,11 +1270,11 @@ test("a delivery keeps other tasks' notices, and drops the review's whole when t
   const submit = (text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'task-notification' } })
   const other = '<task-notification><task-id>build-7</task-id><status>completed</status></task-notification>'
   const mine = `<task-notification id="n1"><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`
-  expect((await submit(`${mine}\n${other}`)).text?.trim()).toBe(other)
-  // Framing with no other notice left, and the id in a form the hook does not read, are dropped.
-  const dropped = { drop: 'review-gate: duplicate review report skipped' }
-  expect(await submit(`A background task finished:\n${mine}`)).toEqual(dropped)
-  expect(await submit(`<notice><task-id>${one.id}</task-id>[raw]</notice>\n${other}`)).toEqual(dropped)
+  const told = `<task-notification id="n1"><task-id>${one.id}</task-id><result>review-gate recorded this review as round 1, and the review tool's result holds its findings: nothing more to do for this notice.</result></task-notification>`
+  expect((await submit(`${mine}\n${other}`)).text?.trim()).toBe(`${told}\n${other}`)
+  expect((await submit(`A background task finished:\n${mine}`)).text).toBe(`A background task finished:\n${told}`)
+  // The id in a form the hook does not read may carry the raw report, so the delivery goes.
+  expect(await submit(`<notice><task-id>${one.id}</task-id>[raw]</notice>\n${other}`)).toEqual({ drop: 'review-gate: a review report it could not read was kept out' })
 })
 
 test('open findings are looked at again when the new commits change only skipped files, and findings in skipped files are left out', async ($, on) => {
@@ -1330,7 +1332,7 @@ test('an agent the main conversation starts during a round is never taken for th
   expect(String((await call).result)).toContain('R1-1')
   const notice = (id: string) => $.prompt.submit({ text: `<task-notification><task-id>${id}</task-id></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
   expect((await notice('tests-1')).text).toContain('<task-id>tests-1</task-id>')
-  expect(await notice(one.id)).toEqual({ drop: 'review-gate: duplicate review report skipped' })
+  expect((await notice(one.id)).text).toBe(`<task-notification><task-id>${one.id}</task-id><result>review-gate recorded this review as round 1, and the review tool's result holds its findings: nothing more to do for this notice.</result></task-notification>`)
 })
 
 test('no agent answers at the gate for the whole round, the risk check included', async ($, on) => {
@@ -1354,7 +1356,7 @@ test('no agent answers at the gate for the whole round, the risk check included'
   expect(ledgerOf(store).findings.map(one => one.status)).toEqual(['open'])
 })
 
-test("a review the round ends before its first tool call still has its notice kept out", async ($, on) => {
+test("a review the round ends before its first tool call still has its raw report kept out", async ($, on) => {
   const { reviews } = engine(on, world({ background: true, skillSource: 'projectSettings' }))
   await start($)
   const call = $.tool.call({ tool: REVIEW })
@@ -1362,7 +1364,7 @@ test("a review the round ends before its first tool call still has its notice ke
   const one = reviews[0] as Review
   expect(String((await call).deny)).toContain('so review-gate did not run it as its review')
   const notice = await $.prompt.submit({ text: `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
-  expect(notice).toEqual({ drop: 'review-gate: duplicate review report skipped' })
+  expect(notice.text).toContain('<result>review-gate recorded nothing from this review: The skill named code-review here comes from its projectSettings skills')
 })
 
 test("another task's notice that names the review's output file passes beside the review's", async ($, on) => {
@@ -1374,7 +1376,7 @@ test("another task's notice that names the review's output file passes beside th
   const monitor = `<task-notification><task-id>mon-2</task-id><summary>Watched /tmp/tasks/${one.id}.output to its end</summary></task-notification>`
   const mine = `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`
   const passed = await $.prompt.submit({ text: `${mine}\n${monitor}`, wait: false, origin: { kind: 'task-notification' } })
-  expect(passed.text?.trim()).toBe(monitor)
+  expect(passed.text?.trim()).toBe(`<task-notification><task-id>${one.id}</task-id><result>review-gate recorded this review as round 1, and the review tool's result holds its findings: nothing more to do for this notice.</result></task-notification>\n${monitor}`)
 })
 
 test('no agent answers at the gate, the review and its agents included, during a round or after it', async ($, on) => {
@@ -1564,4 +1566,41 @@ test('after a round, Claude suggests what to do with each open finding, or the n
   expect(followUp({ ...reviewed, findings: [finding({})] }, ONE)).toContain('Tell the user what you suggest for the open finding, a line each by its id')
   expect(followUp(reviewed, ONE)).toBe('Tell the user the review passed, and suggest the next step, such as opening the pull request.')
   expect(followUp(reviewed, TWO)).toBe('Tell the user what the review found, then review the new commits.')
+})
+
+test("after the person's own round, the review's notice carries the round's result and asks Claude for its suggestions", async ($, on) => {
+  const { reviews } = engine(on, world({ background: true }))
+  await start($)
+  const run = $.command.run({ command: 'review-gate', args: '', ...person })
+  const { one } = await act($, reviews, 0, { findings: [SKIPPED_PAGE] })
+  await run
+  const { text } = await $.prompt.submit({ text: `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`, wait: false, origin: { kind: 'task-notification' } })
+  expect(text).toContain('<result>The user ran /review-gate, and review-gate recorded this review as round 1:\n\nReview round 1 of feat/app')
+  expect(text).toContain('Tell the user what you suggest for the open finding, a line each by its id')
+  expect(text?.includes('[raw]')).toBe(false)
+})
+
+test("a review's notice row draws as one dim line, and ctrl+o shows it whole", async ($, on) => {
+  const { reviews } = engine(on, world({ background: true }))
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  const { one } = await act($, reviews, 0)
+  await call
+  const mount = (id: string, isExpanded: boolean) =>
+    $.ui.mount({
+      plugin: 'review-gate',
+      surface: 'terminal',
+      component: 'UserMessage',
+      requestId: `row-${id}-${isExpanded}`,
+      props: { text: 'Agent finished', origin: { kind: 'task-notification' }, isExpanded, task: { id, status: 'killed' } },
+    })
+  const drawn = async (id: string, isExpanded: boolean) => {
+    const row = await mount(id, isExpanded)
+    const said = (await row.findAll({ type: 'Text' })).map(text => text.text).join('')
+    await row.unmount()
+    return said
+  }
+  expect(await drawn(one.id, false)).toBe('  review-gate · round 1 recorded')
+  expect(await drawn(one.id, true)).toBe('engine')
+  expect(await drawn('other-agent', false)).toBe('engine')
 })
