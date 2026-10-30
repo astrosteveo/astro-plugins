@@ -65,11 +65,19 @@ const MAX_SHOWN = 25
 
 // The problems as lines for the model to act on.
 export function list(found: readonly Problem[]): string {
-  const rows = found.slice(0, MAX_SHOWN).map(p => {
+  // A word used twice is one fix, listed once.
+  const seen = new Set<string>()
+  const unique = found.filter(p => {
+    const key = `${flat(p.quote)}|${p.why}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  const rows = unique.slice(0, MAX_SHOWN).map(p => {
     const quote = p.quote.length > 80 ? `${p.quote.slice(0, 77)}...` : p.quote
     const fix = p.fix === undefined || p.fix === '' ? '' : ` Plainer: ${p.fix === 'cut' ? 'cut it' : `"${p.fix}"`}.`
     return `- "${quote}": ${p.why.replace(/\.?$/, '.')}${fix}`
   })
-  if (found.length > MAX_SHOWN) rows.push(`- ...and ${found.length - MAX_SHOWN} more.`)
+  if (unique.length > MAX_SHOWN) rows.push(`- ...and ${unique.length - MAX_SHOWN} more.`)
   return rows.join('\n')
 }

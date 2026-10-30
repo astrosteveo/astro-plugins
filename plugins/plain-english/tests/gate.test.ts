@@ -207,3 +207,10 @@ test('a clean report, an empty one and a JSON answer finish as they are', async 
   }
   expect(w.asked).toHaveLength(1)
 })
+
+test('a word used twice is listed once', async ($, on) => {
+  const w = world()
+  engine(on, w)
+  const r = await call($, 'Bash', { command: 'git commit -m "feat: a robust, robust parser"' })
+  expect(refusal(r).match(/"robust"/g)).toHaveLength(1)
+})
