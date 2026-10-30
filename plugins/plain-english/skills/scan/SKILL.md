@@ -19,11 +19,11 @@ Find the Claudisms that got past the Plain English style, and rewrite them.
 
 Load the tool with ToolSearch (`select:mcp__plain-english__scan`) if it is not loaded yet. Call it once per file with `path`, once with `text` for pasted text or a draft, or with neither for your last reply. If it refuses a path for permission, read the file with Read and pass its text.
 
-The tool skips fenced and indented code, inline code, block quotes, HTML comments, URLs and frontmatter, but not text in quotation marks. It matches phrases across wrapped lines within a paragraph. It returns two lists. Rewrite each entry in the Rewrite list: its words and phrases are almost never right. The Check list has words that are fine when used literally, such as a config that `lives in` a folder, a promise that `settles` or a data `shape`; keep the literal ones and rewrite the metaphors.
+The tool skips fenced and indented code, inline code, block quotes, HTML comments, URLs and frontmatter, but not text in quotation marks. It matches phrases across wrapped lines within a paragraph. It returns two lists from a word scan, then, for text of 25 words or more, a third list of what a model found reading it. Rewrite each entry in the Rewrite list: its words and phrases are almost never right. The Check list has words that are fine when used literally, such as a config that `lives in` a folder, a promise that `settles` or a data `shape`; keep the literal ones and rewrite the metaphors.
 
 ## 3. Read for what a search misses
 
-A word search cannot see these forms. Read the text for them yourself:
+A word search cannot see these forms, and the model's list may miss some. Read the text for them yourself:
 
 - A crowned superlative with a new noun: `the whole lesson`, `the one that [verb]`, `the only factor that changed`.
 - Negative parallelism split across sentences or worded afresh.
