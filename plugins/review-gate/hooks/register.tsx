@@ -394,7 +394,7 @@ async function round($: EngineInterface, place: Place, settings: Settings, wishe
  * Takes an agent as the round's review, on proof: the agent list says this plugin started it, the
  * Skill tool names it, or it records with the round's name. The first proof wins. Every agent proved
  * a review is remembered, so its task notices are the round's, no later round takes it for its own,
- * and it changes nothing once its round is over.
+ * and it never answers at the gate.
  */
 async function bind($: EngineInterface, agentId: string) {
   reviews.add(agentId)
@@ -406,9 +406,10 @@ async function bind($: EngineInterface, agentId: string) {
 
 /**
  * What an agent is to the gate: the round's review; one that may be it, while the round has yet to
- * learn which agent its review is; a review of an earlier round, which a notice or a message can wake
- * once its round is over; or none of these. The review starts no agents of its own, so there is no
- * tree below it to follow.
+ * learn which agent its review is, which may record with the round's name and so prove it; a review
+ * of an earlier round, which a notice or a message can wake once its round is over; or none of these.
+ * Agents the review starts, as /code-review max does, are none of these: they neither record nor
+ * answer at the gate, since the review is known by then.
  */
 type Scope = 'review' | 'maybe' | 'past' | 'other'
 
@@ -420,32 +421,18 @@ async function scopeOf($: EngineInterface, agentId: string): Promise<Scope> {
   if (pending === undefined || pending.agentId !== undefined || others.has(agentId)) return 'other'
   const agent = (await $.agent.list()).find(one => one.id === agentId)
   // The review is listed with this plugin's name from its first call, as a live session shows. An
-  // agent the list does not show yet is held to the review's rule, and asked about again at its next
-  // call, until the review is known.
+  // agent the list does not show yet is asked about again at its next call.
   if (agent === undefined) return 'maybe'
   if (!before.has(agentId) && agent.spawnedBy === PLUGIN) {
     await bind($, agentId)
     return 'review'
   }
   // A new agent that no plugin and no agent started may be the review too, should the engine not name
-  // this plugin for it: held to the rule until the review is known, and never bound for this alone.
+  // this plugin for it, but only its record proves it.
   if (!before.has(agentId) && agent.spawnedBy === undefined && agent.parentId === undefined) return 'maybe'
   others.add(agentId)
   return 'other'
 }
-
-// What a review may use without --fix, and with it until it has recorded: tools that read, its
-// record, and shell commands the engine's own check calls reads. It works alone: an agent of its own,
-// a message to another, an MCP tool or anything else could act for it, so all are refused.
-const READS = new Set([RECORD, 'Read', 'Grep', 'Glob', 'LSP', 'TodoWrite', 'ToolSearch'])
-
-const onlyReads = (tool: string, isReadOnly: boolean) => READS.has(tool) || (tool === 'Bash' && isReadOnly)
-
-const READ_ONLY =
-  'review-gate: this review only reads. It may read and search files and run shell commands the engine counts as reads, such as git diff and git show. It works alone: it may not change files, start or message agents, or use other tools.'
-const RECORD_FIRST = 'review-gate: record the findings with the record tool first, then fix them. Until then the review only reads, and works alone.'
-const ROUND_OVER = 'review-gate: this agent is a review whose round is over, so it changes nothing now.'
-const NOT_PLACED = "review-gate: the gate could not tell whether this agent is the round's review, so it holds it to the review's rule: it may only read."
 
 // An agent answers nothing at the gate while a round runs, and a review never does: a finding's answer
 // and a pull request are the session's main conversation's to give.
@@ -589,29 +576,6 @@ export const register: Register = (on, options) => {
     }
     return next(e)
   }).catch((_, e, next) => next(e))
-
-  // The review reads the branch, which may be someone else's, so it changes nothing unless the round
-  // runs with --fix, and then only once it has recorded what it read. The engine's own check says
-  // which calls only read, before they run, and a deny here holds in every permission mode, bypass
-  // included. This keeps the review from changing things; what it may read or send out is the
-  // session's permission mode's call, as for /code-review run by hand.
-  on('tool.check', async ($, e, next) => {
-    const verdict = await next(e)
-    if (e.agentId === undefined || verdict.decision === 'deny' || onlyReads(e.tool, e.isReadOnly === true)) return verdict
-    const scope = await scopeOf($, e.agentId)
-    if (scope === 'other') return verdict
-    const pending = desk.pending
-    // With --fix the review may change files once it has recorded, in its own round.
-    if (scope === 'review' && pending?.plan.fix === true && pending.record !== undefined) return verdict
-    const reason = scope === 'past' ? ROUND_OVER : scope === 'maybe' ? NOT_PLACED : pending?.plan.fix === true ? RECORD_FIRST : READ_ONLY
-    return { decision: 'deny' as const, reason }
-  }).catch((_, e, next) =>
-    // A lookup that fails holds only an agent that may be the review: a known one, or any while the
-    // round has yet to learn which agent its review is.
-    e.agentId !== undefined && (reviews.has(e.agentId) || (desk.pending !== undefined && desk.pending.agentId === undefined))
-      ? { decision: 'deny' as const, reason: NOT_PLACED }
-      : next(e),
-  )
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)

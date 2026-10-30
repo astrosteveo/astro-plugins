@@ -1294,48 +1294,28 @@ test('open findings are looked at again when the new commits change only skipped
   expect(ledgerOf(store).findings.map(one => [one.id, one.status])).toEqual([['R1-1', 'fixed']])
 })
 
-test('without --fix the review only reads, alone; with it, it changes nothing until it has recorded; a review changes nothing once its round is over; other agents are free', async ($, on) => {
-  const repo = world({ agents: [{ id: 'helper-0', type: 'general-purpose' }] })
-  const { reviews } = engine(on, repo)
+test('the review has the tools /code-review has when run by hand: the gate refuses none of its calls, and its agents neither record nor answer', async ($, on) => {
+  const repo = world()
+  const { store, reviews } = engine(on, repo)
+  seed(store, { rounds: [round(1, BASE, 1)], findings: [finding({})], reviewed: BASE })
   await start($)
-  const verdict = (agentId: string, tool: string, isReadOnly = false) => $.tool.check({ tool, input: {}, agentId, ...(isReadOnly ? { isReadOnly: true as const } : {}) })
-  const check = async (agentId: string, tool: string, isReadOnly = false) => (await verdict(agentId, tool, isReadOnly)).decision
   const call = $.tool.call({ tool: REVIEW })
   await until($, 'the review', () => reviews.length === 1)
   const one = reviews[0] as Review
-  expect(one.prompt).toContain('- Work alone: read and search files yourself, and run only shell commands that read.')
-  expect(await check(one.id, 'Edit')).toBe('deny')
-  expect(await check(one.id, 'Bash')).toBe('deny')
-  expect(await check(one.id, 'Bash', true)).toBe('allow')
-  expect(await check(one.id, 'Read')).toBe('allow')
-  expect(await check(one.id, RECORD)).toBe('allow')
-  // It works alone, with the read tools and shell reads: no agent of its own in any form, no message to
-  // another, no fetch, and no MCP tool, whatever each says of itself.
-  expect(await check(one.id, 'Agent', true)).toBe('deny')
-  expect(await check(one.id, 'SendMessage', true)).toBe('deny')
-  expect(await check(one.id, 'WebFetch', true)).toBe('deny')
-  expect(await check(one.id, 'mcp__docs__publish', true)).toBe('deny')
-  // An agent the session had before the round is not the review.
-  expect(await check('helper-0', 'Write')).toBe('allow')
-  expect((await verdict(one.id, 'Edit')).reason).toContain('review-gate: this review only reads.')
+  expect(one.prompt.includes('Work alone')).toBe(false)
+  expect(one.prompt).toContain('Leave HEAD where it is: read other commits with git show or git diff, and do not commit, check out or reset, or the round records nothing.')
+  // The session's own rules decide each call, as for /code-review: max hands its angles to agents.
+  for (const tool of ['Agent', 'Bash', 'Edit']) expect((await $.tool.check({ tool, input: {}, agentId: one.id })).decision).toBe('allow')
+  // Its first call names the review; an agent it starts records nothing and answers nothing.
+  await $.tool.call({ tool: 'Agent', agentId: one.id, description: 'an angle', prompt: 'look at the paging' })
+  repo.agents = [{ id: 'angle-1', type: 'general-purpose', parentId: one.id }]
+  expect(String((await $.tool.call({ tool: RECORD, agentId: 'angle-1', round: one.token, findings: [SKIPPED_PAGE] })).deny)).toContain('record takes the findings')
+  expect(String((await $.tool.call({ tool: DISMISS, agentId: 'angle-1', ids: ['R1-1'], reason: 'The angle thinks it is fine as it is.' })).deny)).toContain(
+    'findings are answered from the main conversation',
+  )
   await act($, reviews, 0)
   await call
-
-  const fixing = $.command.run({ command: 'review-gate', args: '--fix', ...person })
-  await until($, 'the second review', () => reviews.length === 2)
-  const two = reviews[1] as Review
-  expect(await verdict(two.id, 'Edit')).toEqual({ decision: 'deny', reason: 'review-gate: record the findings with the record tool first, then fix them. Until then the review only reads, and works alone.' })
-  await $.tool.call({ tool: RECORD, agentId: two.id, round: two.token, findings: [SKIPPED_PAGE] })
-  expect(await check(two.id, 'Edit')).toBe('allow')
-  await reply($, two.id, 'Done.')
-  two.finish('Done.')
-  await fixing
-  // A review woken after its round, by a notice or a message, changes nothing.
-  expect(await verdict(two.id, 'Edit')).toEqual({ decision: 'deny', reason: 'review-gate: this agent is a review whose round is over, so it changes nothing now.' })
-  expect(await check(one.id, 'Bash')).toBe('deny')
-  // Outside a round, the gate leaves every other agent's call to the session's own rules.
-  expect(await check('helper-0', 'Edit')).toBe('allow')
-  expect(await check('agent-z', 'Edit')).toBe('allow')
+  expect(ledgerOf(store).rounds[1]?.calls).toBe(2)
 })
 
 test('an agent the main conversation starts during a round is never taken for the review', async ($, on) => {
@@ -1415,26 +1395,6 @@ test("another task's notice that names the review's output file passes beside th
   const mine = `<task-notification><task-id>${one.id}</task-id><result>[raw]</result></task-notification>`
   const passed = await $.prompt.submit({ text: `${mine}\n${monitor}`, wait: false, origin: { kind: 'task-notification' } })
   expect(passed.text?.trim()).toBe(monitor)
-})
-
-test('an agent the list does not show is held only until the review is known', async ($, on) => {
-  const { reviews } = engine(on, world())
-  await start($)
-  const call = $.tool.call({ tool: REVIEW })
-  await until($, 'the review', () => reviews.length === 1)
-  const one = reviews[0] as Review
-  // A workflow's agent, which no list names, may be the review while the round has yet to learn which
-  // agent its review is.
-  expect(await $.tool.check({ tool: 'Edit', input: {}, agentId: 'workflow-7' })).toEqual({
-    decision: 'deny',
-    reason: "review-gate: the gate could not tell whether this agent is the round's review, so it holds it to the review's rule: it may only read.",
-  })
-  // The review's first call names it, and from then on only the review is held.
-  await $.tool.call({ tool: 'Read', agentId: one.id, file_path: '/repo/src/app.ts' })
-  expect((await $.tool.check({ tool: 'Edit', input: {}, agentId: 'workflow-7' })).decision).toBe('allow')
-  expect((await $.tool.check({ tool: 'Edit', input: {}, agentId: one.id })).decision).toBe('deny')
-  await act($, reviews, 0)
-  await call
 })
 
 test('a review never answers at the gate, during its round or after it', async ($, on) => {
