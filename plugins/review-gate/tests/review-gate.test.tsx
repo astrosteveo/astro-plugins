@@ -2,8 +2,8 @@ import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { Finding, Ledger, Round, Run } from '../types'
-import { emptyLedger, globTest } from '../hooks/ledger'
-import { leftText, liveBand } from '../hooks/views'
+import { emptyLedger, globTest, leftText } from '../hooks/ledger'
+import { liveBand } from '../hooks/views'
 import { followUp, parseRun } from '../hooks/register'
 
 // The test runtime has timers, though the hooks' own environment does not.
@@ -885,10 +885,9 @@ test("while a round runs, its state says the phase and level, and names the revi
 })
 
 test('the live band draws the round, and the review with its calls, latest action and a watch button', async ($, on) => {
-  const reviewing: Run = { round: 3, phase: 'reviewing', level: 'high', startedAt: 0, agentId: 'a1' }
+  const reviewing: Run = { round: 3, phase: 'reviewing', level: 'high', startedAt: 0, agentId: 'a1', left: 2 }
   let shown: Run = reviewing
-  let left: number | undefined = 2
-  on('ui.render', ($, e) => liveBand($, e, shown, { calls: 44, doing: 'reading hooks/review.ts' }, 370_000, left))
+  on('ui.render', ($, e) => liveBand($, e, shown, { calls: 44, doing: 'reading hooks/review.ts' }, 370_000))
   const props = { hasSurvey: false, isWorking: true, maxRows: 12, bodyColumns: 160, scroll: { offset: 0, bodyRows: 12 }, view: {} }
   const band = await $.ui.mount({ plugin: 'review-gate', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props })
   const drawn = (await band.findAll({ type: 'Text' })).map(text => text.text).join('\n')
@@ -899,7 +898,6 @@ test('the live band draws the round, and the review with its calls, latest actio
   await band.unmount()
 
   shown = { round: 3, phase: 'judging', startedAt: 0 }
-  left = undefined
   const judging = await $.ui.mount({ plugin: 'review-gate', surface: 'terminal', component: 'AbovePrompt', requestId: 'band-2', props })
   const said = (await judging.findAll({ type: 'Text' })).map(text => text.text).join('\n')
   expect(said).toContain("round 3 · judging the change's risk · 6m 10s")
@@ -943,7 +941,7 @@ test('after three rounds that leave findings open the model is refused another, 
   expect((await $.command.run({ command: 'review-gate', args: 'more', ...person })).text).toBe('feat/app may run 3 more rounds.')
   expect(ledgerOf(store).streakFrom).toBe(3)
 })
-test('the band and the summary count the rounds the cap leaves once a round has left findings open', async ($, on) => {
+test('the band and the summary count the rounds the cap leaves while findings are open', async ($, on) => {
   const repo = world({ head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts'], [TWO]: ['src/app.ts'] } })
   const { store } = engine(on, repo)
   seed(store, { rounds: [round(1, ONE, 0)], reviewed: ONE })
@@ -951,15 +949,47 @@ test('the band and the summary count the rounds the cap leaves once a round has 
   expect(await bandText($)).not.toContain('left')
   seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 1)], findings: [finding({})], reviewed: ONE })
   await start($)
-  expect(await bandText($)).toContain(' · 1 of 3 rounds left')
+  // The count ends the band, after the new commits; the engine's own band follows it.
+  expect(await bandText($)).toMatch(/○ new commits since 1111111 · 1 of 3 rounds left(engine)$/)
   expect((await $.command.run({ command: 'review-gate', args: 'status', ...person })).text).toContain(
     '1 of 3 rounds left: after 3 rounds in a row end with findings open, no further round runs until the user allows more.',
   )
-  expect([leftText(3, true), leftText(2, true), leftText(1, true), leftText(0, true)]).toEqual([
+  // The person's leave for more rounds starts the count again, in the band and the result alike.
+  await $.command.run({ command: 'review-gate', args: 'more', ...person })
+  expect(await bandText($)).toMatch(/ · 3 of 3 rounds left(engine)$/)
+  expect((await $.command.run({ command: 'review-gate', args: 'status', ...person })).text).toContain('3 of 3 rounds left: after')
+  // With every finding answered the cap does not bind, so neither says a count.
+  seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 1)], findings: [finding({ status: 'dismissed', answer: 'Fine.' })], reviewed: ONE })
+  await start($)
+  expect(await bandText($)).toBe('review · ○ new commits since 1111111engine')
+  expect((await $.command.run({ command: 'review-gate', args: 'status', ...person })).text).not.toContain('rounds left')
+})
+test('a round shows the count the cap left when it started, through its record and until it ends', async ($, on) => {
+  const repo = world({ head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts'], [TWO]: ['src/app.ts'] } })
+  const runs: (Run | null)[] = []
+  on('state.set', (_, e, next) => {
+    if (e.plugin === 'review-gate' && e.key === 'run') runs.push((e.value as unknown as { value?: Run | null }).value ?? null)
+    return next(e)
+  })
+  const { store, reviews } = engine(on, repo)
+  seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 1)], findings: [finding({})], reviewed: ONE })
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  await until($, 'the review', () => reviews.length === 1)
+  expect(await bandText($)).toContain('round 3 · /code-review high')
+  expect(await bandText($)).toContain(' · last round before the cap')
+  // The round records with the finding still open, which fills the cap; the run keeps its count.
+  await act($, reviews, 0)
+  await call
+  expect(runs.filter(run => run !== null).map(run => run?.left)).toEqual(runs.filter(run => run !== null).map(() => 1))
+  expect(await bandText($)).toContain('3 rounds without converging: step back')
+  expect(await bandText($)).not.toContain('rounds left')
+  expect([leftText(3, true), leftText(2, true), leftText(1, true), leftText(0, true), leftText(2)]).toEqual([
     '2 of 3 left after this',
     '1 of 3 left after this',
     'last round before the cap',
     'past the cap',
+    '2 of 3 rounds left',
   ])
 })
 test('a pull request opens through the tool only for a reviewed commit with nothing open, and pushes first', async ($, on) => {
