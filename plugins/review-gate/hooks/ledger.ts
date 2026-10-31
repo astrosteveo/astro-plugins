@@ -44,6 +44,15 @@ export function streak(ledger: Ledger) {
 /** Rounds the review may still run before the cap stops it, should each one leave findings open. */
 export const roundsLeft = (ledger: Ledger) => Math.max(0, ROUND_CAP - streak(ledger))
 
+/** The rounds the cap leaves, while it binds: the cap refuses a round only while a finding is open. */
+export const capLeft = (ledger: Ledger): number | undefined => (openFindings(ledger).length > 0 ? roundsLeft(ledger) : undefined)
+
+/** The count in words: what is left between rounds, or after the one running when `running` is set. */
+export function leftText(left: number, running = false) {
+  if (!running) return `${left} of ${ROUND_CAP} rounds left`
+  return left <= 0 ? 'past the cap' : left === 1 ? 'last round before the cap' : `${left - 1} of ${ROUND_CAP} left after this`
+}
+
 export const lastRound = (ledger: Ledger): Round | undefined => ledger.rounds[ledger.rounds.length - 1]
 
 /** Where a commit stands at the gate: what its pull request waits for, or that it waits for nothing. */

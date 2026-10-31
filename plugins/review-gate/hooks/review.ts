@@ -2,7 +2,7 @@ import type { EngineInterface } from 'claude-code'
 import type { Finding, Ledger, Level, Risk, Round, Run } from '../types'
 import { changedFiles, commitLog, diffOf, guideFiles, headNow, isAncestor, short, uncommitted } from './git'
 import type { Place } from './git'
-import { LEVELS, NIT_CAP, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, levelFor, nothingOpen, openFindings, parseGuide, riskNow, riskWith, roundsLeft, spent, streak, whereOf } from './ledger'
+import { LEVELS, NIT_CAP, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, levelFor, nothingOpen, openFindings, parseGuide, riskNow, riskWith, capLeft, leftText, spent, streak, whereOf } from './ledger'
 import type { Recheck } from './ledger'
 import { RISK, readRisk, riskPrompt } from './prompts'
 import type { Context, Plan } from './prompts'
@@ -391,7 +391,9 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
 
   const startedAt = await $.clock.now()
   const n = (last?.n ?? 0) + 1
-  await ask.progress(() => ({ round: n, phase: 'judging', startedAt }))
+  // The count the band shows for this round is the one the cap left when it started.
+  const left = capLeft(ledger)
+  await ask.progress(() => ({ round: n, phase: 'judging', startedAt, ...(left === undefined ? {} : { left }) }))
   const files = await changedFiles(git, place.base, place.head)
   const guides = (await guideFiles(git, place.base, files)).map(file => parseGuide(file.path, file.text))
   const skip = guides.flatMap(guide => guide.skip)
@@ -619,9 +621,9 @@ export function summary(ledger: Ledger, n: number) {
   const cost = spent(round)
   const calls = round.calls === undefined ? '' : `, and the review made ${round.calls} tool call${round.calls === 1 ? '' : 's'}`
   if (cost !== '') lines.push(`The round took ${cost}${calls}.`)
-  const left = roundsLeft(ledger)
-  if (open.length > 0 && left > 0)
-    lines.push(`${left} of ${ROUND_CAP} rounds left: after ${ROUND_CAP} rounds in a row end with findings open, no further round runs until the user allows more.`)
+  const left = capLeft(ledger) ?? 0
+  if (left > 0)
+    lines.push(`${leftText(left)}: after ${ROUND_CAP} rounds in a row end with findings open, no further round runs until the user allows more.`)
   if (open.length > 0 && streak(ledger) >= ROUND_CAP) lines.push(stepBack(ledger))
   return lines.join('\n\n')
 }

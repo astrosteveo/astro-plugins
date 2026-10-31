@@ -94,6 +94,8 @@ export type Run = {
   startedAt: number
   /** The review's agent, once it has made a tool call. */
   agentId?: string
+  /** Rounds the cap left when this one started, set while a finding was open then. */
+  left?: number
 }
 
 /** What the review's agent is doing: its tool calls so far, and its latest. */
