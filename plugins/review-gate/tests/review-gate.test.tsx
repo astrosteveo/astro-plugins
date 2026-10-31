@@ -85,10 +85,10 @@ type World = {
   originHead?: string
   /** Where the branch forks from main, as after a merge of main; left out, BASE. */
   forkAt?: string
-  /** The pull requests open from a branch of this name, a fork's included. */
-  prs?: { url: string; baseRefName: string; isCrossRepository?: boolean }[]
-  /** Whether gh fails to list them. */
-  prListFails?: boolean
+  /** Whether the branch has a pull request open already, which gh pr create refuses to repeat. */
+  prOpen?: boolean
+  /** Whether origin's copy of the branch has commits the pushed one lacks, as after a rebase. */
+  pushRejected?: boolean
 }
 
 /** A run of /code-review the round started: what it was asked, and the hand that ends it. */
@@ -158,7 +158,8 @@ function engine(on: On, repo: World) {
     }
     if (sub === 'log') return ran(0, '1111111 Add the app\n\nIt pages through results.\n\0')
     if (sub === 'for-each-ref') return ran(0, (repo.branches ?? ['main', 'feat/app']).map(name => `${name}\n`).join(''))
-    if (sub === 'push') return ran(0)
+    if (sub === 'push')
+      return repo.pushRejected === true ? ran(1, '', ' ! [rejected]        feat/app -> feat/app (non-fast-forward)\nerror: failed to push some refs') : ran(0)
     const guided = repo.guide !== undefined && (rest.includes(repo.guideAt ?? BASE) || rest[0] === `${repo.guideAt ?? BASE}:REVIEW.md`)
     if (sub === 'ls-tree') return ran(0, guided ? 'REVIEW.md\0src/app.ts\0' : 'src/app.ts\0')
     if (sub === 'show') return guided ? ran(0, repo.guide ?? '') : ran(128)
@@ -176,10 +177,11 @@ function engine(on: On, repo: World) {
     return ran(0, `git ${args.join(' ')}\n`)
   }
   const gh = (args: string[]) => {
-    // The branch's own pull request, which open looks for before it makes one.
-    if (args[1] === 'list') return repo.prListFails === true ? ran(1, '', 'API rate limit exceeded') : ran(0, JSON.stringify(repo.prs ?? []))
     if (args[1] === 'view') return ran(0, JSON.stringify({ number: 7, headRefName: repo.branch, headRefOid: repo.head, state: 'OPEN' }))
-    if (args[1] === 'create') return ran(0, 'https://github.com/o/r/pull/7\n')
+    if (args[1] === 'create')
+      return repo.prOpen === true
+        ? ran(1, '', 'a pull request for branch "feat/app" into branch "main" already exists:\nhttps://github.com/o/r/pull/7\n')
+        : ran(0, 'https://github.com/o/r/pull/7\n')
     return ran(0)
   }
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -1044,40 +1046,28 @@ test('a pull request opens through the tool only for a reviewed commit with noth
   expect((await $.tool.call(open())).result).toBe('Opened https://github.com/o/r/pull/7 for feat/app at 1111111.')
   // The push names the commit, so the branch is set to track origin's copy after it.
   expect(argvs.filter(argv => argv[0] === 'gh' || argv[1] === 'push' || argv[1] === 'config')).toEqual([
-    ['gh', 'pr', 'list', '--head', 'feat/app', '--state', 'open', '--json', 'url,baseRefName,isCrossRepository'],
     ['git', 'push', 'origin', `${ONE}:refs/heads/feat/app`],
     ['git', 'config', 'branch.feat/app.remote', 'origin'],
     ['git', 'config', 'branch.feat/app.merge', 'refs/heads/feat/app'],
     ['gh', 'pr', 'create', '--head', 'feat/app', '--base', 'main', '--title', 'Add search', '--body', 'Body text'],
   ])
 })
-test('open on a branch whose pull request is open already brings it up to the reviewed commit, into the base asked for alone', async ($, on) => {
-  const RELEASE = { url: 'https://github.com/o/r/pull/7', baseRefName: 'release' }
-  const repo = world({ prs: [RELEASE] })
+test('open on a branch whose pull request is open already brings it up to the reviewed commit, and a rejected push says why', async ($, on) => {
+  const repo = world({ prOpen: true })
   const { store, argvs } = engine(on, repo)
-  const pushes = () => argvs.filter(argv => argv[0] === 'git' && argv[1] === 'push').length
-  const creates = () => argvs.filter(argv => argv[0] === 'gh' && argv[2] === 'create').length
   seed(store, { rounds: [round(1, ONE, 0)], reviewed: ONE })
   await start($)
-  expect((await $.tool.call(open())).deny).toBe(
-    'feat/app has a pull request open into release (https://github.com/o/r/pull/7) already, so nothing was pushed. Close it, or change its base with gh pr edit --base main, then open again.',
-  )
-  expect(pushes()).toBe(0)
-  // A list gh cannot read pushes nothing either.
-  repo.prListFails = true
-  expect((await $.tool.call(open())).deny).toBe("gh could not list feat/app's open pull requests, so nothing was pushed: API rate limit exceeded")
-  expect(pushes()).toBe(0)
-  repo.prListFails = false
-  // Of several, the one into the base asked for is the branch's.
-  repo.prs = [RELEASE, { url: 'https://github.com/o/r/pull/8', baseRefName: 'main' }]
   expect((await $.tool.call(open())).result).toBe(
-    'Pushed feat/app at 1111111 to its open pull request, https://github.com/o/r/pull/8. Its title and description stay as they were.',
+    'Pushed feat/app at 1111111 to its open pull request, https://github.com/o/r/pull/7. Its title and description stay as they were.',
   )
-  expect([pushes(), creates()]).toEqual([1, 0])
-  // A fork's pull request from a branch of the same name is not this branch's, so one is opened.
-  repo.prs = [{ url: 'https://github.com/o/r/pull/9', baseRefName: 'main', isCrossRepository: true }]
-  expect((await $.tool.call(open())).result).toBe('Opened https://github.com/o/r/pull/7 for feat/app at 1111111.')
-  expect([pushes(), creates()]).toEqual([2, 1])
+  expect(argvs.some(argv => argv[0] === 'git' && argv[1] === 'push')).toBe(true)
+  // After a rebase origin's copy has commits the reviewed one lacks, and replacing them is the person's call.
+  repo.pushRejected = true
+  const creates = argvs.filter(argv => argv[0] === 'gh' && argv[2] === 'create').length
+  expect((await $.tool.call(open())).deny).toBe(
+    "origin's feat/app has commits that 1111111 does not, as after a rebase or an amend, so nothing was pushed. If they should go, push with git push --force-with-lease origin feat/app, then open again.",
+  )
+  expect(argvs.filter(argv => argv[0] === 'gh' && argv[2] === 'create').length).toBe(creates)
 })
 test("a merge goes through only while the pull request's head is the reviewed commit", async ($, on) => {
   const repo = world()
