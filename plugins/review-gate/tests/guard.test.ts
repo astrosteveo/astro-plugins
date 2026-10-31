@@ -22,6 +22,14 @@ test('a command that opens or merges a pull request is caught through wrappers, 
     'GH=gh\n$GH pr create --fill',
     '"${GH}" pr merge 3',
     '$(command -v gh) pr merge 3',
+    '`command -v gh` pr merge 3',
+    '(gh pr merge 3)',
+    'gh pr -Ro/r merge 3',
+    'gh pr -R"o/r" create',
+    'gh pr -R "$(gh repo view --json nameWithOwner -q .nameWithOwner)" merge 3',
+    'gh pr -R $(gh repo view -q .x) merge 3',
+    'gh pr "merge" 3',
+    "gh 'pr' create",
   ]
   for (const command of caught) expect({ command, caught: opensOrMerges(command) }).toEqual({ command, caught: true })
   const passed = [
@@ -41,6 +49,13 @@ test('a command that opens or merges a pull request is caught through wrappers, 
     "git commit -F - <<'EOF'\nfeat: route gh through the tool\n\nThe pr merge path is refused.\nEOF",
   ]
   for (const command of passed) expect({ command, caught: opensOrMerges(command) }).toEqual({ command, caught: false })
+})
+
+test('a command with many flags after pr is read at once', () => {
+  const started = Date.now()
+  expect(opensOrMerges(`gh pr ${'--x '.repeat(40)}y`)).toBe(false)
+  expect(opensOrMerges(`gh pr ${'--x '.repeat(40)}merge`)).toBe(true)
+  expect(Date.now() - started < 50).toBe(true)
 })
 
 test('a gh api call that opens or merges a pull request is caught, and one that reads or comments is not', () => {
