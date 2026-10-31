@@ -133,7 +133,7 @@ type Memory = {
   // model read the findings and judged them wrong, as for a word used literally. A pass is kept
   // until the call runs, so a call another hook refuses keeps it.
   held: Set<string>
-  // Texts that passed, each with what it is and what it replaced, so the gh that review-gate runs
+  // Texts that passed, each with what it is and what it replaced, so the gh that an MCP tool runs
   // for a pull request already checked here costs no second model call. A text cleared in one
   // place is checked again in another.
   cleared: Set<string>
@@ -402,8 +402,8 @@ export const register: Register = on => {
     return result
   }).catch((_, e, next) => next(e))
 
-  // review-gate opens a pull request by pushing and then running gh itself, from its own tool's
-  // hook, which may sit outside this mod's: the commits the push sends, and the title and body gh
+  // An MCP tool may open a pull request by pushing and then running gh itself, from its own
+  // tool's hook, which may sit outside this mod's: the commits the push sends, and the title and body gh
   // is given, are checked here too, as each is run.
   on('process.run', async ($, e, next) => {
     const program = e.argv[0] ?? ''

@@ -174,7 +174,7 @@ test('prose files and pull request tools are matched; code, config and test file
   for (const file_path of ['/w/src/a.ts', '/w/CMakeLists.txt', '/w/requirements.txt'])
     expect(pieces('Write', { file_path, content: 'robust' }, '/w')).toEqual([])
   expect(pieces('Write', { file_path: '/w/NOTES.txt', content: 'x' }, '/w')).toHaveLength(1)
-  expect(pieces('mcp__review-gate__pull_request', { action: 'open', title: 'T', body: 'B' }, '/w')).toEqual([
+  expect(pieces('mcp__github__pull_request', { action: 'open', title: 'T', body: 'B' }, '/w')).toEqual([
     { what: 'the pull request title', text: 'T' },
     { what: 'the pull request body', text: 'B' },
   ])
@@ -314,10 +314,10 @@ test('a call refused for two pieces goes through when made again unchanged', asy
   const w = world()
   engine(on, w)
   const input = { action: 'open', title: 'Leverage the cache', body: 'A seamless handoff.' }
-  expect(refusal(await call($, 'mcp__review-gate__pull_request', input))).toContain('In the pull request body:')
-  expect(refusal(await call($, 'mcp__review-gate__pull_request', { ...input, body: 'A robust handoff.' }))).toContain('In the pull request title:')
-  await call($, 'mcp__review-gate__pull_request', { ...input, body: 'A robust handoff.' })
-  expect(w.ran).toEqual(['mcp__review-gate__pull_request'])
+  expect(refusal(await call($, 'mcp__github__pull_request', input))).toContain('In the pull request body:')
+  expect(refusal(await call($, 'mcp__github__pull_request', { ...input, body: 'A robust handoff.' }))).toContain('In the pull request title:')
+  await call($, 'mcp__github__pull_request', { ...input, body: 'A robust handoff.' })
+  expect(w.ran).toEqual(['mcp__github__pull_request'])
 })
 
 test('an edit answers only for what it adds, counting repeats', async ($, on) => {
@@ -398,7 +398,7 @@ test('a text cleared in a code fence is checked again as prose', async ($, on) =
 test('a pull request opened through an MCP tool is checked', async ($, on) => {
   const w = world()
   engine(on, w)
-  expect(refusal(await call($, 'mcp__review-gate__pull_request', { action: 'open', title: 'Leverage the cache' }))).toContain('In the pull request title:')
+  expect(refusal(await call($, 'mcp__github__pull_request', { action: 'open', title: 'Leverage the cache' }))).toContain('In the pull request title:')
 })
 
 test('a word used twice is listed once', async ($, on) => {

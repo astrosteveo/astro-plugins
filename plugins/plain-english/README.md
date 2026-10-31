@@ -37,7 +37,7 @@ The mod checks prose that leaves the session. If the prose breaks the rules, Cla
 These are checked before the call runs:
 
 - A Markdown file, or a doc such as `README` or `NOTES.txt`, that Claude writes or edits.
-- A pull request opened through an MCP tool, such as the `pull_request` tool of review-gate. The `gh` command that the tool runs is checked too.
+- A pull request opened through an MCP tool, such as a `pull_request` tool. The `gh` command that the tool runs is checked too.
 
 If the prose has problems, the call is refused with a list of fixes. Claude rewrites the text and tries again.
 
@@ -54,11 +54,11 @@ A shell command is checked after it runs, so the hook reads the prose exactly as
 
 If the prose has problems, Claude is told to amend the commit or edit the post. If a finding is wrong, Claude leaves the text as it is.
 
-What `gh` posts from a command run in the background is not read back, because its output is not available. In this repository, review-gate opens pull requests itself, and those are checked.
+What `gh` posts from a command run in the background is not read back, because its output is not available.
 
 ### Pushes
 
-A push is checked before it runs. This applies when Claude runs `git push`, and when review-gate runs it to open a pull request.
+A push is checked before it runs. This applies when Claude runs `git push`, and when an MCP tool runs it to open a pull request.
 
 The hook reads every commit that the push would send and that no remote has yet. If a message has problems, the push is refused with the list of commits to reword. This check finds commits that the check after each command missed, such as a commit made in the background, in another directory or by a hook.
 
