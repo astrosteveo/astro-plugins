@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { opensOrMerges } from '../hooks/guard'
 
-test('a command that opens or merges a pull request is caught through wrappers, continued lines and variables, and other gh commands are not', () => {
+test('a command that opens or merges a pull request is caught as it is normally written, through wrappers, quotes, comments and continued lines, and other gh commands are not', () => {
   const caught = [
     'gh pr create --fill',
     'git push -u origin feat/x && gh pr create --fill',
@@ -39,6 +39,14 @@ test('a command that opens or merges a pull request is caught through wrappers, 
     'gh>/dev/null pr merge 3',
     'gh 2>/dev/null pr merge 3',
     'gh --repo o/r pr merge 3',
+    'echo "say \\"hi\\"" && gh pr --repo "o/r" merge 12',
+    "# don't forget\ngh pr --repo 'owner/repo' merge 12",
+    'out=$(grep ")" f; gh pr --repo "o/r" merge 1)',
+    'echo a\\\\\ngh pr merge 1',
+    'gh pr mer\\\nge 3',
+    'gh pr merge 12 &>/dev/null',
+    'gh pr &>/dev/null merge 12',
+    'gh pr >|/tmp/x merge 12',
   ]
   for (const command of caught) expect({ command, caught: opensOrMerges(command) }).toEqual({ command, caught: true })
   const passed = [
