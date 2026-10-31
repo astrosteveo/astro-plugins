@@ -3,6 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
 import { directories, gh, isGenerated, isTestPath, pieces, published, pushedRefs, pushes, resolvePath, reusesMessage } from '../hooks/gate'
 import { parseFindings } from '../hooks/judge'
+import { changedProse } from '../hooks/register'
 
 const STYLE = '---\nname: Plain English\ndescription: Plain words\n---\n\n# Plain English\n\nWrite plainly.\n'
 
@@ -347,6 +348,29 @@ test('the model reads the whole paragraph an edit changes, and a sentence it len
   expect(w.asked[0]).toContain(`${long} It runs once.`)
   expect(w.asked[0]).not.toContain('Run it.')
   expect(refusal(r)).toContain('sentence over 30 words')
+})
+
+test('the model reads the changed lines as prose: a code block with a blank line stays code', () => {
+  const before = '# Tool\n\n```sh\nfoo --flag\n\nbar --flag value\n```\nIt runs.\n\n## Use\n\nRun it.\n'
+  const after = before.replace('It runs.', 'It runs, and then it reads the config.')
+  const read = changedProse(before, after)
+  expect(read).toContain('It runs, and then it reads the config.')
+  expect(read).not.toContain('bar --flag')
+  expect(read).not.toContain('Run it.')
+})
+
+test('the model reads the changed lines of a file with Windows line endings, not its start', () => {
+  const before = ['# Tool', '', 'The first paragraph.', '', 'The last paragraph.', ''].join('\r\n')
+  const read = changedProse(before, before.replace('The last paragraph.', 'The last paragraph, now longer.'))
+  expect(read).toBe('The last paragraph, now longer.')
+})
+
+test('the model reads every paragraph a replace-all edit changed, and the place of a deleted line', () => {
+  const before = 'The hook runs.\n\nIt waits.\n\nThe hook stops.\n'
+  const read = changedProse(before, before.replaceAll('The hook', 'The hook that reads each message'))
+  expect(read).toContain('The hook that reads each message runs.')
+  expect(read).toContain('The hook that reads each message stops.')
+  expect(changedProse('One.\nTwo.\nThree.\n\nFour.\n', 'One.\nThree.\n\nFour.\n')).toBe('One.\nThree.')
 })
 
 test('a long sentence the file had before, inline code and all, is not the edit\'s', async ($, on) => {
