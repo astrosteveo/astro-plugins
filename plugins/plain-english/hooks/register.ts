@@ -74,8 +74,12 @@ function applied(file: string, edit: { old: string; new: string; all: boolean })
 // in the file around them, so a fence, a list or a code span that opens before the edit keeps its
 // meaning.
 export function editedLines(after: string, at: number, length: number) {
-  const first = after.slice(0, at).split('\n').length - 1
-  const last = first + (after.slice(at, at + length).match(/\n/g)?.length ?? 0)
+  // Line breaks at either end of the new text join it to a line it did not write.
+  const text = after.slice(at, at + length)
+  const lead = text.length - text.replace(/^(?:\r?\n)+/, '').length
+  const body = text.slice(lead).replace(/(?:\r?\n)+$/, '')
+  const first = after.slice(0, at + lead).split('\n').length - 1
+  const last = first + (body.match(/\n/g)?.length ?? 0)
   return prose(after).slice(first, last + 1).join('\n')
 }
 

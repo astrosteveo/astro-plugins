@@ -365,6 +365,10 @@ test('the model reads the lines an edit wrote in the context of the file', () =>
   expect(line).not.toContain('coverage')
   // An edit over two lines reads both, and no more.
   expect(at('One.\nTwo.\nThree.\n', 'Two.', 'Two.\nTwo and a half.')).toBe('Two.\nTwo and a half.')
+  // Line breaks at either end of the edit add no line it did not write.
+  expect(at('A.\nB unchanged line.\n', 'A.\n', 'Z.\n')).toBe('Z.')
+  expect(at('Prev line words.\nNext.\n', '\nNext.', '\nNew next.')).toBe('New next.')
+  expect(at('Prev.\r\nNext.\r\nLast.\r\n', 'Next.\r\n', 'New next.\r\n')).toBe('New next.')
 })
 
 test('a long sentence the file had before, inline code and all, is not the edit\'s', async ($, on) => {
