@@ -1033,7 +1033,6 @@ test('a running round shows no count of rounds left, and the band says to step b
 test('a pull request opens through the tool only for a reviewed commit with nothing open, and pushes first', async ($, on) => {
   const { store, argvs } = engine(on, world())
   await start($)
-  expect((await $.tool.call(open(' '))).deny).toBe('Give the pull request a title.')
   expect((await $.tool.call(open())).deny).toBe(
     'Review first: feat/app at 1111111 has not been reviewed. Call mcp__review-gate__review with what the change is for, answer each finding, then try again.',
   )
@@ -1058,10 +1057,12 @@ test('open on a branch whose pull request is open already brings it up to the re
   const { store, argvs } = engine(on, repo)
   seed(store, { rounds: [round(1, ONE, 0)], reviewed: ONE })
   await start($)
-  expect((await $.tool.call(open())).result).toBe(
+  // No title is needed: gh would fill one from the commits for a new pull request.
+  expect((await $.tool.call(open(' '))).result).toBe(
     'Pushed feat/app at 1111111 to its open pull request, https://github.com/o/r/pull/7. Its title and description stay as they were.',
   )
   expect(argvs.some(argv => argv[0] === 'git' && argv[1] === 'push')).toBe(true)
+  expect(argvs.find(argv => argv[0] === 'gh' && argv[2] === 'create')).toEqual(['gh', 'pr', 'create', '--head', 'feat/app', '--base', 'main', '--fill'])
   // After a rebase origin's copy has commits the reviewed one lacks, and replacing them is the person's call.
   repo.pushRejected = true
   const creates = argvs.filter(argv => argv[0] === 'gh' && argv[2] === 'create').length

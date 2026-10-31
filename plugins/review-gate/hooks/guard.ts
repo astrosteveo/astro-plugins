@@ -11,8 +11,8 @@ const VALUED = new Set(['-R', '--repo'])
 const isGh = (word: string) => word === 'gh' || word.endsWith('/gh') || word.startsWith('$')
 
 /**
- * A command's words with every quote, backslash and redirection dropped, split at spaces, ; & | ( )
- * and a line's end. Text inside quotes, $( ) and backticks so reads as words of the command, as
+ * A command's words with every quote, backslash and redirection dropped, split at spaces, commas,
+ * brackets, ; & | ( ) and a line's end. Text inside quotes, $( ) and backticks so reads as words of the command, as
  * bash -c, eval and a substitution run it. Each separator stays as the word `;`, so a verb after a
  * pipe or && is not gh pr's.
  */
@@ -22,6 +22,8 @@ const wordsOf = (text: string) =>
     // The target is an unquoted word on the same line, so a here-string's quoted command stays.
     .replace(/&?\d*[<>]+[&|]?[ \t]*[^\s;&|()<>"'`]*/g, ' ')
     .replace(/\$?["'`\\]/g, '')
+    // An argument list in an inline script, as in ["gh", "pr", "merge"], reads as words too.
+    .replace(/[,[\]]/g, ' ')
     .replace(/[;&|()<>\n]+/g, ' ; ')
     .split(/\s+/)
     .filter(word => word !== '')
