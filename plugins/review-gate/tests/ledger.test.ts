@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { NIT_CAP, atMost, emptyLedger, standing, globTest, kindOf, levelFor, newFindings, parseGuide, sameDefect, severityOf, sortOut, spent, streak, toLedger } from '../hooks/ledger'
+import { NIT_CAP, atMost, emptyLedger, standing, globTest, kindOf, levelFor, newFindings, parseGuide, sameDefect, severityOf, roundsLeft, sortOut, spent, streak, toLedger } from '../hooks/ledger'
 import type { Reported } from '../hooks/ledger'
 import { lastJson, readRecord, readRisk, reviewSection } from '../hooks/prompts'
 import type { Plan } from '../hooks/prompts'
@@ -110,6 +110,9 @@ test('the cap counts the rounds in a row that ended with findings open, from whe
   expect(streak({ ...ledger, rounds: [...ledger.rounds, round(5, 1)] })).toBe(3)
   expect(streak({ ...ledger, streakFrom: 4 })).toBe(0)
   expect(streak(emptyLedger('feat/x'))).toBe(0)
+  expect(roundsLeft(ledger)).toBe(1)
+  expect(roundsLeft({ ...ledger, rounds: [...ledger.rounds, round(5, 1), round(6, 1)] })).toBe(0)
+  expect(roundsLeft(emptyLedger('feat/x'))).toBe(3)
 })
 
 test('a record in another shape reads as none', () => {

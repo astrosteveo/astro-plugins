@@ -41,6 +41,9 @@ export function streak(ledger: Ledger) {
   return count
 }
 
+/** Rounds the review may still run before the cap stops it, should each one leave findings open. */
+export const roundsLeft = (ledger: Ledger) => Math.max(0, ROUND_CAP - streak(ledger))
+
 export const lastRound = (ledger: Ledger): Round | undefined => ledger.rounds[ledger.rounds.length - 1]
 
 /** Where a commit stands at the gate: what its pull request waits for, or that it waits for nothing. */
