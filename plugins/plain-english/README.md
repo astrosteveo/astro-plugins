@@ -43,7 +43,7 @@ If the prose has problems, the call is refused with a list of fixes. Claude rewr
 
 Files in test and fixture folders are skipped. An edit is scanned as the whole file it leaves, so code fences keep their meaning. Only the text that the edit adds counts.
 
-If a finding is wrong, for example for a word used literally, Claude makes the same call again unchanged. The call then goes through, and that text stays cleared for the rest of the session.
+If a finding is wrong, for example for a word used literally or a tone you asked for, Claude makes the same call again unchanged. The call then goes through, and that text stays cleared for the rest of the session.
 
 ### Commits and posts from the shell
 
@@ -93,7 +93,7 @@ The forms that Haiku looks for include these:
 - A metaphor in place of a plain verb.
 - A bold label at the start of a list item.
 - A working label used as if the reader knows it.
-- Personality in place of facts.
+- Personality dropped into otherwise plain text. A tone that the whole text keeps on purpose is not flagged, because you may have asked for it.
 
 Each check costs one small model call and takes a second or two. If the model cannot answer, the findings of the word scan stand alone. If the check itself fails, the call goes through.
 
@@ -110,7 +110,7 @@ The scan tool, `mcp__plain-english__scan`, sorts what it finds into two lists:
 
 Under the two lists, the tool shows what the model found.
 
-The scan skips frontmatter, code, block quotes, HTML comments, URLs, link targets and HTML tags. It does not check the length of table rows. It matches a phrase that is broken across the wrapped lines of a paragraph, so it checks a wrapped commit message as a whole.
+The scan skips frontmatter, code, block quotes, HTML comments, URLs, link targets and HTML tags. It does not check the length of rows in a table. It matches a phrase that is broken across the wrapped lines of a paragraph, so it checks a wrapped commit message as a whole.
 
 The scan also checks these forms, which a word list cannot match:
 

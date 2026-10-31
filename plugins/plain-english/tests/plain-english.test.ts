@@ -299,6 +299,22 @@ test('a sentence over 30 words is rewritten; code, tables and shorter sentences 
   // A sentence wrapped over two lines is counted whole, on the line it starts.
   expect(scan(`Intro.\n\n${'The hook reads the commit '.repeat(3)}\n${'the hook reads the commit '.repeat(3)}again.`).map(h => h.line)).toEqual([3])
   expect(scan(`| ${'cell words here '.repeat(12)}|`)).toEqual([])
+  // A table without a leading pipe is still a table.
+  expect(scan(`Name | Value\n--- | ---\nfoo | ${'cell words here '.repeat(12)}`)).toEqual([])
+})
+
+test('sentences are split as written: before inline code, a lowercase word and after a URL', () => {
+  const twenty = 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty'
+  expect(scan(`Run the build and ${twenty}. \`make test\` then runs ${twenty}.`)).toEqual([])
+  expect(scan(`Run the build and ${twenty}. then it runs ${twenty}.`)).toEqual([])
+  expect(scan(`The docs are kept at https://example.com/docs/scan. Then ${twenty}.`)).toEqual([])
+  // An abbreviation does not end a sentence.
+  expect(scan(`Use a short form, e.g. ${twenty} and ${twenty}.`).map(h => h.why)).toEqual(['sentence of 47 words. Split it so each sentence says one thing.'])
+})
+
+test('a spaced dash is not a word', () => {
+  const words = Array.from({ length: 28 }, (_, i) => `w${i}`)
+  expect(scan(`${words.slice(0, 9).join(' ')} - ${words.slice(9, 18).join(' ')} - ${words.slice(18).join(' ')}.`).filter(h => h.tier === 'rewrite')).toEqual([])
 })
 
 test('columns count from 1, on the line the words are on', () => {

@@ -150,7 +150,7 @@ async function gate($: EngineInterface, { held, cleared }: Memory, kind: string,
   held.add(key)
   return {
     key,
-    deny: `plain-english held this call: its prose has Claudisms. ${advice}\n\n${refusals.join('\n\n')}\n\nIf a finding is wrong, such as a word used literally or text that is not yours to change, make the same call again unchanged and it goes through.`,
+    deny: `plain-english held this call: its prose has Claudisms. ${advice}\n\n${refusals.join('\n\n')}\n\nIf a finding is wrong, such as a word used literally, a tone the person asked for, or text that is not yours to change, make the same call again unchanged and it goes through.`,
   }
 }
 
@@ -250,7 +250,7 @@ async function afterShell($: EngineInterface, command: string, text: string, cwd
     if (item.kind === 'commit' && ((before !== undefined && back.text === before.message) || isGenerated(back.text))) continue
     const problem = await problems($, back.text)
     if (problem.length > 0)
-      notes.push(`plain-english: ${back.what} has Claudisms. ${back.fix} Fix these, unless a finding is wrong (such as a word used literally):\n${list(problem)}`)
+      notes.push(`plain-english: ${back.what} has Claudisms. ${back.fix} Fix these, unless a finding is wrong (such as a word used literally, or a tone the person asked for):\n${list(problem)}`)
   }
   return notes
 }

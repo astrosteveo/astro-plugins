@@ -369,6 +369,22 @@ test('a model finding that holds a word-scan hit is kept', async ($, on) => {
   expect(refusal(r)).toContain('"The real fix — a cache": crowned claim.')
 })
 
+test('a model finding inside a long sentence is kept beside the long sentence', async ($, on) => {
+  const sentence = `The handler reads the token and the server sends a new one, and the heavy machinery of the retry loop then runs ${'again and '.repeat(5)}stops.`
+  const w = world({ reply: '[{"quote":"the heavy machinery of the retry loop","why":"metaphor","fix":"the retry loop"}]' })
+  engine(on, w)
+  const r = await call($, 'Write', { file_path: '/w/B.md', content: `${LONG} ${sentence}` })
+  expect(refusal(r)).toContain('sentence of 33 words')
+  expect(refusal(r)).toContain('"the heavy machinery of the retry loop": metaphor.')
+})
+
+test('a refusal says that a tone the person asked for is a reason to make the call again', async ($, on) => {
+  const w = world({ reply: '[{"quote":"Errors go back to the caller","why":"fine really","fix":"cut"}]' })
+  engine(on, w)
+  expect(refusal(await call($, 'Write', { file_path: '/w/NOTES.md', content: LONG }))).toContain('a tone the person asked for')
+  expect(w.asked[0]).toContain('A tone the whole text keeps on purpose')
+})
+
 test('literal unlock and elevated are left to the model; empower is a rewrite in every form', async ($, on) => {
   const w = world()
   engine(on, w)
