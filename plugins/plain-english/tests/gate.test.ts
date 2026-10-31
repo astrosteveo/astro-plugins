@@ -336,6 +336,29 @@ test('a model finding already in the file excuses only as many as were there', a
   expect(refusal(r)).toContain('"does the heavy lifting"')
 })
 
+test('the model reads the whole paragraph an edit changes, and a sentence it lengthens is the edit\'s', async ($, on) => {
+  const opening = 'The hook reads the message of each commit that the push would send'
+  const file = `# Tool\n\n${opening}. It runs once.\n\n## Use\n\nRun it.\n`
+  const long = `${opening}, compares its author time with the start of the session, and then refuses the push when any message has a problem.`
+  const w = world({ files: new Map([['/w/README.md', file]]), reply: JSON.stringify([{ quote: long, why: 'sentence over 30 words', fix: 'split it' }]) })
+  engine(on, w)
+  const r = await call($, 'Edit', { file_path: '/w/README.md', old_string: 'send. It', new_string: 'send, compares its author time with the start of the session, and then refuses the push when any message has a problem. It' })
+  // The model sees the sentence whole, with the words before the edit, and nothing from other paragraphs.
+  expect(w.asked[0]).toContain(`${long} It runs once.`)
+  expect(w.asked[0]).not.toContain('Run it.')
+  expect(refusal(r)).toContain('sentence over 30 words')
+})
+
+test('a long sentence the file had before, inline code and all, is not the edit\'s', async ($, on) => {
+  const old = `Run \`npm test\` before you push, and read what it prints, and fix each failure it lists before you ask anyone for a review of the change you made.`
+  const w = world({ files: new Map([['/w/README.md', `# Tool\n\n${old}\n`]]), reply: '[{"quote":"Run before you push, and read what it prints","why":"sentence over 30 words","fix":"split it"}]' })
+  engine(on, w)
+  await call($, 'Write', { file_path: '/w/README.md', content: `# Tool\n\n${old}\n\n${LONG}\n` })
+  expect(w.ran).toEqual(['Write'])
+  // The brief leaves tables, headings and unpunctuated list items alone.
+  expect(w.asked[0]).toContain('A table row, a heading, or a list item with no full stop')
+})
+
 test('an edit inside a code fence is not prose', async ($, on) => {
   const w = world({ files: new Map([['/w/README.md', '# Tool\n\n```js\nconst x = parse(a)\n```\n']]) })
   engine(on, w)

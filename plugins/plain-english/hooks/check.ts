@@ -77,8 +77,9 @@ export async function problems($: EngineInterface, given: string, options: Optio
   if (style === undefined) return found
   const judged = await judge($, style, read.slice(0, JUDGED_CHARS), candidates).catch(() => undefined)
   if (judged === undefined) return found
-  const old = flat(before)
-  const now = flat(text)
+  // Quotes come from the prose the model read, code blanked, so they are counted in the same form.
+  const old = before === '' ? '' : flat(forModel(strip(before)))
+  const now = flat(forModel(text))
   const count = (s: string, q: string) => s.split(q).length - 1
   // A finding inside words the scan already reported adds nothing; one that holds them says more.
   const covered = (q: string) => found.some(p => flat(p.quote).includes(q))

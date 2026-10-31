@@ -70,15 +70,25 @@ function applied(file: string, edit: { old: string; new: string; all: boolean })
   return edit.all ? file.split(edit.old).join(edit.new) : file.replace(edit.old, () => edit.new)
 }
 
+// The paragraphs of `after` that hold the `length` characters at `at`, so the model reads whole
+// sentences around an edit's new words.
+function paragraphsAround(after: string, at: number, length: number) {
+  const start = after.lastIndexOf('\n\n', at)
+  const end = after.indexOf('\n\n', at + length)
+  return after.slice(start === -1 ? 0 : start + 2, end === -1 ? after.length : end)
+}
+
 // A piece's text, what it replaces, and what the model reads of it. An Edit is scanned as the file
-// it leaves, so code fences around it keep their meaning, and the model reads only its new words.
+// it leaves, so code fences around it keep their meaning, and the model reads the paragraphs that
+// hold its new words.
 async function prepare($: EngineInterface, piece: Piece) {
   const text = piece.text ?? (piece.file === undefined ? undefined : await readable($, piece.file))
   if (text === undefined) return undefined
   const file = piece.beforeFile === undefined ? undefined : await readable($, piece.beforeFile)
   if (piece.edit !== undefined) {
     const after = file === undefined ? undefined : applied(file, piece.edit)
-    return after === undefined ? { text, scanned: text, before: piece.edit.old } : { text, scanned: after, before: file!, judged: piece.edit.new }
+    if (after === undefined) return { text, scanned: text, before: piece.edit.old }
+    return { text, scanned: after, before: file!, judged: paragraphsAround(after, file!.indexOf(piece.edit.old), piece.edit.new.length) }
   }
   return { text, scanned: text, before: piece.before ?? file ?? '' }
 }
