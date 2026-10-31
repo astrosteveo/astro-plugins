@@ -264,38 +264,29 @@ async function openPullRequest($: EngineInterface, place: Place, input: Input): 
   const refusal = await vouch($, place, place.branch, place.head, 'open')
   if (refusal !== undefined) return { deny: refusal }
   const base = asText(input.base).trim() || place.main
-  // Looked up by its head branch: gh pr view would read a branch named 1234 as pull request #1234.
-  const listed = await runIn(
-    $,
-    ['gh', 'pr', 'list', '--head', place.branch, '--state', 'open', '--json', 'url,baseRefName,isCrossRepository'],
-    place.root,
-    30_000,
-  )
-  if (listed.exitCode !== 0)
-    return { deny: `gh could not list ${place.branch}'s open pull requests, so nothing was pushed: ${listed.stderr.trim() || 'it gave no reason'}` }
-  // A fork's pull request from a branch of the same name is not this branch's.
-  const opened = (JSON.parse(listed.stdout) as { url?: string; baseRefName?: string; isCrossRepository?: boolean }[]).filter(
-    pr => pr.isCrossRepository !== true,
-  )
-  const open = opened.find(pr => pr.baseRefName === base)
-  if (open === undefined && opened.length > 0)
-    return {
-      deny: `${place.branch} has a pull request open into ${opened.map(pr => `${pr.baseRefName ?? 'another branch'} (${pr.url ?? ''})`).join(', ')} already, so nothing was pushed. Close it, or change its base with gh pr edit --base ${base}, then open again.`,
-    }
   const pushed = await runIn($, ['git', 'push', 'origin', `${place.head}:refs/heads/${place.branch}`], place.root, 120_000)
-  if (pushed.exitCode !== 0) return { deny: `git push failed, so no pull request was opened: ${pushed.stderr.trim()}` }
+  // A rebase or an amend leaves origin's copy with commits the reviewed one lacks. Replacing them is
+  // the person's call, so the tool does not force the push.
+  if (pushed.exitCode !== 0 && /\[rejected\]|non-fast-forward|fetch first/.test(pushed.stderr))
+    return {
+      deny: `origin's ${place.branch} has commits that ${short(place.head)} does not, as after a rebase or an amend, so nothing was pushed. If they should go, push with git push --force-with-lease origin ${place.branch}, then open again.`,
+    }
+  if (pushed.exitCode !== 0) return { deny: `git push failed: ${pushed.stderr.trim()}` }
   // A push by commit id sets no upstream, so the branch is set to track origin's copy for a plain git
   // push. The config is written directly, since a single-branch clone has no origin/<branch> to name.
   await runIn($, ['git', 'config', `branch.${place.branch}.remote`, 'origin'], place.root, 30_000)
   await runIn($, ['git', 'config', `branch.${place.branch}.merge`, `refs/heads/${place.branch}`], place.root, 30_000)
-  if (open !== undefined)
-    return { result: `Pushed ${place.branch} at ${short(place.head)} to its open pull request, ${open.url ?? ''}. Its title and description stay as they were.` }
   const made = await runIn(
     $,
     ['gh', 'pr', 'create', '--head', place.branch, '--base', base, '--title', title, '--body', asText(input.body), ...(input.draft === true ? ['--draft'] : [])],
     place.root,
     60_000,
   )
+  // gh refuses a second pull request from the branch into that base and names the open one, which the
+  // push has just brought up to the reviewed commit.
+  const existing = made.exitCode !== 0 && /already exists/.test(made.stderr) ? /https:\/\/\S+/.exec(made.stderr)?.[0] : undefined
+  if (existing !== undefined)
+    return { result: `Pushed ${place.branch} at ${short(place.head)} to its open pull request, ${existing}. Its title and description stay as they were.` }
   if (made.exitCode !== 0) return { deny: `The branch was pushed, but gh could not open the pull request: ${made.stderr.trim()}` }
   return { result: `Opened ${made.stdout.trim()} for ${place.branch} at ${short(place.head)}.` }
 }
