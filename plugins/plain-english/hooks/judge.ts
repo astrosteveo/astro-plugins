@@ -19,17 +19,18 @@ Flag a passage only when it clearly is one of these:
 - Telling the reader what to value: "worth noting", "this matters", "importantly", "notably", "honestly".
 - A **Bold label:** opening a list item or paragraph where a plain sentence would do.
 - A run of very short sentence fragments for effect: "Fast. Simple. Done."
-- A sentence over 30 words. Count only the prose words: code, paths and URLs do not count. Quote its first 12 words.
+- A sentence over 30 words. Count only the prose words: code, paths and URLs do not count. Quote the whole sentence, however long.
 - A working label used as if the reader knows it: a nickname, internal state or variable name the writer coined, with no explanation, where a plain description would do. Names of files, functions, commands and settings the reader needs are fine.
 - Personality in place of facts: enthusiasm, jokes, sympathy, or opinions on how good something is ("Nice!", "this is neat", "a clean design"), dropped into otherwise plain text.
 
 Do not flag:
 - Literal uses: a file that lives in a folder, a promise that settles, the shape of a JSON object, a real number.
 - Technical terms, names, code, commands, paths and quoted text.
+- A table row, a heading, or a list item with no full stop at its end: none of these is a sentence.
 - A tone the whole text keeps on purpose, such as a pirate voice or a playful README: the person may have asked for it.
 - Plain, specific prose that merely sounds formal. When in doubt, leave it out: a false flag costs more than a miss.
 
-Answer with a JSON array and nothing else, at most 20 elements, the clearest first. Each element is {"quote": the exact words from the text, at most 12 words, copied character for character; "why": what form it is, in a few words; "fix": the plainer wording, or "cut"}. Answer [] when the text is clean.`
+Answer with a JSON array and nothing else, at most 20 elements, the clearest first. Each element is {"quote": the exact words from the text, at most 12 words (a whole sentence for a long one), copied character for character; "why": what form it is, in a few words; "fix": the plainer wording, or "cut"}. Answer [] when the text is clean.`
 
 // The JSON array in a reply, or as much of it as came whole: a reply cut off at its token cap keeps
 // the objects before the cut.

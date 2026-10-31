@@ -83,7 +83,7 @@ A subagent's report is checked when the subagent finishes. Text in quotation mar
 Each check has two steps:
 
 1. A word scan runs. It is free and instant.
-2. If the text has 25 words or more, Haiku reads it. Haiku finds the forms that a word list cannot see, and decides whether each word that is fine when literal is used literally.
+2. If the text has 25 words or more, Haiku reads its first 40,000 characters. For an edit, Haiku reads the paragraphs that the edit changes. Haiku finds the forms that a word list cannot see, and decides whether each word that is fine when literal is used literally.
 
 The forms that Haiku looks for include these:
 
