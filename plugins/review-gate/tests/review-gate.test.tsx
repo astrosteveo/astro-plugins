@@ -148,7 +148,7 @@ function engine(on: On, repo: World) {
       return older >= 0 && older <= repo.history.indexOf(rest[2] ?? '') ? ran(0) : ran(1)
     }
     if (sub === 'merge-base' && repo.forkFails !== undefined) return ran(128, '', repo.forkFails)
-    if (sub === 'merge-base') return repo.noBase === true ? ran(1, '', '') : ran(0, `${BASE}\n`)
+    if (sub === 'merge-base') return repo.noBase === true ? ran(1, '', '') : ran(0, `${repo.forkAt ?? BASE}\n`)
     if (sub === 'rev-list') return ran(0, `${repo.history.indexOf(repo.head)}\n`)
     if (sub === 'status') {
       const fresh = rest.includes('--untracked-files=no') ? [] : (repo.untracked ?? [])
@@ -520,6 +520,19 @@ test('a commit judged before keeps its verdict, and is not judged again', async 
   await act($, reviews, 0)
   expect(judged).toEqual([])
   expect(String((await call).result)).toContain('/code-review medium, risk low (it changes only docs)')
+})
+
+test('a merge of main since the last round sends the next round over the whole branch', async ($, on) => {
+  const MAIN = '3'.repeat(40)
+  const repo = world({ head: TWO, history: [BASE, ONE, MAIN, TWO], forkAt: MAIN, changes: { [ONE]: ['src/app.ts'], [MAIN]: ['lib/main.ts'], [TWO]: ['src/app.ts'] } })
+  const { store, reviews } = engine(on, repo)
+  seed(store, { rounds: [round(1, ONE, 1)], findings: [finding({})], reviewed: ONE })
+  await start($)
+  const call = $.tool.call({ tool: REVIEW })
+  const { one } = await act($, reviews, 0, { rechecked: [{ id: 'R1-1', fixed: true, why: 'the bound is pages now' }] })
+  expect(one.args).toBe(`high ${MAIN}..${TWO}`)
+  await call
+  expect(ledgerOf(store).rounds[1]?.scope).toBe('full')
 })
 
 test('a round over new commits alone runs at most at high, and looks again at every open finding', async ($, on) => {

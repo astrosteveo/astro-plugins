@@ -401,9 +401,16 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
   const kept = (list: readonly string[]) => list.filter(file => !skipped.some(test => test(file)))
 
   // After the first round, a round reads only the commits since the last one, as long as they build
-  // on it; a rebase or an amend sends it back over the whole branch.
+  // on it; a rebase or an amend sends it back over the whole branch. So does a merge of the default
+  // branch, which moves the fork point past the last round: the diff since it would hold the default
+  // branch's own changes.
   const reviewed = ledger.reviewed
-  const isDelta = reviewed !== undefined && reviewed !== place.head && last !== undefined && (await isAncestor(git, reviewed, place.head))
+  const isDelta =
+    reviewed !== undefined &&
+    reviewed !== place.head &&
+    last !== undefined &&
+    (await isAncestor(git, reviewed, place.head)) &&
+    (await isAncestor(git, place.base, reviewed))
   const from = isDelta && reviewed !== undefined ? reviewed : place.base
   const span = isDelta ? await changedFiles(git, from, place.head) : files
   const roundFiles = kept(span)
