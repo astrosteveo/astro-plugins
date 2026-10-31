@@ -87,6 +87,8 @@ type World = {
   forkAt?: string
   /** Whether the branch has a pull request open already. */
   prOpen?: boolean
+  /** The base of that pull request; left out, main. */
+  prBase?: string
 }
 
 /** A run of /code-review the round started: what it was asked, and the hand that ends it. */
@@ -175,8 +177,7 @@ function engine(on: On, repo: World) {
   }
   const gh = (args: string[]) => {
     // The branch's own pull request, which open looks for before it makes one.
-    if (args[1] === 'view' && args.includes('url,state'))
-      return repo.prOpen === true ? ran(0, JSON.stringify({ url: 'https://github.com/o/r/pull/7', state: 'OPEN' })) : ran(1, '', 'no pull requests found')
+    if (args[1] === 'list') return ran(0, JSON.stringify(repo.prOpen === true ? [{ url: 'https://github.com/o/r/pull/7', baseRefName: repo.prBase ?? 'main' }] : []))
     if (args[1] === 'view') return ran(0, JSON.stringify({ number: 7, headRefName: repo.branch, headRefOid: repo.head, state: 'OPEN' }))
     if (args[1] === 'create') return ran(0, 'https://github.com/o/r/pull/7\n')
     return ran(0)
@@ -1035,18 +1036,27 @@ test('a pull request opens through the tool only for a reviewed commit with noth
   expect(argvs.some(argv => argv[0] === 'gh')).toBe(false)
   expect((await $.tool.call(open())).result).toBe('Opened https://github.com/o/r/pull/7 for feat/app at 1111111.')
   // The push names the commit, so the branch is set to track origin's copy after it.
-  expect(argvs.filter(argv => argv[0] === 'gh' || argv[1] === 'push' || argv[1] === 'branch')).toEqual([
+  expect(argvs.filter(argv => argv[0] === 'gh' || argv[1] === 'push' || argv[1] === 'config')).toEqual([
+    ['gh', 'pr', 'list', '--head', 'feat/app', '--state', 'open', '--json', 'url,baseRefName'],
     ['git', 'push', 'origin', `${ONE}:refs/heads/feat/app`],
-    ['git', 'branch', '--set-upstream-to=origin/feat/app', 'feat/app'],
-    ['gh', 'pr', 'view', 'feat/app', '--json', 'url,state'],
+    ['git', 'config', 'branch.feat/app.remote', 'origin'],
+    ['git', 'config', 'branch.feat/app.merge', 'refs/heads/feat/app'],
     ['gh', 'pr', 'create', '--head', 'feat/app', '--base', 'main', '--title', 'Add search', '--body', 'Body text'],
   ])
 })
-test('open on a branch whose pull request is open already brings it up to the reviewed commit', async ($, on) => {
-  const { store, argvs } = engine(on, world({ prOpen: true }))
+test('open on a branch whose pull request is open already brings it up to the reviewed commit, into the base asked for alone', async ($, on) => {
+  const repo = world({ prOpen: true, prBase: 'release' })
+  const { store, argvs } = engine(on, repo)
   seed(store, { rounds: [round(1, ONE, 0)], reviewed: ONE })
   await start($)
-  expect((await $.tool.call(open())).result).toBe('Pushed feat/app at 1111111 to its open pull request, https://github.com/o/r/pull/7.')
+  expect((await $.tool.call(open())).deny).toBe(
+    'feat/app has a pull request open into release already, https://github.com/o/r/pull/7, so nothing was pushed. Close it, or change its base with gh pr edit --base main, then open again.',
+  )
+  expect(argvs.some(argv => argv[0] === 'git' && argv[1] === 'push')).toBe(false)
+  repo.prBase = 'main'
+  expect((await $.tool.call(open())).result).toBe(
+    'Pushed feat/app at 1111111 to its open pull request, https://github.com/o/r/pull/7. Its title and description stay as they were.',
+  )
   expect(argvs.some(argv => argv[0] === 'git' && argv[1] === 'push')).toBe(true)
   expect(argvs.some(argv => argv[0] === 'gh' && argv[2] === 'create')).toBe(false)
 })

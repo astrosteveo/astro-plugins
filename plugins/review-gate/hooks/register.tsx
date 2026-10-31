@@ -254,7 +254,8 @@ type Input = Record<string, unknown>
 type Answer = { result: string } | { deny: string }
 
 // Pushes the current branch and opens its pull request, once its review vouches for it. A branch
-// whose pull request is open already has it brought up to the reviewed commit by the push.
+// whose pull request is open already, into the base asked for, has it brought up to the reviewed
+// commit by the push.
 async function openPullRequest($: EngineInterface, place: Place, input: Input): Promise<Answer> {
   if (place.branch === '' || place.branch === place.main)
     return { deny: `Check out the branch to open a pull request for: ${place.branch || 'a detached HEAD'} is not one.` }
@@ -262,14 +263,22 @@ async function openPullRequest($: EngineInterface, place: Place, input: Input): 
   if (title === '') return { deny: 'Give the pull request a title.' }
   const refusal = await vouch($, place, place.branch, place.head, 'open')
   if (refusal !== undefined) return { deny: refusal }
+  const base = asText(input.base).trim() || place.main
+  // Looked up by its head branch: gh pr view would read a branch named 1234 as pull request #1234.
+  const listed = await runIn($, ['gh', 'pr', 'list', '--head', place.branch, '--state', 'open', '--json', 'url,baseRefName'], place.root, 30_000)
+  const open = listed.exitCode === 0 ? (JSON.parse(listed.stdout) as { url?: string; baseRefName?: string }[])[0] : undefined
+  if (open !== undefined && open.baseRefName !== base)
+    return {
+      deny: `${place.branch} has a pull request open into ${open.baseRefName ?? 'another branch'} already, ${open.url ?? ''}, so nothing was pushed. Close it, or change its base with gh pr edit --base ${base}, then open again.`,
+    }
   const pushed = await runIn($, ['git', 'push', 'origin', `${place.head}:refs/heads/${place.branch}`], place.root, 120_000)
   if (pushed.exitCode !== 0) return { deny: `git push failed, so no pull request was opened: ${pushed.stderr.trim()}` }
-  // A push by commit id sets no upstream, so the branch tracks origin's copy from here, for a plain git push.
-  await runIn($, ['git', 'branch', `--set-upstream-to=origin/${place.branch}`, place.branch], place.root, 30_000)
-  const existing = await runIn($, ['gh', 'pr', 'view', place.branch, '--json', 'url,state'], place.root, 30_000)
-  const found = existing.exitCode === 0 ? (JSON.parse(existing.stdout) as { url?: string; state?: string }) : undefined
-  if (found?.state === 'OPEN') return { result: `Pushed ${place.branch} at ${short(place.head)} to its open pull request, ${found.url ?? ''}.` }
-  const base = asText(input.base).trim() || place.main
+  // A push by commit id sets no upstream, so the branch is set to track origin's copy for a plain git
+  // push. The config is written directly, since a single-branch clone has no origin/<branch> to name.
+  await runIn($, ['git', 'config', `branch.${place.branch}.remote`, 'origin'], place.root, 30_000)
+  await runIn($, ['git', 'config', `branch.${place.branch}.merge`, `refs/heads/${place.branch}`], place.root, 30_000)
+  if (open !== undefined)
+    return { result: `Pushed ${place.branch} at ${short(place.head)} to its open pull request, ${open.url ?? ''}. Its title and description stay as they were.` }
   const made = await runIn(
     $,
     ['gh', 'pr', 'create', '--head', place.branch, '--base', base, '--title', title, '--body', asText(input.body), ...(input.draft === true ? ['--draft'] : [])],
