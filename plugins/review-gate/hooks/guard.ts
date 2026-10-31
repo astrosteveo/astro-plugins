@@ -1,9 +1,10 @@
 // Pull requests go through the gate's own tool, and a shell line that opens or merges one is sent
 // there by a plain match on its text.
 
-// gh pr create, new or merge on one line, with flags such as -R between. gh is named, given by its
-// path, or held in a variable or a command substitution.
-const PR_LINE = /(?:\bgh\b|\$\{?\w+\}?|\$\([^)\n]*\)|`[^`\n]*`)[^\n]*\bpr\b[^\n]*\b(?:create|new|merge)\b/
+// gh pr create, new or merge on one line: anything may come between gh and pr, and only flags, such
+// as -R owner/repo, between pr and its verb, so gh pr view 12 | grep new is not one. gh is named,
+// given by its path, or held in a variable or a command substitution.
+const PR_LINE = /(?:\bgh\b|\$\{?\w+\}?|\$\([^)\n]*\)|`[^`\n]*`)[^\n]*\bpr(?:\s+--?[\w-]+(?:[=\s]+[^\s;&|-][^\s;&|]*)?)*\s+(?:create|new|merge)\b/
 
 // A line that runs gh api, gh named in the same ways.
 const API_LINE = /(?:\bgh\b|\$\{?\w+\}?|\$\([^)\n]*\)|`[^`\n]*`)[^\n]*\bapi\b/
