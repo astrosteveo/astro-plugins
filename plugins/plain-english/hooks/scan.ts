@@ -180,6 +180,9 @@ const SENTENCE_END = /(?<=[.!?]["'”’)]?)\s+(?=["'“‘(]?[A-Z0-9])/
 const RULE_LINE = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/
 const BLOCK_START = /^\s*(?:[-*+]|\d+[.)])\s+|^\s{0,3}[#|]/
 const HEADING = /^\s{0,3}#/
+const TABLE_ROW = /^\s{0,3}\|/
+// The most words a sentence has before the scan asks for it to be split: one idea per sentence.
+export const LONG_SENTENCE = 30
 
 // Each line with what is not prose blanked out, columns kept: frontmatter, fenced and indented
 // code, block quotes, HTML comments, inline code, links' targets, URLs and HTML tags.
@@ -277,7 +280,8 @@ const words = (s: string) => s.match(/[\p{L}\p{N}'’-]+/gu)?.length ?? 0
 type Push = (start: number, length: number, tier: Tier, why: string) => void
 
 // The forms a word list cannot match: emoji, horizontal rules, "**Term**: explanation" lists,
-// two spaced dashes in one sentence, and four or more very short sentences in a row. Offsets are
+// two spaced dashes in one sentence, sentences too long to hold one idea, and four or more very
+// short sentences in a row. Offsets are
 // into the whole text, each line starting where `starts` says.
 function forms(lines: string[], matched: string, starts: number[], push: Push) {
   lines.forEach((line, i) => {
@@ -297,11 +301,17 @@ function forms(lines: string[], matched: string, starts: number[], push: Push) {
     while (last + 1 < lines.length && continues(lines[last]!, lines[last + 1]!)) last++
     const at = starts[first]!
     const body = matched.slice(at, starts[last]! + lines[last]!.length).replace(LIST_MARK, m => ' '.repeat(m.length))
+    const isTable = TABLE_ROW.test(lines[first]!)
     first = last + 1
     const parts = sentences(body)
     for (const s of parts) {
       const dashes = [...s.text.matchAll(/(?<=\S)\s[-–]\s(?=\S)/g)]
       if (dashes.length >= 2) push(at + s.start + dashes[1]!.index, dashes[1]![0].length, 'check', 'two dashes in one sentence. Keep one aside, or split the sentence.')
+      const count = words(s.text)
+      if (count > LONG_SENTENCE && !isTable) {
+        const indent = s.text.length - s.text.trimStart().length
+        push(at + s.start + indent, s.text.trim().length, 'rewrite', `sentence of ${count} words. Split it so each sentence says one thing.`)
+      }
     }
     let run: typeof parts = []
     const close = () => {

@@ -290,6 +290,17 @@ test('forms a word list misses: rules, bold-term lists, stacked dashes, staccato
   expect(found('Short one. Another one. And a long sentence that goes on for a good while here.')).toEqual([])
 })
 
+test('a sentence over 30 words is rewritten; code, tables and shorter sentences are not counted', () => {
+  const long = `${'The hook reads the commit '.repeat(6)}again.`
+  expect(scan(long).map(h => `${h.tier} ${h.why}`)).toEqual(['rewrite sentence of 31 words. Split it so each sentence says one thing.'])
+  // Thirty words pass; inline code is not prose, so it adds no words.
+  expect(scan(`${'The hook reads the commit '.repeat(6)}`.trim() + '.')).toEqual([])
+  expect(scan(`${'The hook reads `the commit` '.repeat(6)}again and again.`)).toEqual([])
+  // A sentence wrapped over two lines is counted whole, on the line it starts.
+  expect(scan(`Intro.\n\n${'The hook reads the commit '.repeat(3)}\n${'the hook reads the commit '.repeat(3)}again.`).map(h => h.line)).toEqual([3])
+  expect(scan(`| ${'cell words here '.repeat(12)}|`)).toEqual([])
+})
+
 test('columns count from 1, on the line the words are on', () => {
   expect(scan('Fine.\n  We delve.').map(h => [h.line, h.column])).toEqual([[2, 6]])
   expect(scan('- Go. Run. Stop. Now.').map(h => [h.column, h.text])).toEqual([[3, 'Go.']])
