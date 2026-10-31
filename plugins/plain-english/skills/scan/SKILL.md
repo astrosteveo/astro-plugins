@@ -32,6 +32,7 @@ A word search cannot see these forms, and the model's list may miss some. Read t
 - Invented observations and experience: what people say, a career the writer never had.
 - A metaphor in place of a plain verb: an idea that lives, carries, moves, points or has a shape.
 - Four or more very short sentences in a row, and two dashes in one sentence.
+- A sentence over 30 words, or one that holds several ideas. Split it so each sentence says one thing.
 - A working label used as if the reader knows it: a nickname, internal state or variable name with no explanation, where a plain description would do.
 - Personality in place of facts: enthusiasm, jokes, sympathy, or opinions on how good something is. Leave it if the person asked for that tone.
 

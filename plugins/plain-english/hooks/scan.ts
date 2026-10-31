@@ -6,8 +6,7 @@
 // config lives in a folder, a promise settles), wrong only as a metaphor, so a reader decides.
 export type Tier = 'rewrite' | 'check'
 
-// `sentence`: the hit spans a whole sentence, as a long one does, so it says nothing of the words in it.
-export type Hit = { line: number; column: number; text: string; tier: Tier; why: string; sentence?: true }
+export type Hit = { line: number; column: number; text: string; tier: Tier; why: string }
 
 type Rule = { re: RegExp; tier: Tier; why: string }
 
@@ -177,18 +176,10 @@ const EMOJI =
 const DRAWN_AS_EMOJI = /\p{Emoji_Presentation}|\p{Emoji_Modifier}|\p{Regional_Indicator}|[\u{FE0F}\u{20E3}\u{200D}]/u
 
 const LIST_MARK = /^\s*(?:[-*+]|\d+[.)])\s+/
-// A sentence ends at a stop and a space, unless the stop ends a common abbreviation. The split runs on
-// the prose with code and URLs written as letters, so a stop inside them ends no sentence, and a
-// sentence that opens with inline code still starts afresh.
-const SENTENCE_END = /(?<=[.!?]["'”’)]?)(?<!\b(?:e\.g|i\.e|cf|vs)\.)\s+(?=\S)/
+const SENTENCE_END = /(?<=[.!?]["'”’)]?)\s+(?=["'“‘(]?[A-Z0-9])/
 const RULE_LINE = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/
 const BLOCK_START = /^\s*(?:[-*+]|\d+[.)])\s+|^\s{0,3}[#|]/
 const HEADING = /^\s{0,3}#/
-const TABLE_ROW = /^\s{0,3}\|/
-// The row under a table's header: pipes, dashes, colons and spaces, with at least one pipe.
-const isDelimiterRow = (line: string) => line.includes('|') && line.includes('-') && /^[\s|:-]+$/.test(line)
-// The most words a sentence has before the scan asks for it to be split: one idea per sentence.
-export const LONG_SENTENCE = 30
 
 // Each line with what is not prose blanked out, columns kept: frontmatter, fenced and indented
 // code, block quotes, HTML comments, inline code, links' targets, URLs and HTML tags.
@@ -219,8 +210,7 @@ export function prose(text: string): string[] {
     }
     return t
       .replace(/\]\([^)]*\)/g, m => `]${blank(m.slice(1))}`)
-      // A URL ends before the stop or comma after it, which belongs to the sentence.
-      .replace(/\b(?:https?|file):\/\/\S+?(?=[.,;:!?)"'”’]*(?:\s|$))/g, blank)
+      .replace(/\b(?:https?|file):\/\/\S+/g, blank)
       .replace(/<\/?[a-zA-Z][^>]*>/g, blank)
   }
   lines.forEach((line, i) => {
@@ -282,17 +272,14 @@ function sentences(text: string): { text: string; start: number }[] {
   return found
 }
 
-// Words have a letter or a digit, so a spaced dash is not one.
-export const words = (s: string) => s.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)?.length ?? 0
+const words = (s: string) => s.match(/[\p{L}\p{N}'’-]+/gu)?.length ?? 0
 
-type Push = (start: number, length: number, tier: Tier, why: string, sentence?: true) => void
+type Push = (start: number, length: number, tier: Tier, why: string) => void
 
 // The forms a word list cannot match: emoji, horizontal rules, "**Term**: explanation" lists,
-// two spaced dashes in one sentence, sentences too long to hold one idea, and four or more very
-// short sentences in a row. Offsets are into the whole text, each line starting where `starts`
-// says. Sentences are split on `marked`, the prose with what is not prose as letters, and read on
-// `matched`, the prose alone. The rows of a table are not sentences.
-function forms(lines: string[], matched: string, marked: string, starts: number[], push: Push) {
+// two spaced dashes in one sentence, and four or more very short sentences in a row. Offsets are
+// into the whole text, each line starting where `starts` says.
+function forms(lines: string[], matched: string, starts: number[], push: Push) {
   lines.forEach((line, i) => {
     const at = starts[i]!
     for (const m of line.matchAll(EMOJI))
@@ -309,38 +296,24 @@ function forms(lines: string[], matched: string, marked: string, starts: number[
     let last = first
     while (last + 1 < lines.length && continues(lines[last]!, lines[last + 1]!)) last++
     const at = starts[first]!
-    // A table starts at the header above its delimiter row; prose wrapped above the header is prose.
-    const delimiter = lines.slice(first, last + 1).findIndex(isDelimiterRow)
-    // The last line of prose: none for a row that opens with a pipe, or the line above a table's header.
-    const proseLast = TABLE_ROW.test(lines[first]!) ? first - 1 : delimiter > 0 ? first + delimiter - 2 : last
-    const from = first
+    const body = matched.slice(at, starts[last]! + lines[last]!.length).replace(LIST_MARK, m => ' '.repeat(m.length))
     first = last + 1
-    if (proseLast < from) continue
-    const end = starts[proseLast]! + lines[proseLast]!.length
-    const clear = (s: string) => s.replace(LIST_MARK, m => ' '.repeat(m.length))
-    const body = clear(matched.slice(at, end))
-    const parts = sentences(clear(marked.slice(at, end))).map(s => {
-      const text = body.slice(s.start, s.start + s.text.length)
-      return { text, start: s.start, count: words(text) }
-    })
-    // A whole sentence, its leading space left out.
-    const whole = (s: (typeof parts)[number], tier: Tier, why: string) => {
-      const indent = s.text.length - s.text.trimStart().length
-      push(at + s.start + indent, s.text.trim().length, tier, why, true)
-    }
+    const parts = sentences(body)
     for (const s of parts) {
       const dashes = [...s.text.matchAll(/(?<=\S)\s[-–]\s(?=\S)/g)]
       if (dashes.length >= 2) push(at + s.start + dashes[1]!.index, dashes[1]![0].length, 'check', 'two dashes in one sentence. Keep one aside, or split the sentence.')
-      if (s.count > LONG_SENTENCE) whole(s, 'rewrite', `sentence of ${s.count} words. Split it so each sentence says one thing.`)
     }
     let run: typeof parts = []
     const close = () => {
       const lead = run[0]
-      if (lead !== undefined && run.length >= 4) whole(lead, 'check', `${run.length} very short sentences in a row. Join some; vary the length.`)
+      if (lead !== undefined && run.length >= 4) {
+        const indent = lead.text.length - lead.text.trimStart().length
+        push(at + lead.start + indent, lead.text.trim().length, 'check', `${run.length} very short sentences in a row. Join some; vary the length.`)
+      }
       run = []
     }
     for (const s of parts) {
-      if (s.count > 0 && s.count <= 5 && /[.!?]["'”’)]?\s*$/.test(s.text)) run.push(s)
+      if (words(s.text) <= 5 && /[.!?]["'”’)]?\s*$/.test(s.text)) run.push(s)
       else close()
     }
     close()
@@ -379,7 +352,7 @@ export function scan(text: string): Hit[] {
   const spans = new Map<number, [number, number][]>()
   // The text shown is the person's own, not the blanked line: inline code stays in it. The column
   // counts characters, so an emoji before a hit takes one column.
-  const push: Push = (start, length, tier, why, sentence) => {
+  const push: Push = (start, length, tier, why) => {
     const end = start + length
     const first = lineOf(start)
     if ((spans.get(first) ?? []).some(([s, e]) => s <= start && end <= e)) return
@@ -389,17 +362,14 @@ export function scan(text: string): Hit[] {
       else onLine.push([start, end])
     }
     const column = [...original[first]!.slice(0, start - starts[first]!)].length + 1
-    hits.push({ line: first + 1, column, text: whole.slice(start, end).replace(/[ \t]*\n[ \t]*/g, ' '), tier, why, ...(sentence ? { sentence } : {}) })
+    hits.push({ line: first + 1, column, text: whole.slice(start, end).replace(/[ \t]*\n[ \t]*/g, ' '), tier, why })
   }
   // Rewrites are matched first, so a check that lies inside a rewrite's words is dropped, and rules
   // run in their listed order, so a phrase listed before a word it holds is the one reported.
   for (const tier of ['rewrite', 'check'] as const)
     for (const rule of RULES.filter(r => r.tier === tier))
       for (const m of matched.matchAll(rule.re)) push(m.index, m[0].length, rule.tier, rule.why)
-  // What is not prose, such as code and URLs, written as letters, so that it splits no sentence.
-  let marked = ''
-  for (let i = 0; i < matched.length; i++) marked += matched[i] === ' ' && /\S/.test(whole[i]!) ? 'x' : matched[i]
-  forms(lines, matched, marked, starts, push)
+  forms(lines, matched, starts, push)
   return hits.sort((a, b) => a.line - b.line || a.column - b.column)
 }
 

@@ -19,6 +19,7 @@ Flag a passage only when it clearly is one of these:
 - Telling the reader what to value: "worth noting", "this matters", "importantly", "notably", "honestly".
 - A **Bold label:** opening a list item or paragraph where a plain sentence would do.
 - A run of very short sentence fragments for effect: "Fast. Simple. Done."
+- A sentence over 30 words. Count only the prose words: code, paths and URLs do not count. Quote its first 12 words.
 - A working label used as if the reader knows it: a nickname, internal state or variable name the writer coined, with no explanation, where a plain description would do. Names of files, functions, commands and settings the reader needs are fine.
 - Personality in place of facts: enthusiasm, jokes, sympathy, or opinions on how good something is ("Nice!", "this is neat", "a clean design"), dropped into otherwise plain text.
 

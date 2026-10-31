@@ -93,6 +93,7 @@ The forms that Haiku looks for include these:
 - A metaphor in place of a plain verb.
 - A bold label at the start of a list item.
 - A working label used as if the reader knows it.
+- A sentence over 30 words.
 - Personality dropped into otherwise plain text. A tone that the whole text keeps on purpose is not flagged, because you may have asked for it.
 
 Each check costs one small model call and takes a second or two. If the model cannot answer, the findings of the word scan stand alone. If the check itself fails, the call goes through.
@@ -105,12 +106,12 @@ The skill runs the scan tool, reads the text for the forms a search cannot find,
 
 The scan tool, `mcp__plain-english__scan`, sorts what it finds into two lists:
 
-- The Rewrite list has words and forms that are almost never right. Examples are em dashes, emoji, `delve`, `worth noting`, `at its core`, `not just X, it's Y` and sentences over 30 words.
+- The Rewrite list has words and forms that are almost never right. Examples are em dashes, emoji, `delve`, `worth noting`, `at its core` and `not just X, it's Y`.
 - The Check list has words that are fine when used literally, such as a config that `lives in` a folder or the `shape of` the data. Keep the literal ones and rewrite the metaphors.
 
 Under the two lists, the tool shows what the model found.
 
-The scan skips frontmatter, code, block quotes, HTML comments, URLs, link targets and HTML tags. It does not check the length of rows in a table. It matches a phrase that is broken across the wrapped lines of a paragraph, so it checks a wrapped commit message as a whole.
+The scan skips frontmatter, code, block quotes, HTML comments, URLs, link targets and HTML tags. It matches a phrase that is broken across the wrapped lines of a paragraph, so it checks a wrapped commit message as a whole.
 
 The scan also checks these forms, which a word list cannot match:
 
@@ -118,7 +119,6 @@ The scan also checks these forms, which a word list cannot match:
 - A list whose items start with a bold term and a colon.
 - Two spaced dashes in one sentence.
 - Four or more very short sentences in a row.
-- A sentence over 30 words.
 
 The tool reads a file only where your permission rules let Claude read it without asking. For other files, Claude reads the file with Read and passes the text.
 
