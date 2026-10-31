@@ -82,8 +82,24 @@ const RULES: readonly Rule[] = [
   rewrite(/\bI['’]m going to (?:make|cover|walk (?:you )?through) (?:two|three|four|five|a few)\b/gi, 'announces the structure. Make the points.'),
   rewrite(/\bI want to be careful here\b|\bwith (?:appropriate|the usual|all the) caveats\b/gi, 'false modesty. State the caveat, or cut it.'),
 
+  // Preamble, flattery and stock closers. A paragraph opens after a full stop in the joined text.
+  rewrite(/(?<=^|[.\n]\s*)(?:Sure|Certainly|Absolutely|Of course|Great|Perfect|Got it)(?:!|,(?= I| here| that| let))/g, 'preamble. Start with the answer.'),
+  rewrite(new RegExp(`\\byou${A}re (?:absolutely|totally|completely|exactly) (?:right|correct)\\b|\\byou are (?:absolutely|totally|completely) (?:right|correct)\\b`, 'gi'), 'flattery. Say what you will do differently.'),
+  rewrite(/\b(?:let me know if|feel free to|don['’]t hesitate to|hope (?:this|that) helps|happy to help|I hope this)\b/gi, 'stock closer. End with the last fact, or a question you need answered.'),
+  rewrite(/(?<=^|[.\n]\s*)(?:In summary|In conclusion|To summari[sz]e|To sum up|In short|Overall),/g, 'summary opener. Cut the recap, or start with its point.'),
+  rewrite(/\b(?:plays? an? (?:crucial|key|vital|pivotal|important) role|a myriad of|a plethora of|ever[- ](?:evolving|changing))\b/gi, 'stock phrase. Say what it does.'),
+  rewrite(/\b(?:empower(?:s|ed|ing)?|(?:supercharg|turbocharg|revolutioni[sz])(?:e|es|ed|ing))\b/gi, 'hype verb. Say what it lets someone do.'),
+  check(/\belevat(?:e|es|ed|ing)\b|\bunlock(?:s|ed|ing)? (?:the|new|a|your|its|their)\b/gi, 'hype verb, unless literal (elevated privileges, unlock a mutex). Say what it lets someone do.'),
+  rewrite(/\bstreamlin(?:e|es|ed|ing)\b/gi, 'vague verb. Say what got shorter or simpler, and by how much.'),
+  rewrite(/\bwhether you['’]re\b/gi, 'marketing opener. Say who it is for.'),
+  check(/(?<=^|[.\n]\s*)(?:Additionally|Furthermore|Moreover|Notably|Importantly|Ultimately),/g, 'formal connective. Cut it; the order shows the link.'),
+  check(/(?<=^|[.\n]\s*)(?:Here['’]s|Here is) (?:what|how|why|the)\b/g, 'announces what follows. Start with it.'),
+  check(/\b(?:arguably|it seems(?: like)?|perhaps|potentially)\b/gi, 'hedge. Commit to the claim, or say once what you are unsure of and why.'),
+  check(/\benhanc(?:e|es|ed|ing|ement|ements)\b/gi, 'vague verb. Say what got better, and how.'),
+  check(/\bnuanced?\b/gi, 'vague word. Say what the distinction is.'),
+
   // Negative parallelism, the most cited AI form.
-  rewrite(/\b(?:it|this|that)(?:['’]s| is| was) not (?:just|only|merely|simply) [^.!?]{1,80}?[,;:—–]\s*(?:it|this|that)(?:['’]s| is| was)\b/gi, 'negative parallelism ("not just X, it\'s Y"). Say Y.'),
+  rewrite(/\b(?:it|this|that)(?:['’]s not| is not| was not| isn['’]t| wasn['’]t) (?:just|only|merely|simply) [^.!?]{1,80}?[,;:—–]\s*(?:it|this|that)(?:['’]s| is| was)\b/gi, 'negative parallelism ("not just X, it\'s Y"). Say Y.'),
   rewrite(/\bnot only\b[^.!?]{1,80}?\bbut(?: also)?\b/gi, 'negative parallelism ("not only X but Y"). Say both plainly.'),
   rewrite(/\bNo [^.!?]{1,40}\. No [^.!?]{1,40}\. Just\b/g, 'staccato negation ("No X. No Y. Just Z."). Say Z.'),
   check(/\b(?:it|this|that) (?:isn['’]t|is not|wasn['’]t|was not) (?:about )?[^.!?]{1,60}?[.;,:—–]\s*(?:it|this|that)(?:['’]s| is| was)\b/gi, 'may be negative parallelism ("this isn\'t X. It\'s Y."). If so, say Y.'),

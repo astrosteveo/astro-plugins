@@ -263,12 +263,13 @@ test('literal uses are only checked, and rewrites win over checks on the same wo
 
 test('"honest" on its own is checked; its set phrases are rewritten once', () => {
   expect(found('Words with honest literal uses.')).toEqual(['check honest'])
-  expect(found('Here is the honest version.')).toEqual(['rewrite the honest version'])
+  expect(found('So, the honest version.')).toEqual(['rewrite the honest version'])
   expect(found('Honestly, it works.')).toEqual(['rewrite Honestly'])
 })
 
 test('negative parallelism and staccato negation are flagged', () => {
   expect(found("It's not just a tool, it's a habit.")[0]).toMatch(/^rewrite It's not just/)
+  expect(found("This isn't just a docs tweak, it's the key.")[0]).toMatch(/^rewrite This isn't just/)
   expect(found('Not only fast but small.')[0]).toMatch(/^rewrite Not only/)
   expect(found('No setup. No config. Just run it.')[0]).toMatch(/^rewrite No setup/)
 })
