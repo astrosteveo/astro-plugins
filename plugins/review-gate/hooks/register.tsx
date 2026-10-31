@@ -265,11 +265,22 @@ async function openPullRequest($: EngineInterface, place: Place, input: Input): 
   if (refusal !== undefined) return { deny: refusal }
   const base = asText(input.base).trim() || place.main
   // Looked up by its head branch: gh pr view would read a branch named 1234 as pull request #1234.
-  const listed = await runIn($, ['gh', 'pr', 'list', '--head', place.branch, '--state', 'open', '--json', 'url,baseRefName'], place.root, 30_000)
-  const open = listed.exitCode === 0 ? (JSON.parse(listed.stdout) as { url?: string; baseRefName?: string }[])[0] : undefined
-  if (open !== undefined && open.baseRefName !== base)
+  const listed = await runIn(
+    $,
+    ['gh', 'pr', 'list', '--head', place.branch, '--state', 'open', '--json', 'url,baseRefName,isCrossRepository'],
+    place.root,
+    30_000,
+  )
+  if (listed.exitCode !== 0)
+    return { deny: `gh could not list ${place.branch}'s open pull requests, so nothing was pushed: ${listed.stderr.trim() || 'it gave no reason'}` }
+  // A fork's pull request from a branch of the same name is not this branch's.
+  const opened = (JSON.parse(listed.stdout) as { url?: string; baseRefName?: string; isCrossRepository?: boolean }[]).filter(
+    pr => pr.isCrossRepository !== true,
+  )
+  const open = opened.find(pr => pr.baseRefName === base)
+  if (open === undefined && opened.length > 0)
     return {
-      deny: `${place.branch} has a pull request open into ${open.baseRefName ?? 'another branch'} already, ${open.url ?? ''}, so nothing was pushed. Close it, or change its base with gh pr edit --base ${base}, then open again.`,
+      deny: `${place.branch} has a pull request open into ${opened.map(pr => `${pr.baseRefName ?? 'another branch'} (${pr.url ?? ''})`).join(', ')} already, so nothing was pushed. Close it, or change its base with gh pr edit --base ${base}, then open again.`,
     }
   const pushed = await runIn($, ['git', 'push', 'origin', `${place.head}:refs/heads/${place.branch}`], place.root, 120_000)
   if (pushed.exitCode !== 0) return { deny: `git push failed, so no pull request was opened: ${pushed.stderr.trim()}` }
