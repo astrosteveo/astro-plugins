@@ -30,6 +30,15 @@ test('a command that opens or merges a pull request is caught through wrappers, 
     'gh pr -R $(gh repo view -q .x) merge 3',
     'gh pr "merge" 3',
     "gh 'pr' create",
+    '\\gh pr merge 3',
+    'g\\h pr merge 3',
+    'gh pr mer\\ge 3',
+    "gh pr $'merge' 3",
+    'gh pr merge>/tmp/out 3',
+    'gh pr create>/dev/null --fill',
+    'gh>/dev/null pr merge 3',
+    'gh 2>/dev/null pr merge 3',
+    'gh --repo o/r pr merge 3',
   ]
   for (const command of caught) expect({ command, caught: opensOrMerges(command) }).toEqual({ command, caught: true })
   const passed = [
@@ -46,6 +55,9 @@ test('a command that opens or merges a pull request is caught through wrappers, 
     'gh pr diff 5 | grep create',
     'cd $DIR && git merge feature/pr-new-thing',
     "gh pr list --json title | jq '.[] | select(.title | test(\"new\"))'",
+    'gh issue list --label pr merge',
+    'gh issue create --title "pr merge notes"',
+    'gh pr view 12 > pr-create.txt',
     "git commit -F - <<'EOF'\nfeat: route gh through the tool\n\nThe pr merge path is refused.\nEOF",
   ]
   for (const command of passed) expect({ command, caught: opensOrMerges(command) }).toEqual({ command, caught: false })
