@@ -120,7 +120,7 @@ const PULL_REQUEST_TOOL = {
     type: 'object',
     properties: {
       action: { type: 'string', enum: ['open', 'merge'] },
-      title: { type: 'string', description: "open: the pull request's title." },
+      title: { type: 'string', description: "open: the pull request's title; left out, gh takes the title and description from the commits." },
       body: { type: 'string', description: 'open: its description, in Markdown.' },
       base: { type: 'string', description: 'open: the branch it merges into; left out, the default branch.' },
       draft: { type: 'boolean', description: 'open: open it as a draft.' },
@@ -260,7 +260,6 @@ async function openPullRequest($: EngineInterface, place: Place, input: Input): 
   if (place.branch === '' || place.branch === place.main)
     return { deny: `Check out the branch to open a pull request for: ${place.branch || 'a detached HEAD'} is not one.` }
   const title = asText(input.title).trim()
-  if (title === '') return { deny: 'Give the pull request a title.' }
   const refusal = await vouch($, place, place.branch, place.head, 'open')
   if (refusal !== undefined) return { deny: refusal }
   const base = asText(input.base).trim() || place.main
@@ -283,7 +282,12 @@ async function openPullRequest($: EngineInterface, place: Place, input: Input): 
   await runIn($, ['git', 'config', `branch.${place.branch}.merge`, `refs/heads/${place.branch}`], place.root, 30_000)
   const made = await runIn(
     $,
-    ['gh', 'pr', 'create', '--head', place.branch, '--base', base, '--title', title, '--body', asText(input.body), ...(input.draft === true ? ['--draft'] : [])],
+    [
+      'gh', 'pr', 'create', '--head', place.branch, '--base', base,
+      // Without a title gh takes the title and description from the commits.
+      ...(title === '' ? ['--fill'] : ['--title', title, '--body', asText(input.body)]),
+      ...(input.draft === true ? ['--draft'] : []),
+    ],
     place.root,
     60_000,
   )

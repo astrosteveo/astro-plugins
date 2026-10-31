@@ -26,7 +26,7 @@ Risk picks the level: `medium` for low, `high` for medium, and `xhigh` for high.
 
 ## Pull requests
 
-Claude opens and merges pull requests through the `pull_request` tool. `open` pushes the reviewed commit to the branch on origin, by its id, sets the branch to track origin's copy, and runs `gh pr create`. When the branch has a pull request open into that base already, gh names it, the push has brought it up to the reviewed commit, and `open` says so. After a rebase or an amend, origin's copy has commits the reviewed one lacks, so the push is rejected. `open` then says so and leaves the forced push to you. `merge` runs `gh pr merge` with `--match-head-commit`, so gh refuses if the pull request's head moves away from the reviewed commit. Both are refused until that commit has been reviewed and no finding is open. A review covers one commit, so a commit made after it needs a round of its own.
+Claude opens and merges pull requests through the `pull_request` tool. `open` pushes the reviewed commit to the branch on origin, by its id, sets the branch to track origin's copy, and runs `gh pr create`, which takes the title and description from the commits when Claude gives no title. When the branch has a pull request open into that base already, gh names it, the push has brought it up to the reviewed commit, and `open` says so. After a rebase or an amend, origin's copy has commits the reviewed one lacks, so the push is rejected. `open` then says so and leaves the forced push to you. `merge` runs `gh pr merge` with `--match-head-commit`, so gh refuses if the pull request's head moves away from the reviewed commit. Both are refused until that commit has been reviewed and no finding is open. A review covers one commit, so a commit made after it needs a round of its own.
 
 For a high-risk change, the tool asks you in Claude Code's question dialog to approve that commit before its pull request is opened or merged. Claude cannot answer the dialog, and the approval holds for that commit alone.
 
@@ -88,6 +88,7 @@ In `/config`:
 - The record depends on the review calling the `record` tool as the added section asks. A review that ends without doing so records no round, and Claude reviews again.
 - A review reports at most what its level allows, 10 findings at `high`. Run `/review-gate` with `--max-findings all` to see every one.
 - The gate sees pull requests that a Claude Code session opens or merges. One opened on github.com, or from another shell, does not pass through it.
+- `open` pushes to origin and opens the pull request in gh's default repository. In a fork clone those are two repositories, so `open` cannot open its pull request.
 - The record belongs to one machine; another clone or machine starts with none.
 - It guards a workflow and is not a sandbox. The gate does not read a script file run by name. It does not follow shell expansion either, such as `$'\x67h'`, `{merge,}`, `$IFS` or a gh alias. A model that sets out to hide a gh command from it, or to forge the plugin's store, can.
 - It needs git, gh, and the `sleep` command. Windows is not supported.

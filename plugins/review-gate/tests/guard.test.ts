@@ -51,6 +51,8 @@ test('a command that opens or merges a pull request is caught as it is normally 
     "sh <<<'gh pr create --fill'",
     'echo "step 1 ->"\ngh pr merge 1',
     '# send stderr with 2>\ngh pr merge 1',
+    `python3 -c 'import subprocess; subprocess.run(["gh", "pr", "merge", "12", "--squash"], check=True)'`,
+    "node -e \"require('child_process').execFileSync('gh', ['pr', 'create', '--fill'])\"",
   ]
   for (const command of caught) expect({ command, caught: opensOrMerges(command) }).toEqual({ command, caught: true })
   const passed = [
