@@ -47,6 +47,10 @@ test('a command that opens or merges a pull request is caught as it is normally 
     'gh pr merge 12 &>/dev/null',
     'gh pr &>/dev/null merge 12',
     'gh pr >|/tmp/x merge 12',
+    'bash <<< "gh pr merge 1"',
+    "sh <<<'gh pr create --fill'",
+    'echo "step 1 ->"\ngh pr merge 1',
+    '# send stderr with 2>\ngh pr merge 1',
   ]
   for (const command of caught) expect({ command, caught: opensOrMerges(command) }).toEqual({ command, caught: true })
   const passed = [

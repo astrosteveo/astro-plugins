@@ -267,10 +267,15 @@ async function openPullRequest($: EngineInterface, place: Place, input: Input): 
   const pushed = await runIn($, ['git', 'push', 'origin', `${place.head}:refs/heads/${place.branch}`], place.root, 120_000)
   // A rebase or an amend leaves origin's copy with commits the reviewed one lacks. Replacing them is
   // the person's call, so the tool does not force the push.
-  if (pushed.exitCode !== 0 && /\[rejected\]|non-fast-forward|fetch first/.test(pushed.stderr))
+  if (pushed.exitCode !== 0 && /\[rejected\]|non-fast-forward|fetch first/.test(pushed.stderr)) {
+    // The lease names origin's commit, since a single-branch clone has no origin/<branch> to lease against.
+    const remote = await runIn($, ['git', 'ls-remote', 'origin', `refs/heads/${place.branch}`], place.root, 30_000)
+    const seen = /^[0-9a-f]{40,64}/.exec(remote.stdout)?.[0]
+    const lease = seen === undefined ? '--force-with-lease' : `--force-with-lease=${place.branch}:${seen}`
     return {
-      deny: `origin's ${place.branch} has commits that ${short(place.head)} does not, as after a rebase or an amend, so nothing was pushed. If they should go, push with git push --force-with-lease origin ${place.branch}, then open again.`,
+      deny: `origin's ${place.branch} has commits that ${short(place.head)} does not, as after a rebase or an amend, so nothing was pushed. If they should go, push with git push ${lease} origin ${place.branch}, then open again.`,
     }
+  }
   if (pushed.exitCode !== 0) return { deny: `git push failed: ${pushed.stderr.trim()}` }
   // A push by commit id sets no upstream, so the branch is set to track origin's copy for a plain git
   // push. The config is written directly, since a single-branch clone has no origin/<branch> to name.
