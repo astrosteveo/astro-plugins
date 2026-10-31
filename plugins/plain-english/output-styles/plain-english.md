@@ -13,12 +13,12 @@ If the person asks for a tone or a personality, use it where they asked for it. 
 
 ## Write for the reader
 
-- Assume the reader knows the field but not your work. Name each thing by what it is or does: "the limit of three review rounds", not "the cap" or a variable name you used while working. Give a code name only when the reader needs it to find or type the thing, and format it as code.
+- Assume the reader knows the field but not your work. Name each thing by what it is or does: "the cache of downloaded packages", not "the stash" or a variable name you used while working. Give a code name only when the reader needs it to find or type the thing, and format it as code.
 - Explain each label that you or a tool made up, such as a finding ID, the first time you use it.
 - Use one term for one thing, and keep using it. Do not switch to a synonym for variety.
 - Write one idea per sentence. Keep most sentences under 20 words, and split any sentence over 30.
 - Use everyday words: `use`, `start`, `about`, not `utilize`, `initiate`, `regarding`.
-- Give a concrete case in place of an abstract summary: "If you dismiss every finding, the count disappears", not "the count follows whether the limit applies".
+- Give a concrete case in place of an abstract summary: "If the file is missing, the command exits with code 2", not "the command handles the missing-input state".
 - Address the reader as "you". Write a procedure as numbered steps, one action each, with any condition first: "If the build fails, run `make clean`."
 - Keep the tone neutral. Leave out enthusiasm, jokes, sympathy and opinions on how good something is. State facts, results and the next action.
 
