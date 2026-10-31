@@ -43,13 +43,13 @@ A shell command that runs `gh pr create`, `gh pr new` or `gh pr merge` is refuse
 While a round runs, the band above the prompt shows it:
 
 ```
-review · round 2 · /code-review high · 3m 10s
+review · round 2 · /code-review high · 3m 10s · 1 of 3 left after this
   ● 31 calls · reading src/app.ts   [ watch ]
 ```
 
-The second line is the review's agent: its tool calls so far, and what it is doing now. `watch` opens its transcript.
+The second line is the review's agent: its tool calls so far, and what it is doing now. `watch` opens its transcript. Once a round has left findings open, the first line also counts the rounds the cap leaves after this one, so you can see how deep a loop of fix and review has gone.
 
-Between rounds the band says where the branch stands: findings open, commits not reviewed yet, or a commit ready for its pull request, with a note when it waits for your approval. A review's row in the chat draws as a card that lists each finding with its grade, place and the review's category for it; fixed ones are ticked, and dismissed ones show their reason. ctrl+o shows the text Claude read. The round's result ends by asking Claude to suggest, for each open finding, whether to fix it and how or dismiss it and why.
+Between rounds the band says where the branch stands: findings open, commits not reviewed yet, or a commit ready for its pull request, with a note when it waits for your approval. While the cap counts, it ends with the rounds left, such as `2 of 3 rounds left`, and the round's result tells Claude the same. A review's row in the chat draws as a card that lists each finding with its grade, place and the review's category for it; fixed ones are ticked, and dismissed ones show their reason. ctrl+o shows the text Claude read. The round's result ends by asking Claude to suggest, for each open finding, whether to fix it and how or dismiss it and why.
 
 When the review ran in the background, the engine sends a notice of its end, which would hand Claude `/code-review`'s raw report a second time. review-gate puts the round's word in place of the report and draws the notice's row as one dim line, `review-gate · round 2 recorded`. When Claude ran the round, the notice tells it only that, and a notice that comes once its turn has ended is dropped rather than start an empty one. When you ran `/review-gate`, the notice carries the round's result, so Claude follows up with its suggestions; a review that ran in the foreground sends no notice, so the command's output carries the same request for Claude's next turn.
 
