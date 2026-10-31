@@ -30,7 +30,7 @@ Claude opens and merges pull requests through the `pull_request` tool. `open` pu
 
 For a high-risk change, the tool asks you in Claude Code's question dialog to approve that commit before its pull request is opened or merged. Claude cannot answer the dialog, and the approval holds for that commit alone.
 
-A shell command that runs `gh pr create`, `gh pr new` or `gh pr merge` is refused and sent to the tool, and so is a `gh api` call that opens or merges a pull request: a POST to `pulls`, a call to a pull request's `merge`, or a GraphQL mutation that creates, merges or queues one. The match reads the command's text with continued lines joined, so `env`, `bash -c`, `eval`, `xargs` and a variable holding `gh` do not hide the call. A commit message that only mentions those words is passed from a file (`git commit -F FILE`).
+A shell command that runs `gh pr create`, `gh pr new` or `gh pr merge` is refused and sent to the tool, and so is a `gh api` call that opens or merges a pull request: a POST to `pulls`, a call to a pull request's `merge`, or a GraphQL mutation that creates, merges or queues one. The match reads the command's text with continued lines joined, so `env`, `bash -c`, `eval`, `xargs` and a variable holding `gh` do not hide the call. Only flags, such as `-R owner/repo`, may come between `pr` and its verb, so `gh pr view 12 | grep new` and `gh pr checkout 12 && git merge main` run. A commit message that only mentions those words is passed from a file (`git commit -F FILE`).
 
 ## Cost and time
 
