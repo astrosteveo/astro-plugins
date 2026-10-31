@@ -1,7 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { list, problems } from './check'
 import { type Piece, type Published, commits, directories, gh, isGenerated, isTestPath, pieces, published, pushedRefs, pushes, resolvePath, reusesMessage } from './gate'
-import { report, scan } from './scan'
+import { prose, report, scan } from './scan'
 import { STYLE_FILE, hasRules, parseStyle, withRules } from './style'
 
 const SCAN = 'mcp__plain-english__scan'
@@ -70,15 +70,25 @@ function applied(file: string, edit: { old: string; new: string; all: boolean })
   return edit.all ? file.split(edit.old).join(edit.new) : file.replace(edit.old, () => edit.new)
 }
 
+// The prose lines of `after` that hold the `length` characters at `at`: the lines an edit wrote, read
+// in the file around them, so a fence, a list or a code span that opens before the edit keeps its
+// meaning.
+export function editedLines(after: string, at: number, length: number) {
+  const first = after.slice(0, at).split('\n').length - 1
+  const last = first + (after.slice(at, at + length).match(/\n/g)?.length ?? 0)
+  return prose(after).slice(first, last + 1).join('\n')
+}
+
 // A piece's text, what it replaces, and what the model reads of it. An Edit is scanned as the file
-// it leaves, so code fences around it keep their meaning, and the model reads only its new words.
+// it leaves, so code fences around it keep their meaning, and the model reads only the lines it wrote.
 async function prepare($: EngineInterface, piece: Piece) {
   const text = piece.text ?? (piece.file === undefined ? undefined : await readable($, piece.file))
   if (text === undefined) return undefined
   const file = piece.beforeFile === undefined ? undefined : await readable($, piece.beforeFile)
   if (piece.edit !== undefined) {
     const after = file === undefined ? undefined : applied(file, piece.edit)
-    return after === undefined ? { text, scanned: text, before: piece.edit.old } : { text, scanned: after, before: file!, judged: piece.edit.new }
+    if (after === undefined) return { text, scanned: text, before: piece.edit.old }
+    return { text, scanned: after, before: file!, judged: editedLines(after, file!.indexOf(piece.edit.old), piece.edit.new.length) }
   }
   return { text, scanned: text, before: piece.before ?? file ?? '' }
 }
