@@ -178,7 +178,8 @@ const DRAWN_AS_EMOJI = /\p{Emoji_Presentation}|\p{Emoji_Modifier}|\p{Regional_In
 
 const LIST_MARK = /^\s*(?:[-*+]|\d+[.)])\s+/
 // A sentence ends at a stop and a space, unless the stop ends a common abbreviation. The split runs on
-// the text as written, so a sentence that opens with inline code or follows a URL still starts afresh.
+// the prose with code and URLs written as letters, so a stop inside them ends no sentence, and a
+// sentence that opens with inline code still starts afresh.
 const SENTENCE_END = /(?<=[.!?]["'”’)]?)(?<!\b(?:e\.g|i\.e|cf|vs)\.)\s+(?=\S)/
 const RULE_LINE = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/
 const BLOCK_START = /^\s*(?:[-*+]|\d+[.)])\s+|^\s{0,3}[#|]/
@@ -218,7 +219,8 @@ export function prose(text: string): string[] {
     }
     return t
       .replace(/\]\([^)]*\)/g, m => `]${blank(m.slice(1))}`)
-      .replace(/\b(?:https?|file):\/\/\S+/g, blank)
+      // A URL ends before the stop or comma after it, which belongs to the sentence.
+      .replace(/\b(?:https?|file):\/\/\S+?(?=[.,;:!?)"'”’]*(?:\s|$))/g, blank)
       .replace(/<\/?[a-zA-Z][^>]*>/g, blank)
   }
   lines.forEach((line, i) => {
@@ -281,15 +283,16 @@ function sentences(text: string): { text: string; start: number }[] {
 }
 
 // Words have a letter or a digit, so a spaced dash is not one.
-const words = (s: string) => s.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)?.length ?? 0
+export const words = (s: string) => s.match(/[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu)?.length ?? 0
 
 type Push = (start: number, length: number, tier: Tier, why: string, sentence?: true) => void
 
 // The forms a word list cannot match: emoji, horizontal rules, "**Term**: explanation" lists,
 // two spaced dashes in one sentence, sentences too long to hold one idea, and four or more very
 // short sentences in a row. Offsets are into the whole text, each line starting where `starts`
-// says. Sentences are split on `written`, the text as written, and read on `matched`, the prose.
-function forms(lines: string[], matched: string, written: string, starts: number[], push: Push) {
+// says. Sentences are split on `marked`, the prose with what is not prose as letters, and read on
+// `matched`, the prose alone. The rows of a table are not sentences.
+function forms(lines: string[], matched: string, marked: string, starts: number[], push: Push) {
   lines.forEach((line, i) => {
     const at = starts[i]!
     for (const m of line.matchAll(EMOJI))
@@ -306,13 +309,17 @@ function forms(lines: string[], matched: string, written: string, starts: number
     let last = first
     while (last + 1 < lines.length && continues(lines[last]!, lines[last + 1]!)) last++
     const at = starts[first]!
-    const end = starts[last]! + lines[last]!.length
-    const paragraph = lines.slice(first, last + 1)
-    const isTable = TABLE_ROW.test(paragraph[0]!) || paragraph.some(isDelimiterRow)
+    // A table starts at the header above its delimiter row; prose wrapped above the header is prose.
+    const delimiter = lines.slice(first, last + 1).findIndex(isDelimiterRow)
+    // The last line of prose: none for a row that opens with a pipe, or the line above a table's header.
+    const proseLast = TABLE_ROW.test(lines[first]!) ? first - 1 : delimiter > 0 ? first + delimiter - 2 : last
+    const from = first
     first = last + 1
+    if (proseLast < from) continue
+    const end = starts[proseLast]! + lines[proseLast]!.length
     const clear = (s: string) => s.replace(LIST_MARK, m => ' '.repeat(m.length))
     const body = clear(matched.slice(at, end))
-    const parts = sentences(clear(written.slice(at, end))).map(s => {
+    const parts = sentences(clear(marked.slice(at, end))).map(s => {
       const text = body.slice(s.start, s.start + s.text.length)
       return { text, start: s.start, count: words(text) }
     })
@@ -324,7 +331,7 @@ function forms(lines: string[], matched: string, written: string, starts: number
     for (const s of parts) {
       const dashes = [...s.text.matchAll(/(?<=\S)\s[-–]\s(?=\S)/g)]
       if (dashes.length >= 2) push(at + s.start + dashes[1]!.index, dashes[1]![0].length, 'check', 'two dashes in one sentence. Keep one aside, or split the sentence.')
-      if (s.count > LONG_SENTENCE && !isTable) whole(s, 'rewrite', `sentence of ${s.count} words. Split it so each sentence says one thing.`)
+      if (s.count > LONG_SENTENCE) whole(s, 'rewrite', `sentence of ${s.count} words. Split it so each sentence says one thing.`)
     }
     let run: typeof parts = []
     const close = () => {
@@ -389,7 +396,10 @@ export function scan(text: string): Hit[] {
   for (const tier of ['rewrite', 'check'] as const)
     for (const rule of RULES.filter(r => r.tier === tier))
       for (const m of matched.matchAll(rule.re)) push(m.index, m[0].length, rule.tier, rule.why)
-  forms(lines, matched, whole, starts, push)
+  // What is not prose, such as code and URLs, written as letters, so that it splits no sentence.
+  let marked = ''
+  for (let i = 0; i < matched.length; i++) marked += matched[i] === ' ' && /\S/.test(whole[i]!) ? 'x' : matched[i]
+  forms(lines, matched, marked, starts, push)
   return hits.sort((a, b) => a.line - b.line || a.column - b.column)
 }
 
