@@ -19,7 +19,7 @@ Find the Claudisms that got past the Plain English style, and rewrite them.
 
 Load the tool with ToolSearch (`select:mcp__plain-english__scan`) if it is not loaded yet. Call it once per file with `path`, once with `text` for pasted text or a draft, or with neither for your last reply. If it refuses a path for permission, read the file with Read and pass its text.
 
-The tool skips fenced and indented code, inline code, block quotes, HTML comments, URLs and frontmatter, but not text in quotation marks. It matches phrases across wrapped lines within a paragraph. It returns two lists from a word scan, then, for text of 25 words or more, a third list of what a model found reading it. Rewrite each entry in the Rewrite list: its words and phrases are almost never right. The Check list has words that are fine when used literally, such as a config that `lives in` a folder, a promise that `settles` or a data `shape`; keep the literal ones and rewrite the metaphors.
+The tool skips fenced and indented code, inline code, block quotes, HTML comments, URLs and frontmatter. It does not skip text in quotation marks. It matches phrases across wrapped lines within a paragraph. It returns two lists from a word scan, then, for text of 25 words or more, a third list of what a model found reading it. Rewrite each entry in the Rewrite list: its words and phrases are almost never right. The Check list has words that are fine when used literally, such as a config that `lives in` a folder or a data `shape`. Keep the literal ones and rewrite the metaphors.
 
 ## 3. Read for what a search misses
 
@@ -32,6 +32,8 @@ A word search cannot see these forms, and the model's list may miss some. Read t
 - Invented observations and experience: what people say, a career the writer never had.
 - A metaphor in place of a plain verb: an idea that lives, carries, moves, points or has a shape.
 - Four or more very short sentences in a row, and two dashes in one sentence.
+- A working label used as if the reader knows it: a nickname, internal state or variable name with no explanation, where a plain description would do.
+- Personality in place of facts: enthusiasm, jokes, sympathy, or opinions on how good something is. Leave it if the person asked for that tone.
 
 `claudisms.md` beside this file is the full list, with why each entry fails and what to write instead. Read the sections you need when a hit is unclear.
 

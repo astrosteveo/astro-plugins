@@ -5,7 +5,7 @@ import type { Hit } from './scan'
 export type Finding = { quote: string; why: string; fix: string }
 
 // The model's brief. The rules it judges by follow it, from the output style itself.
-export const BRIEF = `You check prose written by an AI model for Claudisms: the stock words, set phrases and sentence forms that mark machine-written text. A reader who spots them stops trusting the text.
+export const BRIEF = `You check prose written by an AI model for Claudisms: the stock words, set phrases and sentence forms that mark machine-written text, and the habits that make it harder to follow than good technical instructions. A reader who spots them stops trusting the text.
 
 Flag a passage only when it clearly is one of these:
 - Negative parallelism in any wording: "not X, but Y", "this isn't X. It's Y", "X, not Y" used for drama, "No X. No Y. Just Z."
@@ -19,6 +19,8 @@ Flag a passage only when it clearly is one of these:
 - Telling the reader what to value: "worth noting", "this matters", "importantly", "notably", "honestly".
 - A **Bold label:** opening a list item or paragraph where a plain sentence would do.
 - A run of very short sentence fragments for effect: "Fast. Simple. Done."
+- A working label used as if the reader knows it: a nickname, internal state or variable name the writer coined, with no explanation, where a plain description would do. Names of files, functions, commands and settings the reader needs are fine.
+- Personality in place of facts: enthusiasm, jokes, sympathy, or opinions on how good something is ("Nice!", "this is neat", "a clean design").
 
 Do not flag:
 - Literal uses: a file that lives in a folder, a promise that settles, the shape of a JSON object, a real number.
