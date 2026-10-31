@@ -1,17 +1,24 @@
 import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import type { Activity, Finding, Ledger, Repo, Run } from '../types'
 import { short } from './git'
-import { ROUND_CAP, aboutOf, duration, openFindings, riskNow, spent, standing, streak } from './ledger'
+import { ROUND_CAP, aboutOf, duration, openFindings, riskNow, roundsLeft, spent, standing, streak } from './ledger'
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
 
 const cut = (text: string, most: number) => (text.length <= most ? text : `${text.slice(0, most - 1)}…`)
 
+/** How many rounds the cap leaves, after the one running when `running` is set. */
+export function leftText(left: number, running: boolean) {
+  if (running) return left <= 0 ? 'past the cap' : left === 1 ? 'last round before the cap' : `${left - 1} of ${ROUND_CAP} left after this`
+  return `${left} of ${ROUND_CAP} rounds left`
+}
+
 /**
- * The band while a round runs: a line for the round, then, once /code-review is at work, a line
- * for its agent (its tool calls, what it is doing now, and a button that opens its transcript).
+ * The band while a round runs: a line for the round and how many the cap leaves after it, then,
+ * once /code-review is at work, a line for its agent (its tool calls, what it is doing now, and a
+ * button that opens its transcript). `left` is the rounds the cap left when this one started.
  */
-export function liveBand($: EngineInterface, e: RenderInput, run: Run, doing: Activity | null, now: number): RenderElement {
+export function liveBand($: EngineInterface, e: RenderInput, run: Run, doing: Activity | null, now: number, left?: number): RenderElement {
   const { Box, Button, Text } = $.ui.resolve(e)
   const phase = run.phase === 'judging' ? "judging the change's risk" : `/code-review ${run.level ?? ''}`.trimEnd()
   return (
@@ -21,6 +28,7 @@ export function liveBand($: EngineInterface, e: RenderInput, run: Run, doing: Ac
         <Text color="suggestion">
           round {run.round} · {phase} · {duration(now - run.startedAt)}
         </Text>
+        {left !== undefined && <Text dimColor> · {leftText(left, true)}</Text>}
       </Text>
       {run.phase === 'reviewing' && (
         <Box flexDirection="row">
@@ -51,8 +59,10 @@ export function band(
 ): RenderElement | undefined {
   const { Box, Text } = $.ui.resolve(e)
   const label = <Text dimColor>review · </Text>
-  if (run !== null) return liveBand($, e, run, doing, now)
-  if (repo === null || repo.isDefault || ledger === null || ledger.branch !== repo.branch) return undefined
+  const mine = repo !== null && !repo.isDefault && ledger !== null && ledger.branch === repo.branch
+  // A round counts toward the cap once one has left findings open; until then every round is left.
+  if (run !== null) return liveBand($, e, run, doing, now, mine && streak(ledger) > 0 ? roundsLeft(ledger) : undefined)
+  if (!mine) return undefined
   if (ledger.rounds.length === 0) {
     if (repo.ahead === 0) return undefined
     return (
@@ -74,6 +84,7 @@ export function band(
       )}
       {open.length > 0 && <Text dimColor> · fix and commit, or dismiss with a reason</Text>}
       {open.length > 0 && streak(ledger) >= ROUND_CAP && <Text color="warning"> · {ROUND_CAP} rounds without converging: step back</Text>}
+      {streak(ledger) > 0 && roundsLeft(ledger) > 0 && <Text dimColor> · {leftText(roundsLeft(ledger), false)}</Text>}
       {stand.kind === 'unreviewed' && <Text color="warning">{open.length > 0 ? ' · ' : ''}○ new commits since {short(ledger.reviewed ?? '')}</Text>}
       {(stand.kind === 'ready' || stand.kind === 'approval') && <Text color="success">✓ {short(repo.head)} reviewed, ready for a pull request</Text>}
       {stand.kind === 'approval' && <Text color="warning"> · high risk: you approve it at the gate</Text>}
