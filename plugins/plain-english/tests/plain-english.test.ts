@@ -301,6 +301,8 @@ test('a sentence over 30 words is rewritten; code, tables and shorter sentences 
   expect(scan(`| ${'cell words here '.repeat(12)}|`)).toEqual([])
   // A table without a leading pipe is still a table.
   expect(scan(`Name | Value\n--- | ---\nfoo | ${'cell words here '.repeat(12)}`)).toEqual([])
+  // Prose wrapped right above a table is still prose.
+  expect(scan(`${'The hook reads the commit '.repeat(7)}again.\nName | Value\n--- | ---\nfoo | ${'cell words here '.repeat(12)}`).map(h => h.line)).toEqual([1])
 })
 
 test('sentences are split as written: before inline code, a lowercase word and after a URL', () => {
@@ -308,6 +310,9 @@ test('sentences are split as written: before inline code, a lowercase word and a
   expect(scan(`Run the build and ${twenty}. \`make test\` then runs ${twenty}.`)).toEqual([])
   expect(scan(`Run the build and ${twenty}. then it runs ${twenty}.`)).toEqual([])
   expect(scan(`The docs are kept at https://example.com/docs/scan. Then ${twenty}.`)).toEqual([])
+  // A stop inside inline code or a link target ends no sentence.
+  expect(scan(`Run \`echo 'a.' b\` and ${twenty} and ${twenty}.`).map(h => h.text.slice(0, 9))).toEqual(['Run `echo'])
+  expect(scan(`See [the docs](./a. b) and ${twenty} and ${twenty}.`).map(h => h.why)).toEqual(['sentence of 45 words. Split it so each sentence says one thing.'])
   // An abbreviation does not end a sentence.
   expect(scan(`Use a short form, e.g. ${twenty} and ${twenty}.`).map(h => h.why)).toEqual(['sentence of 47 words. Split it so each sentence says one thing.'])
 })

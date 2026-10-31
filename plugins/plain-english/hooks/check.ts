@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 import { judge } from './judge'
-import { type Hit, prose, scan } from './scan'
+import { type Hit, prose, scan, words } from './scan'
 import { STYLE_FILE, parseStyle } from './style'
 
 // One Claudism to fix: the words, what is wrong, and a plainer form where one is known.
@@ -13,7 +13,7 @@ const JUDGED_WORDS = 25
 const JUDGED_CHARS = 40_000
 
 const flat = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
-const proseWords = (text: string) => prose(text).join(' ').match(/[\p{L}\p{N}'’-]+/gu)?.length ?? 0
+const proseWords = (text: string) => words(prose(text).join(' '))
 
 // Hits not already in the text an edit replaces: the edit answers for what it adds, not for what
 // was there.
