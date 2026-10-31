@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { Finding, Ledger, Round, Run } from '../types'
-import { emptyLedger, globTest, leftText } from '../hooks/ledger'
+import { emptyLedger, globTest } from '../hooks/ledger'
 import { liveBand } from '../hooks/views'
 import { followUp, parseRun } from '../hooks/register'
 
@@ -905,13 +905,14 @@ test("while a round runs, its state says the phase and level, and names the revi
 })
 
 test('the live band draws the round, and the review with its calls, latest action and a watch button', async ($, on) => {
-  const reviewing: Run = { round: 3, phase: 'reviewing', level: 'high', startedAt: 0, agentId: 'a1', left: 2 }
+  const reviewing: Run = { round: 3, phase: 'reviewing', level: 'high', startedAt: 0, agentId: 'a1' }
   let shown: Run = reviewing
   on('ui.render', ($, e) => liveBand($, e, shown, { calls: 44, doing: 'reading hooks/review.ts' }, 370_000))
   const props = { hasSurvey: false, isWorking: true, maxRows: 12, bodyColumns: 160, scroll: { offset: 0, bodyRows: 12 }, view: {} }
   const band = await $.ui.mount({ plugin: 'review-gate', surface: 'terminal', component: 'AbovePrompt', requestId: 'band', props })
   const drawn = (await band.findAll({ type: 'Text' })).map(text => text.text).join('\n')
-  expect(drawn).toContain('round 3 · /code-review high · 6m 10s · 1 of 3 left after this')
+  expect(drawn).toContain('round 3 · /code-review high · 6m 10s')
+  expect(drawn.includes('left')).toBe(false)
   expect(drawn).toContain('44 calls · reading hooks/review.ts')
   // Pressing it opens the review's transcript.
   expect((await band.findAll({ type: 'Button' })).map(button => button.key)).toEqual(['watch'])
@@ -922,10 +923,26 @@ test('the live band draws the round, and the review with its calls, latest actio
   const said = (await judging.findAll({ type: 'Text' })).map(text => text.text).join('\n')
   expect(said).toContain("round 3 · judging the change's risk · 6m 10s")
   expect(said.includes('calls')).toBe(false)
-  expect(said.includes('left')).toBe(false)
   await judging.unmount()
 })
 
+test("a card gives the risk's reasons only when the risk is high", async ($, on) => {
+  const { store } = engine(on, world())
+  const why = ['src/app.ts builds a shell command from the query']
+  const props = { tool_use_id: 'toolu_1', tool: REVIEW, output: 'Review round 1 of feat/app at 1111111: the whole branch.', isErrored: false }
+  const drawn = async (tier: 'medium' | 'high') => {
+    seed(store, { rounds: [round(1, ONE, 0, { risk: { tier, why } })], reviewed: ONE })
+    await start($)
+    const row = await $.ui.mount({ plugin: 'review-gate', surface: 'terminal', component: 'ToolResult', requestId: `toolu_${tier}`, props })
+    const text = (await row.findAll({ type: 'Text' })).map(one => one.text).join('\n')
+    await row.unmount()
+    return text
+  }
+  const medium = await drawn('medium')
+  expect(medium).toContain('· risk medium')
+  expect(medium).not.toContain('shell command')
+  expect(await drawn('high')).toContain('src/app.ts builds a shell command from the query')
+})
 test('a review is refused on the default branch, with no commits past it, and with changes not committed', async ($, on) => {
   const repo = world()
   engine(on, repo)
@@ -970,7 +987,7 @@ test('between rounds, the band and the summary count the rounds the cap leaves w
   seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 1)], findings: [finding({})], reviewed: ONE })
   await start($)
   // The count ends the band, after the new commits; the engine's own band follows it.
-  expect(await bandText($)).toMatch(/○ new commits since 1111111 · 1 of 3 rounds left(engine)$/)
+  expect(await bandText($)).toMatch(/○ new commits since 1111111, not reviewed · 1 of 3 rounds left(engine)$/)
   expect((await $.command.run({ command: 'review-gate', args: 'status', ...person })).text).toContain(
     '1 of 3 rounds left: after 3 rounds in a row end with findings open, no further round runs until the user allows more.',
   )
@@ -981,47 +998,26 @@ test('between rounds, the band and the summary count the rounds the cap leaves w
   // Every finding dismissed: the cap refuses nothing, so neither counts, ready for a pull request or not.
   seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 1)], findings: [finding({ status: 'dismissed', answer: 'Fine.' })], reviewed: ONE })
   await start($)
-  expect(await bandText($)).toBe('review · ○ new commits since 1111111engine')
+  expect(await bandText($)).toBe('review · ○ new commits since 1111111, not reviewed' + 'engine')
   expect((await $.command.run({ command: 'review-gate', args: 'status', ...person })).text).not.toContain('rounds left')
   repo.head = ONE
   await start($)
   expect(await bandText($)).toBe('review · ✓ 1111111 reviewed, ready for a pull requestengine')
 })
-test('a round shows the count the cap left when it started, through its record and until it ends', async ($, on) => {
+test('a running round shows no count of rounds left, and the band says to step back once it fills the cap', async ($, on) => {
   const repo = world({ head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts'], [TWO]: ['src/app.ts'] } })
-  // A round after every finding was dismissed still counts toward the cap, so it shows the count too.
-  const runs: (Run | null)[] = []
-  on('state.set', (_, e, next) => {
-    if (e.plugin === 'review-gate' && e.key === 'run') runs.push((e.value as unknown as { value?: Run | null }).value ?? null)
-    return next(e)
-  })
   const { store, reviews } = engine(on, repo)
   seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 1)], findings: [finding({ status: 'dismissed', answer: 'Fine.' })], reviewed: ONE })
   await start($)
   const call = $.tool.call({ tool: REVIEW })
   await until($, 'the review', () => reviews.length === 1)
   expect(await bandText($)).toContain('round 3 · /code-review high')
-  expect(await bandText($)).toContain(' · last round before the cap')
-  // The round records a new finding, which fills the cap; the run keeps its count.
+  expect(await bandText($)).not.toContain('left')
+  // The round records a new finding, which fills the cap.
   await act($, reviews, 0, { findings: [{ file: 'src/app.ts', line: 3, summary: 'A new defect.', failure_scenario: 'It breaks.' }] })
   await call
-  expect(runs.filter(run => run !== null).map(run => run?.left)).toEqual(runs.filter(run => run !== null).map(() => 1))
   expect(await bandText($)).toContain('3 rounds without converging: step back')
   expect(await bandText($)).not.toContain('rounds left')
-  // The person's round past the cap says so.
-  const past = $.command.run({ command: 'review-gate', args: '', ...person })
-  await until($, 'the review', () => reviews.length === 2)
-  expect(await bandText($)).toContain('round 4 · /code-review high')
-  expect(await bandText($)).toContain(' · past the cap')
-  await act($, reviews, 1)
-  await past
-  expect([leftText(3, true), leftText(2, true), leftText(1, true), leftText(0, true), leftText(2)]).toEqual([
-    '2 of 3 left after this',
-    '1 of 3 left after this',
-    'last round before the cap',
-    'past the cap',
-    '2 of 3 rounds left',
-  ])
 })
 test('a pull request opens through the tool only for a reviewed commit with nothing open, and pushes first', async ($, on) => {
   const { store, argvs } = engine(on, world())
