@@ -1,10 +1,10 @@
 import type { EngineInterface } from 'claude-code'
 import { judge } from './judge'
-import { type Hit, prose, scan, words } from './scan'
+import { type Hit, prose, scan } from './scan'
 import { STYLE_FILE, parseStyle } from './style'
 
 // One Claudism to fix: the words, what is wrong, and a plainer form where one is known.
-export type Problem = { quote: string; why: string; fix?: string; sentence?: true }
+export type Problem = { quote: string; why: string; fix?: string }
 
 // Text shorter than this goes to the word scan alone: a commit subject, a title. The model's
 // judgment needs a paragraph to read.
@@ -13,7 +13,7 @@ const JUDGED_WORDS = 25
 const JUDGED_CHARS = 40_000
 
 const flat = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase()
-const proseWords = (text: string) => words(prose(text).join(' '))
+const proseWords = (text: string) => prose(text).join(' ').match(/[\p{L}\p{N}'’-]+/gu)?.length ?? 0
 
 // Hits not already in the text an edit replaces: the edit answers for what it adds, not for what
 // was there.
@@ -68,7 +68,7 @@ export async function problems($: EngineInterface, given: string, options: Optio
   const text = strip(given)
   const before = options.before ?? ''
   const hits = added(scan(text), before)
-  const found: Problem[] = hits.filter(h => h.tier === 'rewrite').map(h => ({ quote: h.text, why: h.why, ...(h.sentence ? { sentence: h.sentence } : {}) }))
+  const found: Problem[] = hits.filter(h => h.tier === 'rewrite').map(h => ({ quote: h.text, why: h.why }))
   const read = forModel(strip(options.judged ?? given))
   const candidates = hits.filter(h => h.tier === 'check')
   // A short text goes to the model only when the scan left words for a reader to decide.
@@ -81,8 +81,7 @@ export async function problems($: EngineInterface, given: string, options: Optio
   const now = flat(text)
   const count = (s: string, q: string) => s.split(q).length - 1
   // A finding inside words the scan already reported adds nothing; one that holds them says more.
-  // A long sentence says nothing of the words in it, so a finding inside one still counts.
-  const covered = (q: string) => found.some(p => p.sentence !== true && flat(p.quote).includes(q))
+  const covered = (q: string) => found.some(p => flat(p.quote).includes(q))
   for (const f of judged) {
     const q = flat(f.quote)
     // Words the text had before are not the write's, unless it adds another of them.
