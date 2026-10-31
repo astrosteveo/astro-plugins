@@ -1019,6 +1019,13 @@ test('a running round shows no count of rounds left, and the band says to step b
   await call
   expect(await bandText($)).toContain('3 rounds without converging: step back')
   expect(await bandText($)).not.toContain('rounds left')
+  // The person's own run goes past the cap.
+  const past = $.command.run({ command: 'review-gate', args: '', ...person })
+  await until($, 'the review', () => reviews.length === 2)
+  expect(await bandText($)).toContain('round 4 · /code-review high')
+  await act($, reviews, 1)
+  await past
+  expect(ledgerOf(store).rounds.map(one => one.n)).toEqual([1, 2, 3, 4])
 })
 test('a pull request opens through the tool only for a reviewed commit with nothing open, and pushes first', async ($, on) => {
   const { store, argvs } = engine(on, world())
