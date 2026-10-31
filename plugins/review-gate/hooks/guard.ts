@@ -18,9 +18,10 @@ const isGh = (word: string) => word === 'gh' || word.endsWith('/gh') || word.sta
  */
 const wordsOf = (text: string) =>
   text
-    .replace(/\$?["'`\\]/g, '')
     // A redirection and its target, as in 2>/dev/null, &>log and >|out, are not words of the command.
-    .replace(/&?\d*[<>]+[&|]?\s*[^\s;&|()<>]*/g, ' ')
+    // The target is an unquoted word on the same line, so a here-string's quoted command stays.
+    .replace(/&?\d*[<>]+[&|]?[ \t]*[^\s;&|()<>"'`]*/g, ' ')
+    .replace(/\$?["'`\\]/g, '')
     .replace(/[;&|()<>\n]+/g, ' ; ')
     .split(/\s+/)
     .filter(word => word !== '')

@@ -158,6 +158,7 @@ function engine(on: On, repo: World) {
     }
     if (sub === 'log') return ran(0, '1111111 Add the app\n\nIt pages through results.\n\0')
     if (sub === 'for-each-ref') return ran(0, (repo.branches ?? ['main', 'feat/app']).map(name => `${name}\n`).join(''))
+    if (sub === 'ls-remote') return ran(0, `${'9'.repeat(40)}\trefs/heads/${repo.branch}\n`)
     if (sub === 'push')
       return repo.pushRejected === true ? ran(1, '', ' ! [rejected]        feat/app -> feat/app (non-fast-forward)\nerror: failed to push some refs') : ran(0)
     const guided = repo.guide !== undefined && (rest.includes(repo.guideAt ?? BASE) || rest[0] === `${repo.guideAt ?? BASE}:REVIEW.md`)
@@ -1065,7 +1066,7 @@ test('open on a branch whose pull request is open already brings it up to the re
   repo.pushRejected = true
   const creates = argvs.filter(argv => argv[0] === 'gh' && argv[2] === 'create').length
   expect((await $.tool.call(open())).deny).toBe(
-    "origin's feat/app has commits that 1111111 does not, as after a rebase or an amend, so nothing was pushed. If they should go, push with git push --force-with-lease origin feat/app, then open again.",
+    "origin's feat/app has commits that 1111111 does not, as after a rebase or an amend, so nothing was pushed. If they should go, push with git push --force-with-lease=feat/app:9999999999999999999999999999999999999999 origin feat/app, then open again.",
   )
   expect(argvs.filter(argv => argv[0] === 'gh' && argv[2] === 'create').length).toBe(creates)
 })
