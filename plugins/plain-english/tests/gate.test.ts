@@ -3,6 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
 import { directories, gh, isGenerated, isTestPath, pieces, published, pushedRefs, pushes, resolvePath, reusesMessage } from '../hooks/gate'
 import { parseFindings } from '../hooks/judge'
+import { editedLines } from '../hooks/register'
 
 const STYLE = '---\nname: Plain English\ndescription: Plain words\n---\n\n# Plain English\n\nWrite plainly.\n'
 
@@ -338,15 +339,32 @@ test('a model finding already in the file excuses only as many as were there', a
 
 test('a sentence an edit makes longer is the edit\'s, when the edit holds the whole sentence', async ($, on) => {
   const opening = 'The hook reads the message of each commit that the push would send'
-  const file = `# Tool\n\n${opening}. It runs once.\n`
+  const file = `# Tool\n\n${opening}.\nIt runs once.\n`
   const long = `${opening}, compares its author time with the start of the session, and then refuses the push when any message has a problem.`
   const w = world({ files: new Map([['/w/README.md', file]]), reply: JSON.stringify([{ quote: long, why: 'sentence over 30 words', fix: 'split it' }]) })
   engine(on, w)
   const r = await call($, 'Edit', { file_path: '/w/README.md', old_string: `${opening}.`, new_string: long })
-  // The model reads the edit's new words; the quote is the whole sentence, which the file did not have.
+  // The model reads the lines the edit wrote; the quote is the whole sentence, which the file did not have.
   expect(w.asked[0]).toContain(long)
   expect(w.asked[0]).not.toContain('It runs once.')
   expect(refusal(r)).toContain('sentence over 30 words')
+})
+
+test('the model reads the lines an edit wrote in the context of the file', () => {
+  const at = (file: string, old: string, now: string) => {
+    const after = file.replace(old, now)
+    return editedLines(after, file.indexOf(old), now.length)
+  }
+  // A line inside a code block is code, even when the edit holds no fence.
+  expect(at('Intro.\n\n```sh\n# a long comment line\nrun --flag a\n```\n', '--flag a', '--flag b').trim()).toBe('')
+  // A nested list item is prose, though it starts with four spaces.
+  expect(at('- Top item.\n    - Nested item.\n', 'Nested item.', 'Nested item that reads each message.')).toContain('Nested item that reads each message.')
+  // An edit that starts inside a code span sees the span blanked, as the file has it.
+  const line = at('Run `npm test --coverage` before you push.\n', 'test --coverage` before you push.', 'test --coverage` before you push, and read it.')
+  expect(line).toContain('before you push, and read it.')
+  expect(line).not.toContain('coverage')
+  // An edit over two lines reads both, and no more.
+  expect(at('One.\nTwo.\nThree.\n', 'Two.', 'Two.\nTwo and a half.')).toBe('Two.\nTwo and a half.')
 })
 
 test('a long sentence the file had before, inline code and all, is not the edit\'s', async ($, on) => {

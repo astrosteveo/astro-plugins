@@ -83,7 +83,7 @@ A subagent's report is checked when the subagent finishes. Text in quotation mar
 Each check has two steps:
 
 1. A word scan runs. It is free and instant.
-2. If the text has 25 words or more, Haiku reads its first 40,000 characters. For an edit, Haiku reads only the text that the edit adds. Haiku finds the forms that a word list cannot see, and decides whether each word that is fine when literal is used literally.
+2. If the text has 25 words or more, Haiku reads its first 40,000 characters. For an edit, Haiku reads only the lines that the edit writes. Haiku finds the forms that a word list cannot see, and decides whether each word that is fine when literal is used literally.
 
 The forms that Haiku looks for include these:
 
@@ -96,7 +96,7 @@ The forms that Haiku looks for include these:
 - A sentence over 30 words.
 - Personality dropped into otherwise plain text. A tone that the whole text keeps on purpose is not flagged, because you may have asked for it.
 
-Haiku flags a sentence that an edit makes longer only when the edit's new text holds the whole sentence. The style still tells Claude to split every sentence over 30 words.
+Haiku flags a sentence that an edit makes longer only when the lines that the edit writes hold the whole sentence. The style still tells Claude to split every sentence over 30 words.
 
 Each check costs one small model call and takes a second or two. If the model cannot answer, the findings of the word scan stand alone. If the check itself fails, the call goes through.
 
