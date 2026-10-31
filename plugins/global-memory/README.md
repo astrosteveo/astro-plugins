@@ -2,7 +2,7 @@
 
 Claude keeps project memories on its own, but never a memory that holds in every project. This mod adds one.
 
-Global memories live in `~/.claude/memory/`, one file per fact, with a `MEMORY.md` index. They are separate from your own `~/.claude/CLAUDE.md`, which Claude never edits.
+Global memories live in `~/.claude/memory/`, one file per fact, with a `MEMORY.md` index. They are separate from your own `~/.claude/CLAUDE.md`.
 
 - The index joins the system prompt's memory section at the start of each session. A memory saved mid-session reaches the next session, so the conversation's prompt cache is kept. A compaction reads the index again.
 - When you correct Claude, or state a preference that holds in every repo, it saves a global memory. A fact about one project goes to that project's memory.
