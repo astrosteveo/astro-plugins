@@ -391,7 +391,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
 
   const startedAt = await $.clock.now()
   const n = (last?.n ?? 0) + 1
-  // The count the band shows for this round is the one the cap left when it started.
+  // The band shows this round the count the cap left when it started.
   const left = capLeft(ledger)
   await ask.progress(() => ({ round: n, phase: 'judging', startedAt, ...(left === undefined ? {} : { left }) }))
   const files = await changedFiles(git, place.base, place.head)

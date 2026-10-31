@@ -941,7 +941,7 @@ test('after three rounds that leave findings open the model is refused another, 
   expect((await $.command.run({ command: 'review-gate', args: 'more', ...person })).text).toBe('feat/app may run 3 more rounds.')
   expect(ledgerOf(store).streakFrom).toBe(3)
 })
-test('the band and the summary count the rounds the cap leaves while findings are open', async ($, on) => {
+test('the band and the summary count the rounds the cap leaves while a loop of fix and review is under way', async ($, on) => {
   const repo = world({ head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts'], [TWO]: ['src/app.ts'] } })
   const { store } = engine(on, repo)
   seed(store, { rounds: [round(1, ONE, 0)], reviewed: ONE })
@@ -958,28 +958,34 @@ test('the band and the summary count the rounds the cap leaves while findings ar
   await $.command.run({ command: 'review-gate', args: 'more', ...person })
   expect(await bandText($)).toMatch(/ · 3 of 3 rounds left(engine)$/)
   expect((await $.command.run({ command: 'review-gate', args: 'status', ...person })).text).toContain('3 of 3 rounds left: after')
-  // With every finding answered the cap does not bind, so neither says a count.
-  seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 1)], findings: [finding({ status: 'dismissed', answer: 'Fine.' })], reviewed: ONE })
+  // Every finding dismissed: the next round still counts toward the cap, so both keep the count.
+  seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 1)], findings: [finding({ status: 'dismissed', answer: 'Fine.' })], reviewed: ONE, streakFrom: 0 })
+  await start($)
+  expect(await bandText($)).toBe('review · ○ new commits since 1111111 · 1 of 3 rounds leftengine')
+  expect((await $.command.run({ command: 'review-gate', args: 'status', ...person })).text).toContain('1 of 3 rounds left: after')
+  // A loop that ended with a round that left nothing open shows no count.
+  seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 0)], findings: [finding({ status: 'fixed' })], reviewed: ONE })
   await start($)
   expect(await bandText($)).toBe('review · ○ new commits since 1111111engine')
   expect((await $.command.run({ command: 'review-gate', args: 'status', ...person })).text).not.toContain('rounds left')
 })
 test('a round shows the count the cap left when it started, through its record and until it ends', async ($, on) => {
   const repo = world({ head: TWO, history: [BASE, ONE, TWO], changes: { [ONE]: ['src/app.ts'], [TWO]: ['src/app.ts'] } })
+  // A round after every finding was dismissed still counts toward the cap, so it shows the count too.
   const runs: (Run | null)[] = []
   on('state.set', (_, e, next) => {
     if (e.plugin === 'review-gate' && e.key === 'run') runs.push((e.value as unknown as { value?: Run | null }).value ?? null)
     return next(e)
   })
   const { store, reviews } = engine(on, repo)
-  seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 1)], findings: [finding({})], reviewed: ONE })
+  seed(store, { rounds: [round(1, ONE, 2), round(2, ONE, 1)], findings: [finding({ status: 'dismissed', answer: 'Fine.' })], reviewed: ONE })
   await start($)
   const call = $.tool.call({ tool: REVIEW })
   await until($, 'the review', () => reviews.length === 1)
   expect(await bandText($)).toContain('round 3 · /code-review high')
   expect(await bandText($)).toContain(' · last round before the cap')
-  // The round records with the finding still open, which fills the cap; the run keeps its count.
-  await act($, reviews, 0)
+  // The round records a new finding, which fills the cap; the run keeps its count.
+  await act($, reviews, 0, { findings: [{ file: 'src/app.ts', line: 3, summary: 'A new defect.', failure_scenario: 'It breaks.' }] })
   await call
   expect(runs.filter(run => run !== null).map(run => run?.left)).toEqual(runs.filter(run => run !== null).map(() => 1))
   expect(await bandText($)).toContain('3 rounds without converging: step back')

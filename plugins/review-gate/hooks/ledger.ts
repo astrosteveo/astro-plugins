@@ -44,8 +44,13 @@ export function streak(ledger: Ledger) {
 /** Rounds the review may still run before the cap stops it, should each one leave findings open. */
 export const roundsLeft = (ledger: Ledger) => Math.max(0, ROUND_CAP - streak(ledger))
 
-/** The rounds the cap leaves, while it binds: the cap refuses a round only while a finding is open. */
-export const capLeft = (ledger: Ledger): number | undefined => (openFindings(ledger).length > 0 ? roundsLeft(ledger) : undefined)
+/**
+ * The rounds the cap leaves while a loop of fix and review is under way: the last round left
+ * findings open, so the next one counts toward the cap even if they were dismissed since, or a
+ * finding is open now.
+ */
+export const capLeft = (ledger: Ledger): number | undefined =>
+  streak(ledger) > 0 || openFindings(ledger).length > 0 ? roundsLeft(ledger) : undefined
 
 /** The count in words: what is left between rounds, or after the one running when `running` is set. */
 export function leftText(left: number, running = false) {
