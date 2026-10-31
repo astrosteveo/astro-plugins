@@ -47,23 +47,8 @@ export const roundsLeft = (ledger: Ledger) => Math.max(0, ROUND_CAP - streak(led
 /** The rounds the cap leaves between rounds: it refuses the next one only while a finding is open. */
 export const capLeft = (ledger: Ledger): number | undefined => (openFindings(ledger).length > 0 ? roundsLeft(ledger) : undefined)
 
-/**
- * The rounds the cap leaves as one starts, this one included: 0 for a round the person ran past the
- * cap, and 1 for the last before it refuses. Set while the last round left findings open, even if
- * they were dismissed since, or a finding is open now: the round may then add to the streak.
- */
-export function capLeftAtStart(ledger: Ledger): number | undefined {
-  const open = openFindings(ledger).length > 0
-  if (streak(ledger) === 0 && !open) return undefined
-  // With nothing open the cap lets the round run, and its result decides whether the next one may.
-  return open ? roundsLeft(ledger) : Math.max(1, roundsLeft(ledger))
-}
-
-/** The count in words: what is left between rounds, or, when `running` is set, after the one that started with `left`. */
-export function leftText(left: number, running = false) {
-  if (!running) return `${left} of ${ROUND_CAP} rounds left`
-  return left <= 0 ? 'past the cap' : left === 1 ? 'last round before the cap' : `${left - 1} of ${ROUND_CAP} left after this`
-}
+/** The count in words, as `2 of 3 rounds left`. */
+export const leftText = (left: number) => `${left} of ${ROUND_CAP} rounds left`
 
 export const lastRound = (ledger: Ledger): Round | undefined => ledger.rounds[ledger.rounds.length - 1]
 

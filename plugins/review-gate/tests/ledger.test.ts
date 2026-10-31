@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Finding, Ledger, Round } from '../types'
-import { NIT_CAP, atMost, emptyLedger, standing, globTest, kindOf, levelFor, newFindings, parseGuide, sameDefect, severityOf, capLeft, capLeftAtStart, roundsLeft, sortOut, spent, streak, toLedger } from '../hooks/ledger'
+import { NIT_CAP, atMost, emptyLedger, standing, globTest, kindOf, levelFor, newFindings, parseGuide, sameDefect, severityOf, capLeft, roundsLeft, sortOut, spent, streak, toLedger } from '../hooks/ledger'
 import type { Reported } from '../hooks/ledger'
 import { lastJson, readRecord, readRisk, reviewSection } from '../hooks/prompts'
 import type { Plan } from '../hooks/prompts'
@@ -116,12 +116,7 @@ test('the cap counts the rounds in a row that ended with findings open, from whe
   // Between rounds the cap binds only while a finding is open.
   const open: Ledger = { ...ledger, findings: [{ id: 'R4-1', round: 4, kind: 'bug', severity: 'important', file: 'a.ts', line: 1, title: 't', detail: 'd', scenario: 's', status: 'open' }] }
   const full: Ledger = { ...ledger, rounds: [...ledger.rounds, round(5, 1)] }
-  expect([capLeft(ledger), capLeft(open)]).toEqual([undefined, 1])
-  // As a round starts: none once the last round left nothing open; the last round before the cap
-  // after dismissals, even with the streak full; past the cap only when it runs with findings open.
-  expect(capLeftAtStart({ ...ledger, rounds: [...ledger.rounds, round(5, 0)] })).toBe(undefined)
-  expect([capLeftAtStart(ledger), capLeftAtStart(open), capLeftAtStart(full), capLeftAtStart({ ...full, findings: open.findings })]).toEqual([1, 1, 1, 0])
-  expect(capLeftAtStart({ ...open, streakFrom: 4 })).toBe(3)
+  expect([capLeft(ledger), capLeft(open), capLeft({ ...full, findings: open.findings })]).toEqual([undefined, 1, 0])
 })
 
 test('a record in another shape reads as none', () => {

@@ -8,9 +8,8 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
 const cut = (text: string, most: number) => (text.length <= most ? text : `${text.slice(0, most - 1)}…`)
 
 /**
- * The band while a round runs: a line for the round and, while the cap binds, how many rounds it
- * leaves after this one; then, once /code-review is at work, a line for its agent (its tool calls,
- * what it is doing now, and a button that opens its transcript).
+ * The band while a round runs: a line for the round; then, once /code-review is at work, a line for
+ * its agent (its tool calls, what it is doing now, and a button that opens its transcript).
  */
 export function liveBand($: EngineInterface, e: RenderInput, run: Run, doing: Activity | null, now: number): RenderElement {
   const { Box, Button, Text } = $.ui.resolve(e)
@@ -22,7 +21,6 @@ export function liveBand($: EngineInterface, e: RenderInput, run: Run, doing: Ac
         <Text color="suggestion">
           round {run.round} · {phase} · {duration(now - run.startedAt)}
         </Text>
-        {run.left !== undefined && <Text dimColor> · {leftText(run.left, true)}</Text>}
       </Text>
       {run.phase === 'reviewing' && (
         <Box flexDirection="row">
@@ -75,9 +73,9 @@ export function band(
           ✗ {open.length} open: {open.map(finding => finding.id).join(' ')}
         </Text>
       )}
-      {open.length > 0 && <Text dimColor> · fix and commit, or dismiss with a reason</Text>}
+      {stand.kind === 'open' && <Text dimColor> · fix and commit, or dismiss with a reason</Text>}
       {open.length > 0 && streak(ledger) >= ROUND_CAP && <Text color="warning"> · {ROUND_CAP} rounds without converging: step back</Text>}
-      {stand.kind === 'unreviewed' && <Text color="warning">{open.length > 0 ? ' · ' : ''}○ new commits since {short(ledger.reviewed ?? '')}</Text>}
+      {stand.kind === 'unreviewed' && <Text color="warning">{open.length > 0 ? ' · ' : ''}○ new commits since {short(ledger.reviewed ?? '')}, not reviewed</Text>}
       {(stand.kind === 'ready' || stand.kind === 'approval') && <Text color="success">✓ {short(repo.head)} reviewed, ready for a pull request</Text>}
       {stand.kind === 'approval' && <Text color="warning"> · high risk: you approve it at the gate</Text>}
       {left > 0 && <Text dimColor> · {leftText(left)}</Text>}
@@ -113,6 +111,7 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
   // What the pull request waits for, as the gate reads it, once the commits since have been reviewed.
   const now = moved ? undefined : standing(ledger, ledger.reviewed ?? round.head)
   const cost = [spent(round), round.calls === undefined ? '' : plural(round.calls, 'call')].filter(part => part !== '').join(' · ')
+  // The risk's reasons get a line only when it is high, where they say why the person approves it.
   return (
     <Box flexDirection="column" paddingLeft={2}>
       <Text>
@@ -125,8 +124,8 @@ export function card($: EngineInterface, e: RenderInput, ledger: Ledger, n: numb
       <Text dimColor>
         {round.scope === 'full' ? 'whole branch' : `commits since ${short(round.from)}`} · /code-review {round.level}
         {cost === '' ? '' : ` · ${cost}`} · risk {risk.tier}
-        {risk.why.length > 0 ? `: ${risk.why.join('; ')}` : ''}
       </Text>
+      {risk.tier === 'high' && risk.why.length > 0 && <Text color="warning">{risk.why.join('; ')}</Text>}
       {rows.map(finding => {
         const { glyph, color } = mark(finding)
         const about = aboutOf(finding)

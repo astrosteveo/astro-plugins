@@ -2,7 +2,7 @@ import type { EngineInterface } from 'claude-code'
 import type { Finding, Ledger, Level, Risk, Round, Run } from '../types'
 import { changedFiles, commitLog, diffOf, guideFiles, headNow, isAncestor, short, uncommitted } from './git'
 import type { Place } from './git'
-import { LEVELS, NIT_CAP, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, levelFor, nothingOpen, openFindings, parseGuide, riskNow, riskWith, capLeft, capLeftAtStart, leftText, spent, streak, whereOf } from './ledger'
+import { LEVELS, NIT_CAP, ROUND_CAP, UNJUDGED, aboutOf, atMost, globTest, levelFor, nothingOpen, openFindings, parseGuide, riskNow, riskWith, capLeft, leftText, spent, streak, whereOf } from './ledger'
 import type { Recheck } from './ledger'
 import { RISK, readRisk, riskPrompt } from './prompts'
 import type { Context, Plan } from './prompts'
@@ -391,9 +391,7 @@ async function roundOf($: EngineInterface, ask: RoundAsk): Promise<RoundResult> 
 
   const startedAt = await $.clock.now()
   const n = (last?.n ?? 0) + 1
-  // The band shows this round the count the cap left when it started.
-  const left = capLeftAtStart(ledger)
-  await ask.progress(() => ({ round: n, phase: 'judging', startedAt, ...(left === undefined ? {} : { left }) }))
+  await ask.progress(() => ({ round: n, phase: 'judging', startedAt }))
   const files = await changedFiles(git, place.base, place.head)
   const guides = (await guideFiles(git, place.base, files)).map(file => parseGuide(file.path, file.text))
   const skip = guides.flatMap(guide => guide.skip)
