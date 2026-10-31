@@ -1,7 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import { list, problems } from './check'
 import { type Piece, type Published, commits, directories, gh, isGenerated, isTestPath, pieces, published, pushedRefs, pushes, resolvePath, reusesMessage } from './gate'
-import { prose, report, scan } from './scan'
+import { report, scan } from './scan'
 import { STYLE_FILE, hasRules, parseStyle, withRules } from './style'
 
 const SCAN = 'mcp__plain-english__scan'
@@ -70,36 +70,15 @@ function applied(file: string, edit: { old: string; new: string; all: boolean })
   return edit.all ? file.split(edit.old).join(edit.new) : file.replace(edit.old, () => edit.new)
 }
 
-// The prose lines of `after` around what an edit changed, so the model reads whole sentences: the
-// lines from the first that differs from `before` to the last, widened to the blank lines on each
-// side. They are the scan's prose lines, so code stays blanked and any line ending works.
-export function changedProse(before: string, after: string) {
-  const old = before.split(/\r?\n/)
-  const now = after.split(/\r?\n/)
-  let from = 0
-  while (from < old.length && from < now.length && old[from] === now[from]) from++
-  let same = 0
-  while (same < old.length - from && same < now.length - from && old[old.length - 1 - same] === now[now.length - 1 - same]) same++
-  const lines = prose(after)
-  // An edit that only deletes lines changes none of `after`: read the line where they were.
-  let start = Math.min(from, lines.length - 1)
-  let end = Math.max(now.length - same, start + 1)
-  while (start > 0 && lines[start - 1]!.trim() !== '') start--
-  while (end < lines.length && lines[end]!.trim() !== '') end++
-  return lines.slice(start, end).join('\n')
-}
-
 // A piece's text, what it replaces, and what the model reads of it. An Edit is scanned as the file
-// it leaves, so code fences around it keep their meaning, and the model reads the paragraphs it
-// changed.
+// it leaves, so code fences around it keep their meaning, and the model reads only its new words.
 async function prepare($: EngineInterface, piece: Piece) {
   const text = piece.text ?? (piece.file === undefined ? undefined : await readable($, piece.file))
   if (text === undefined) return undefined
   const file = piece.beforeFile === undefined ? undefined : await readable($, piece.beforeFile)
   if (piece.edit !== undefined) {
     const after = file === undefined ? undefined : applied(file, piece.edit)
-    if (after === undefined) return { text, scanned: text, before: piece.edit.old }
-    return { text, scanned: after, before: file!, judged: changedProse(file!, after) }
+    return after === undefined ? { text, scanned: text, before: piece.edit.old } : { text, scanned: after, before: file!, judged: piece.edit.new }
   }
   return { text, scanned: text, before: piece.before ?? file ?? '' }
 }

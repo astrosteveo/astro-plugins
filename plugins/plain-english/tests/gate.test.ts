@@ -3,7 +3,6 @@ import type { Engine } from 'claude-code/testing'
 import { expect, test } from 'claude-code/testing'
 import { directories, gh, isGenerated, isTestPath, pieces, published, pushedRefs, pushes, resolvePath, reusesMessage } from '../hooks/gate'
 import { parseFindings } from '../hooks/judge'
-import { changedProse } from '../hooks/register'
 
 const STYLE = '---\nname: Plain English\ndescription: Plain words\n---\n\n# Plain English\n\nWrite plainly.\n'
 
@@ -337,40 +336,17 @@ test('a model finding already in the file excuses only as many as were there', a
   expect(refusal(r)).toContain('"does the heavy lifting"')
 })
 
-test('the model reads the whole paragraph an edit changes, and a sentence it lengthens is the edit\'s', async ($, on) => {
+test('a sentence an edit makes longer is the edit\'s, when the edit holds the whole sentence', async ($, on) => {
   const opening = 'The hook reads the message of each commit that the push would send'
-  const file = `# Tool\n\n${opening}. It runs once.\n\n## Use\n\nRun it.\n`
+  const file = `# Tool\n\n${opening}. It runs once.\n`
   const long = `${opening}, compares its author time with the start of the session, and then refuses the push when any message has a problem.`
   const w = world({ files: new Map([['/w/README.md', file]]), reply: JSON.stringify([{ quote: long, why: 'sentence over 30 words', fix: 'split it' }]) })
   engine(on, w)
-  const r = await call($, 'Edit', { file_path: '/w/README.md', old_string: 'send. It', new_string: 'send, compares its author time with the start of the session, and then refuses the push when any message has a problem. It' })
-  // The model sees the sentence whole, with the words before the edit, and nothing from other paragraphs.
-  expect(w.asked[0]).toContain(`${long} It runs once.`)
-  expect(w.asked[0]).not.toContain('Run it.')
+  const r = await call($, 'Edit', { file_path: '/w/README.md', old_string: `${opening}.`, new_string: long })
+  // The model reads the edit's new words; the quote is the whole sentence, which the file did not have.
+  expect(w.asked[0]).toContain(long)
+  expect(w.asked[0]).not.toContain('It runs once.')
   expect(refusal(r)).toContain('sentence over 30 words')
-})
-
-test('the model reads the changed lines as prose: a code block with a blank line stays code', () => {
-  const before = '# Tool\n\n```sh\nfoo --flag\n\nbar --flag value\n```\nIt runs.\n\n## Use\n\nRun it.\n'
-  const after = before.replace('It runs.', 'It runs, and then it reads the config.')
-  const read = changedProse(before, after)
-  expect(read).toContain('It runs, and then it reads the config.')
-  expect(read).not.toContain('bar --flag')
-  expect(read).not.toContain('Run it.')
-})
-
-test('the model reads the changed lines of a file with Windows line endings, not its start', () => {
-  const before = ['# Tool', '', 'The first paragraph.', '', 'The last paragraph.', ''].join('\r\n')
-  const read = changedProse(before, before.replace('The last paragraph.', 'The last paragraph, now longer.'))
-  expect(read).toBe('The last paragraph, now longer.')
-})
-
-test('the model reads every paragraph a replace-all edit changed, and the place of a deleted line', () => {
-  const before = 'The hook runs.\n\nIt waits.\n\nThe hook stops.\n'
-  const read = changedProse(before, before.replaceAll('The hook', 'The hook that reads each message'))
-  expect(read).toContain('The hook that reads each message runs.')
-  expect(read).toContain('The hook that reads each message stops.')
-  expect(changedProse('One.\nTwo.\nThree.\n\nFour.\n', 'One.\nThree.\n\nFour.\n')).toBe('One.\nThree.')
 })
 
 test('a long sentence the file had before, inline code and all, is not the edit\'s', async ($, on) => {

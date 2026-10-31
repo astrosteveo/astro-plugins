@@ -42,22 +42,19 @@ async function rules($: EngineInterface) {
 // Text in quotation marks blanked out, columns kept: a report that quotes what it found.
 export const unquoted = (text: string) => text.replace(/"[^"\n]{1,300}"|“[^”\n]{1,300}”/g, m => ' '.repeat(m.length))
 
-// Prose lines with their trailing space cut and runs of blank lines closed up.
-const tidy = (lines: string[]) =>
-  lines
+// What the model reads: the prose alone, code and block quotes blanked as the word scan does, with
+// runs of blank lines closed up.
+const forModel = (text: string) =>
+  prose(text)
     .map(l => l.trimEnd())
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 
-// What the model reads: the prose alone, code and block quotes blanked as the word scan does.
-const forModel = (text: string) => tidy(prose(text))
-
 export type Options = {
   // The text a write replaces: its Claudisms are not the write's to answer for.
   before?: string
-  // What the model reads in place of the whole text, as prose lines already: the paragraphs an edit
-  // changed, not the file around them.
+  // What the model reads in place of the whole text: an edit's new words, not the file around them.
   judged?: string
   // Leave text in quotation marks alone, as in a report that quotes what it found.
   skipQuotes?: boolean
@@ -72,7 +69,7 @@ export async function problems($: EngineInterface, given: string, options: Optio
   const before = options.before ?? ''
   const hits = added(scan(text), before)
   const found: Problem[] = hits.filter(h => h.tier === 'rewrite').map(h => ({ quote: h.text, why: h.why }))
-  const read = options.judged === undefined ? forModel(strip(given)) : tidy(strip(options.judged).split('\n'))
+  const read = forModel(strip(options.judged ?? given))
   const candidates = hits.filter(h => h.tier === 'check')
   // A short text goes to the model only when the scan left words for a reader to decide.
   if (proseWords(read) < JUDGED_WORDS && candidates.length === 0) return found
