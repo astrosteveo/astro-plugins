@@ -83,6 +83,10 @@ type World = {
   localBranch?: string
   /** The branch origin's HEAD names, which may no longer be on origin; left out, origin has no HEAD. */
   originHead?: string
+  /** Where the branch forks from main, as after a merge of main; left out, BASE. */
+  forkAt?: string
+  /** Whether the branch has a pull request open already. */
+  prOpen?: boolean
 }
 
 /** A run of /code-review the round started: what it was asked, and the hand that ends it. */
@@ -170,6 +174,9 @@ function engine(on: On, repo: World) {
     return ran(0, `git ${args.join(' ')}\n`)
   }
   const gh = (args: string[]) => {
+    // The branch's own pull request, which open looks for before it makes one.
+    if (args[1] === 'view' && args.includes('url,state'))
+      return repo.prOpen === true ? ran(0, JSON.stringify({ url: 'https://github.com/o/r/pull/7', state: 'OPEN' })) : ran(1, '', 'no pull requests found')
     if (args[1] === 'view') return ran(0, JSON.stringify({ number: 7, headRefName: repo.branch, headRefOid: repo.head, state: 'OPEN' }))
     if (args[1] === 'create') return ran(0, 'https://github.com/o/r/pull/7\n')
     return ran(0)
@@ -1018,10 +1025,21 @@ test('a pull request opens through the tool only for a reviewed commit with noth
   expect(dismissed.result).toBe('Dismissed R1-1: The caller never passes the last page index.\nNothing is open. feat/app at 1111111 is ready for a pull request.')
   expect(argvs.some(argv => argv[0] === 'gh')).toBe(false)
   expect((await $.tool.call(open())).result).toBe('Opened https://github.com/o/r/pull/7 for feat/app at 1111111.')
-  expect(argvs.filter(argv => argv[0] === 'gh' || argv[1] === 'push')).toEqual([
-    ['git', 'push', '-u', 'origin', `${ONE}:refs/heads/feat/app`],
+  // The push names the commit, so the branch is set to track origin's copy after it.
+  expect(argvs.filter(argv => argv[0] === 'gh' || argv[1] === 'push' || argv[1] === 'branch')).toEqual([
+    ['git', 'push', 'origin', `${ONE}:refs/heads/feat/app`],
+    ['git', 'branch', '--set-upstream-to=origin/feat/app', 'feat/app'],
+    ['gh', 'pr', 'view', 'feat/app', '--json', 'url,state'],
     ['gh', 'pr', 'create', '--head', 'feat/app', '--base', 'main', '--title', 'Add search', '--body', 'Body text'],
   ])
+})
+test('open on a branch whose pull request is open already brings it up to the reviewed commit', async ($, on) => {
+  const { store, argvs } = engine(on, world({ prOpen: true }))
+  seed(store, { rounds: [round(1, ONE, 0)], reviewed: ONE })
+  await start($)
+  expect((await $.tool.call(open())).result).toBe('Pushed feat/app at 1111111 to its open pull request, https://github.com/o/r/pull/7.')
+  expect(argvs.some(argv => argv[0] === 'git' && argv[1] === 'push')).toBe(true)
+  expect(argvs.some(argv => argv[0] === 'gh' && argv[2] === 'create')).toBe(false)
 })
 test("a merge goes through only while the pull request's head is the reviewed commit", async ($, on) => {
   const repo = world()

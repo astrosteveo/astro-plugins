@@ -114,7 +114,7 @@ const DISMISS_TOOL = {
 const PULL_REQUEST_TOOL = {
   name: 'pull_request',
   description:
-    "Open or merge a pull request: the only way to, as gh pr create, gh pr merge and gh api calls that do either are refused in Bash. open pushes the current branch to origin and opens its pull request. merge merges a pull request, and only while its head is still the commit that was reviewed. Both are refused until that commit has been reviewed and every finding answered; a high-risk change also waits for the user's approval in a dialog. Ask the user before you open or merge one.",
+    "Open or merge a pull request: the only way to, as gh pr create, gh pr merge and gh api calls that do either are refused in Bash. open pushes the current branch to origin and opens its pull request, or brings the branch's open pull request up to the reviewed commit. merge merges a pull request, and only while its head is still the commit that was reviewed. Both are refused until that commit has been reviewed and every finding answered; a high-risk change also waits for the user's approval in a dialog. Ask the user before you open or merge one.",
   isDeferred: false,
   inputSchema: {
     type: 'object',
@@ -253,7 +253,8 @@ async function vouch($: EngineInterface, place: Place, branch: string, sha: stri
 type Input = Record<string, unknown>
 type Answer = { result: string } | { deny: string }
 
-// Pushes the current branch and opens its pull request, once its review vouches for it.
+// Pushes the current branch and opens its pull request, once its review vouches for it. A branch
+// whose pull request is open already has it brought up to the reviewed commit by the push.
 async function openPullRequest($: EngineInterface, place: Place, input: Input): Promise<Answer> {
   if (place.branch === '' || place.branch === place.main)
     return { deny: `Check out the branch to open a pull request for: ${place.branch || 'a detached HEAD'} is not one.` }
@@ -261,8 +262,13 @@ async function openPullRequest($: EngineInterface, place: Place, input: Input): 
   if (title === '') return { deny: 'Give the pull request a title.' }
   const refusal = await vouch($, place, place.branch, place.head, 'open')
   if (refusal !== undefined) return { deny: refusal }
-  const pushed = await runIn($, ['git', 'push', '-u', 'origin', `${place.head}:refs/heads/${place.branch}`], place.root, 120_000)
+  const pushed = await runIn($, ['git', 'push', 'origin', `${place.head}:refs/heads/${place.branch}`], place.root, 120_000)
   if (pushed.exitCode !== 0) return { deny: `git push failed, so no pull request was opened: ${pushed.stderr.trim()}` }
+  // A push by commit id sets no upstream, so the branch tracks origin's copy from here, for a plain git push.
+  await runIn($, ['git', 'branch', `--set-upstream-to=origin/${place.branch}`, place.branch], place.root, 30_000)
+  const existing = await runIn($, ['gh', 'pr', 'view', place.branch, '--json', 'url,state'], place.root, 30_000)
+  const found = existing.exitCode === 0 ? (JSON.parse(existing.stdout) as { url?: string; state?: string }) : undefined
+  if (found?.state === 'OPEN') return { result: `Pushed ${place.branch} at ${short(place.head)} to its open pull request, ${found.url ?? ''}.` }
   const base = asText(input.base).trim() || place.main
   const made = await runIn(
     $,
