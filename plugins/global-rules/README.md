@@ -4,7 +4,7 @@
 
 ## What it reads
 
-First, Claude Code's own guidance on CLAUDE.md files: [How Claude remembers your project](https://code.claude.com/docs/en/memory.md) and [Best practices for Claude Code](https://code.claude.com/docs/en/best-practices.md), fetched fresh on each run. It words every rule the way those pages recommend. It also checks the lines already in your file against them, so it can propose rewording or removing a line even when your history says nothing about it. A rule that has to hold every time gets a note saying which hook or deny rule would enforce it, not a line in the file. If the pages can't be fetched, it says so and carries on without them.
+First, Claude Code's own guidance on CLAUDE.md files: [How Claude remembers your project](https://code.claude.com/docs/en/memory.md) and [Best practices for Claude Code](https://code.claude.com/docs/en/best-practices.md), fetched on each run. It words every rule the way those pages recommend. It also checks the lines already in your file against them, so it can propose rewording or removing a line even when your history says nothing about it. A line that belongs in a skill, a `~/.claude/rules/` file, a hook or a deny rule gets a note saying so. It stays in your CLAUDE.md until that replacement exists. If the pages can't be fetched, it says so and carries on without them.
 
 Then a script, `skills/suggest/scripts/digest.py`, goes through `~/.claude/projects/*/*.jsonl` and writes a Markdown digest to `~/.claude/global-rules/digest.md`. Claude reads that digest, not the raw transcripts. The digest holds:
 
