@@ -21,6 +21,11 @@
       "name": "global-memory",
       "source": "./plugins/global-memory",
       "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session."
+    },
+    {
+      "name": "global-rules",
+      "source": "./plugins/global-rules",
+      "description": "Reads your Claude Code session history and proposes rules for your global ~/.claude/CLAUDE.md, or a first one if you have none. Writes only what you approve."
     }
   ]
 }
