@@ -21,11 +21,6 @@
       "name": "global-memory",
       "source": "./plugins/global-memory",
       "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session."
-    },
-    {
-      "name": "plain-english",
-      "source": "./plugins/plain-english",
-      "description": "An output style for plain English, given to every subagent and fork too, and a skill that scans prose for Claudisms."
     }
   ]
 }
