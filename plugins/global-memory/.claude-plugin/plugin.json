@@ -1,6 +1,6 @@
 {
   "name": "global-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Memories Claude writes for itself that hold in every project, kept in ~/.claude/memory with a MEMORY.md index in the system prompt.",
   "author": {
     "name": "astrosteveo"
