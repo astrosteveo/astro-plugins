@@ -1,0 +1,9 @@
+{
+  "name": "screen-polish",
+  "version": "0.1.0",
+  "description": "Redraws Claude Code's transcript in a refined style: one aligned row per tool call with a status glyph and a short result, an accent prompt marker, indented replies, a spinner that says what the turn is doing and a thin rule closing each turn.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT"
+}
