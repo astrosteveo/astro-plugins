@@ -26,6 +26,11 @@
       "name": "github-tracking",
       "source": "./plugins/github-tracking",
       "description": "Keeps a repo's GitHub issues, milestones and Projects board true while Claude works: each change starts from an issue on the board, larger steps split into sub-issues, and status updates say where the project stands."
+    },
+    {
+      "name": "screen-polish",
+      "source": "./plugins/screen-polish",
+      "description": "Redraws the transcript in a refined style: one aligned row per tool call with a status glyph and a short result, an accent prompt marker, indented replies, a spinner that says what the turn is doing and a thin rule closing each turn."
     }
   ],
   "renames": {
