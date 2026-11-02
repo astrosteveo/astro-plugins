@@ -1,6 +1,6 @@
 {
   "name": "global-rules",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Reads your Claude Code session history and proposes rules for your global ~/.claude/CLAUDE.md, or a first one if you have none. Writes only what you approve.",
   "author": {
     "name": "astrosteveo"

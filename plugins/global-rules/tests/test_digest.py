@@ -1,10 +1,12 @@
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "suggest" / "scripts" / "digest.py"
@@ -37,6 +39,12 @@ def denial(tool_id, reason=None):
         text += (" To tell you how to proceed, the user said:\n" + reason +
                  "\n\nNote: The user's next message may contain a correction or preference.")
     return blocks([{"type": "tool_result", "tool_use_id": tool_id, "content": text, "is_error": True}])
+
+
+def edited(path, ts, result):
+    """The tool result of an Edit or Write of `path`, as Claude Code records it."""
+    record = blocks([{"type": "tool_result", "tool_use_id": "e", "content": "updated"}], ts=ts)
+    return {**record, "toolUseResult": {"filePath": str(path), **result} if isinstance(result, dict) else result}
 
 
 class DigestTest(unittest.TestCase):
@@ -196,6 +204,59 @@ class DigestTest(unittest.TestCase):
         self.assertIn("does not exist", self.run_digest())
         (self.config / "CLAUDE.md").write_text("# About me\n- Solo developer.\n")
         self.assertIn("2 lines", self.run_digest())
+
+    def claude_md_history(self, current):
+        path = self.config / "CLAUDE.md"
+        first = "# Git\n- Rebase-merge.\n"
+        self.session("-home-u-Projects-alpha", "s1", [
+            edited(path, "2026-09-20T08:00:00Z", {"type": "update", "originalFile": first,
+                                                   "content": first + "- Stage by name.\n"}),
+            edited(path, "2026-10-01T09:30:00Z", {"originalFile": first + "- Stage by name.\n",
+                                                   "oldString": "- Rebase-merge.", "newString": "- Fast-forward.",
+                                                   "replaceAll": False}),
+            # A refused edit leaves a string, not the file, and changed nothing.
+            edited(path, "2026-10-02T10:00:00Z", "User rejected tool use"),
+            human("never squash", ts="2026-10-02T11:15:00Z"),
+        ])
+        path.write_text(current)
+        stamp = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc).timestamp()
+        os.utime(path, (stamp, stamp))
+
+    def claude_md_lines(self, *argv):
+        return self.run_digest(*argv).split("## When each global CLAUDE.md line was put in place")[1].split("\n## ")[0]
+
+    def test_claude_md_lines_are_timed_by_the_edit_that_wrote_them(self):
+        self.claude_md_history("# Git\n- Fast-forward.\n- Stage by name.\n")
+        lines = self.claude_md_lines()
+        self.assertIn("- 2 · since 2026-10-01 09:30 · - Fast-forward.", lines)
+        self.assertIn("- 3 · since 2026-09-20 08:00 · - Stage by name.", lines)
+
+    def test_a_line_there_before_the_first_recorded_edit_is_timed_at_the_latest(self):
+        self.claude_md_history("# Git\n- Fast-forward.\n- Stage by name.\n")
+        self.assertIn("- 1 · by 2026-09-20 08:00 · # Git", self.claude_md_lines())
+
+    def test_a_line_changed_by_hand_is_timed_by_the_files_last_change(self):
+        self.claude_md_history("# Git\n- Fast-forward.\n- Never squash.\n")
+        text = self.run_digest()
+        self.assertIn("- 3 · by 2026-10-03 12:00 · - Never squash.", text)
+        self.assertIn("last changed 2026-10-03 12:00 UTC", text)
+
+    def test_since_does_not_hide_the_edits_that_wrote_a_line(self):
+        self.claude_md_history("# Git\n- Fast-forward.\n- Stage by name.\n")
+        self.assertIn("since 2026-10-01 09:30 · - Fast-forward.", self.claude_md_lines("--since", "2026-10-02"))
+
+    def test_claude_md_with_no_recorded_edits_is_timed_by_its_last_change(self):
+        (self.config / "CLAUDE.md").write_text("# Git\n- Fast-forward.\n")
+        stamp = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc).timestamp()
+        os.utime(self.config / "CLAUDE.md", (stamp, stamp))
+        self.assertIn("No edits to it in the transcripts; every line was in place by 2026-10-03 12:00.",
+                      self.claude_md_lines())
+
+    def test_corrections_and_refusals_carry_the_time_of_day(self):
+        self.fixture()
+        text = self.run_digest()
+        self.assertIn("- 2026-10-02 10:00 · /home/u/Projects/alpha · after interrupt", text)
+        self.assertIn("- 2026-10-01 10:00 · /home/u/Projects/alpha · Bash `git push --force`", text)
 
     def test_long_messages_are_cut(self):
         self.session("-home-u-Projects-alpha", "s1", [human("word " * 400)])

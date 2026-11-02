@@ -3,7 +3,8 @@
 
 The digest holds the user's own typed messages (not tool output or text the harness
 injected), the reasons they gave for refusing a tool call, likely corrections with
-Claude's last words before each, and their global and project memories. The suggest
+Claude's last words before each, their global and project memories, and when each line
+of the global CLAUDE.md was put in place, from Claude's edits to it. The suggest
 skill reads it to propose global CLAUDE.md content. Stdlib only, so any python3 runs it.
 """
 from __future__ import annotations
@@ -16,7 +17,7 @@ import sys
 import tempfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 DENIAL = "The user doesn't want to proceed with this tool use."
@@ -39,7 +40,7 @@ CONTEXT_CHARS = 240
 @dataclass
 class Message:
     text: str
-    date: str
+    when: str
     project: str
     flags: list[str]
     context: str | None
@@ -47,7 +48,7 @@ class Message:
 
 @dataclass
 class Refusal:
-    date: str
+    when: str
     project: str
     tool: str
     reason: str | None
@@ -69,6 +70,9 @@ class Digest:
     memories: list[Memory] = field(default_factory=list)
     sessions: set[str] = field(default_factory=set)
     skipped: int = 0
+    claude_md: Path | None = None
+    # (timestamp, order seen, the file's whole text) for each state of claude_md the transcripts show.
+    snapshots: list[tuple[str, int, str]] = field(default_factory=list)
     # A resumed session's transcript repeats the records it was resumed from, ids and all.
     seen: set[str] = field(default_factory=set)
 
@@ -86,6 +90,11 @@ def parse_since(value: str) -> str:
     if m := re.fullmatch(r"(\d+)d", value):
         return (date.today() - timedelta(days=int(m.group(1)))).isoformat()
     return date.fromisoformat(value).isoformat()
+
+
+def minute(timestamp: str | None) -> str:
+    """'2026-10-01T09:30:12.5Z' as '2026-10-01 09:30' (UTC, like the transcripts)."""
+    return (timestamp or "")[:16].replace("T", " ")
 
 
 def one_line(text: str) -> str:
@@ -156,6 +165,24 @@ def refusal_reason(text: str) -> str | None:
     return (reason[:end] if end != -1 else reason).strip() or None
 
 
+def take_snapshot(record: dict, digest: Digest) -> None:
+    """Keep the global CLAUDE.md's text before and after an Edit or Write of it that went through."""
+    result = record.get("toolUseResult")
+    # A refused or failed call leaves a string here, and changed nothing.
+    if not isinstance(result, dict) or not isinstance(result.get("filePath"), str):
+        return
+    if Path(result["filePath"]).expanduser() != digest.claude_md:
+        return
+    before = result.get("originalFile")
+    after = result.get("content")
+    if isinstance(before, str) and isinstance(result.get("oldString"), str):
+        after = before.replace(result["oldString"], result.get("newString") or "",
+                               -1 if result.get("replaceAll") else 1)
+    for text in (before, after):
+        if isinstance(text, str):
+            digest.snapshots.append((record.get("timestamp") or "", len(digest.snapshots), text))
+
+
 def scan_session(path: Path, since: str | None, include_tests: bool, digest: Digest) -> str | None:
     """Add one transcript's messages and refusals to the digest; return its project, if it has one."""
     tools: dict[str, str] = {}
@@ -184,13 +211,16 @@ def scan_session(path: Path, since: str | None, include_tests: bool, digest: Dig
                         last_claude = "ran " + tools[block.get("id", "")]
                 continue
 
+            # Before the --since and test filters: an old edit still says when a line was written.
+            take_snapshot(record, digest)
             human = (record.get("origin") or {}).get("kind") == "human" and not record.get("isMeta")
             if not include_tests and is_test(record):
                 digest.skipped += human
                 continue
             if project is None and record.get("cwd"):
                 project = project_name(record["cwd"])
-            day = (record.get("timestamp") or "")[:10]
+            when = minute(record.get("timestamp"))
+            day = when[:10]
             if since and day and day < since:
                 continue
 
@@ -204,7 +234,7 @@ def scan_session(path: Path, since: str | None, include_tests: bool, digest: Dig
                         pending = "after refusal"
                         if digest.first_time(tool_id and "tool:" + tool_id):
                             tool = tools.get(tool_id, "a tool")
-                            digest.refusals.append(Refusal(day, project or "?", tool, refusal_reason(text)))
+                            digest.refusals.append(Refusal(when, project or "?", tool, refusal_reason(text)))
                 elif block.get("type") == "text" and block.get("text", "").startswith(INTERRUPT):
                     pending = "after interrupt"
 
@@ -218,7 +248,7 @@ def scan_session(path: Path, since: str | None, include_tests: bool, digest: Dig
             if CORRECTION.search(text):
                 flags.append("correction")
             context = tail(last_claude, CONTEXT_CHARS) if flags and last_claude else None
-            digest.messages.append(Message(text, day, project or "?", flags, context))
+            digest.messages.append(Message(text, when, project or "?", flags, context))
             digest.sessions.add(str(path))
             pending = None
     return project
@@ -245,14 +275,15 @@ def memory_files(folder: Path) -> list[Path]:
 
 
 def scan(config: Path, since: str | None, include_tests: bool) -> Digest:
-    digest = Digest()
+    digest = Digest(claude_md=config / "CLAUDE.md")
     projects = config / "projects"
     slugs: dict[str, str] = {}
     for path in sorted(projects.glob("*/*.jsonl")):
         if project := scan_session(path, since, include_tests, digest):
             slugs.setdefault(path.parent.name, project)
-    digest.messages.sort(key=lambda m: m.date)
-    digest.refusals.sort(key=lambda r: r.date)
+    digest.messages.sort(key=lambda m: m.when)
+    digest.refusals.sort(key=lambda r: r.when)
+    digest.snapshots.sort()
     for path in memory_files(config / "memory"):
         digest.memories.append(read_memory(path, "global"))
     for folder in sorted(projects.glob("*/memory")):
@@ -272,19 +303,48 @@ def quote(text: str, limit: int) -> str:
     return '"' + cut(one_line(text), limit) + '"'
 
 
+def line_times(text: str, snapshots: list[tuple[str, int, str]], changed: str) -> list[str]:
+    """When each line of the file, in its current wording, was put in place."""
+    if not snapshots:
+        return [f"No edits to it in the transcripts; every line was in place by {changed}."]
+    states = [{line.strip() for line in snapshot.splitlines()} for _, _, snapshot in snapshots]
+    out = []
+    for number, line in enumerate(text.splitlines(), 1):
+        key = line.strip()
+        if not key:
+            continue
+        if key not in states[-1]:
+            # Written by hand after Claude's last recorded edit.
+            when = f"by {changed}"
+        else:
+            first = len(states) - 1
+            while first and key in states[first - 1]:
+                first -= 1
+            # Already in the earliest state the transcripts show, so it may be older.
+            when = f"{'by' if first == 0 else 'since'} {minute(snapshots[first][0])}"
+        out.append(f"- {number} · {when} · {cut(key, 100)}")
+    return out
+
+
 def render(digest: Digest, claude_md: Path, max_chars: int) -> str:
     out: list[str] = ["# Session history digest", ""]
     messages = digest.messages
     projects = {m.project for m in messages}
-    dates = [m.date for m in messages if m.date]
+    dates = [m.when[:10] for m in messages if m.when]
     span = f", {dates[0]} to {dates[-1]}" if dates else ""
     out.append(f"Scanned {len(digest.sessions)} sessions in {len(projects)} projects{span}: "
                f"{len(messages)} typed messages, {len(digest.refusals)} refusals.")
     if digest.skipped:
         out.append(f"Skipped {digest.skipped} messages from scripted or /tmp sessions (--include-tests keeps them).")
     if claude_md.is_file():
-        lines = len(claude_md.read_text(errors="replace").splitlines())
-        out.append(f"Global CLAUDE.md: {claude_md} ({lines} lines).")
+        text = claude_md.read_text(errors="replace")
+        changed = datetime.fromtimestamp(claude_md.stat().st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M")
+        out.append(f"Global CLAUDE.md: {claude_md} ({len(text.splitlines())} lines), last changed {changed} UTC.")
+        out += ["", "## When each global CLAUDE.md line was put in place",
+                "From Claude's edits to the file in the transcripts, by line number. Times are UTC, as on the "
+                "refusals and corrections below. `since`: when the line, in this wording, appeared. "
+                "`by`: it was there then, and may be older.", ""]
+        out += line_times(text, digest.snapshots, changed)
     else:
         out.append(f"Global CLAUDE.md: {claude_md} does not exist.")
 
@@ -300,15 +360,15 @@ def render(digest: Digest, claude_md: Path, max_chars: int) -> str:
     with_reason = [r for r in digest.refusals if r.reason]
     without = [r for r in digest.refusals if not r.reason]
     out += ["", f"## Refusals with a reason ({len(with_reason)})", ""]
-    out += [f"- {r.date} · {r.project} · {r.tool} — {quote(r.reason, max_chars)}" for r in with_reason]
+    out += [f"- {r.when} · {r.project} · {r.tool} — {quote(r.reason, max_chars)}" for r in with_reason]
     out += ["", f"## Refusals without a reason ({len(without)})", ""]
-    out += [f"- {r.date} · {r.project} · {r.tool}" for r in without]
+    out += [f"- {r.when} · {r.project} · {r.tool}" for r in without]
 
     flagged = [m for m in messages if m.flags]
     out += ["", f"## Likely corrections ({len(flagged)})",
             "Messages that read like a correction, or came right after an interrupt or refusal.", ""]
     for m in flagged:
-        out.append(f"- {m.date} · {m.project} · {', '.join(m.flags)}")
+        out.append(f"- {m.when} · {m.project} · {', '.join(m.flags)}")
         if m.context:
             out.append(f"  Claude before: {quote(m.context, CONTEXT_CHARS + 1)}")
         out.append(f"  User: {quote(m.text, max_chars)}")
@@ -340,7 +400,7 @@ def render(digest: Digest, claude_md: Path, max_chars: int) -> str:
     out += ["", "## Other messages, by project"]
     for project in sorted(by_project, key=lambda p: -len(by_project[p])):
         out += ["", f"### {project} ({len(by_project[project])})", ""]
-        out += [f"- {g[0].date}: {quote(g[0].text, max_chars)}{count(g)}" for g in by_project[project]]
+        out += [f"- {g[0].when[:10]}: {quote(g[0].text, max_chars)}{count(g)}" for g in by_project[project]]
     out += ["", "## Short replies and commands", ""]
     out.append("- Short replies: " + (", ".join(f"{k} ×{n}" for k, n in short.most_common(40)) or "none"))
     out.append("- Commands without arguments: " + (", ".join(f"{k} ×{n}" for k, n in commands.most_common(40)) or "none"))

@@ -30,6 +30,7 @@ It prints where it wrote the digest, how big the digest is, and the path of the 
 
 Read the CLAUDE.md at that path if it exists, and the settings.json in the same folder: its hooks and permission deny rules show what is already enforced. Then read the whole digest, in several Reads with offset and limit if it is long. It holds:
 
+- **When each global CLAUDE.md line was put in place**, by line number, worked out from Claude's past edits to the file. `since` is when the line appeared in its current wording. `by` means it was there then and may be older. Times are UTC, as on the refusals and corrections.
 - **Global memories** and **project memories**: rules Claude already saved, with their type.
 - **Refusals with a reason**: tool calls the user refused, with what they said. These are rules in the user's own words.
 - **Refusals without a reason**: the tool and its input.
@@ -58,7 +59,7 @@ Word and place each candidate as the guidance says:
 - Make it specific enough to check, in plain words. Don't add IMPORTANT or capitals for emphasis.
 - A multi-step procedure belongs in a skill. A line that only matters for some files, such as one language's, belongs in a `~/.claude/rules/` file. An instruction that has to hold every time belongs in a hook or a permission deny rule. Don't put these in CLAUDE.md. Note them for the end of the list.
 
-Check each candidate against the current CLAUDE.md:
+Check each candidate against the current CLAUDE.md. To tell whether a correction came after a line was in place, compare the correction's time with the line's time in the digest. The digest holds everything this check needs. Don't search the transcripts or look up file times with shell commands: they aren't in this skill's allowed tools, so each one stops for a permission prompt. If the digest can't settle it, say so in the item.
 
 - **Already there, and nothing in the history shows Claude breaking it**: skip it.
 - **Already there, but the user corrected Claude on it after the rule was in place**: the rule is not working. Propose sharper wording. Quote the old line and the correction. If it has to hold every time, keep the line and note the hook or deny rule that would enforce it.
