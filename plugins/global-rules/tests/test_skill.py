@@ -29,6 +29,11 @@ class SkillTest(unittest.TestCase):
         for url in urls:
             self.assertIn(urlparse(url).hostname, domains, url)
 
+    def test_a_promoted_memory_is_deleted_with_the_tool_that_clears_its_index_line(self):
+        # A plain rm leaves its MEMORY.md line in every later session's system prompt.
+        write = self.body[self.body.index("## 5. Write"):]
+        self.assertIn("global_memory_delete", write)
+
 
 if __name__ == "__main__":
     unittest.main()

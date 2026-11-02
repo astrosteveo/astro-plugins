@@ -92,4 +92,4 @@ Then ask which to apply. The user replies with numbers ("1, 3, 5"), "all" or "no
 1. If the file exists, copy it first to `<path>.bak-<today as YYYY-MM-DD>`, using `cp`.
 2. Apply each approved item with Edit, keeping the file's order and style. For a first CLAUDE.md, use Write.
 3. Show what changed: `diff -u <backup> <path>`, or the new file in full. Give the backup's path.
-4. If an approved rule came from a global memory, say so. Offer to delete that memory, so the rule is not loaded twice.
+4. If an approved rule came from a global memory, say so. Offer to delete that memory, so the rule is not loaded twice. Delete it with `global_memory_delete`, never with `rm`: the tool also clears its line from the `MEMORY.md` index, which every session loads.
