@@ -180,7 +180,7 @@ async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
   const description = asText(e.description)
   const body = asText(e.body)
   const title = asText(e.title)
-  if (dir === '') return { deny: 'HOME is not set, so there is no place for a global memory.' }
+  if (dir === '') return { deny: 'Neither CLAUDE_CONFIG_DIR nor HOME is set, so there is no place for a global memory.' }
   if (!isName(name))
     return { deny: `"${name}" is not a name: use lowercase letters, digits and hyphens, such as "no-gui-tools" ("memory" is reserved).` }
   if (!TYPES.includes(type as MemoryType)) return { deny: `type must be one of ${TYPES.join(', ')}.` }
@@ -247,10 +247,12 @@ async function remove($: EngineInterface, dir: string, e: Args): Promise<Answer>
 export const register: Register = on => {
   let dir = ''
 
-  // The global memory sits beside the projects' folders in the user's .claude.
+  // The global memory sits beside the projects' folders in Claude Code's config folder, which
+  // CLAUDE_CONFIG_DIR moves away from ~/.claude.
   on('session.start', async ($, e, next) => {
-    const home = await $.env.get('HOME')
-    dir = home === undefined || home === '' ? '' : `${home}/.claude/memory`
+    const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || ''
+    const home = (await $.env.get('HOME')) || ''
+    dir = config !== '' ? `${config.replace(/\/+$/, '')}/memory` : home !== '' ? `${home}/.claude/memory` : ''
     await $.tool.register(WRITE_TOOL)
     await $.tool.register(READ_TOOL)
     await $.tool.register(DELETE_TOOL)

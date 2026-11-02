@@ -21,6 +21,8 @@ type Disk = {
   mkdirExit?: number
   // Whether the move of a temp file over the index fails.
   indexMoveFails?: boolean
+  // The environment the plugin reads; HOME is /home/u when not given.
+  env?: Record<string, string>
 }
 
 // An in-memory disk under the plugin; the engine's memory section reads "core memory".
@@ -40,7 +42,7 @@ function engine(on: On, disk: Disk = {}) {
   // Where each temp file was moved to.
   const moves: string[] = []
   on('tool.check', () => ({ decision: disk.verdict ?? 'allow' }))
-  on('env.get', () => ({ value: '/home/u' }))
+  on('env.get', (_, e) => ({ value: (disk.env ?? { HOME: '/home/u' })[e.name] }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__global-memory__${e.name}` } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('prompt.section', (_, e) => ({ text: e.text }))
@@ -158,6 +160,25 @@ test('a saved memory is a file, a line in the index, and joins the memory sectio
   expect(section.text).toContain('core memory')
   expect(section.text).toContain('- [Short answers](short-answers.md) — The user wants answers short')
   expect(section.text).toContain(DIR)
+})
+
+test('CLAUDE_CONFIG_DIR moves the global memory with the rest of the config', async ($, on) => {
+  const files = engine(on, { env: { HOME: '/home/u', CLAUDE_CONFIG_DIR: '/cfg' } })
+  await start($)
+
+  expect((await write($, 'short-answers')).result).toBe('Saved global memory short-answers.')
+  expect(files.has('/cfg/memory/short-answers.md')).toBe(true)
+  expect(files.has(`${DIR}/short-answers.md`)).toBe(false)
+  const section = await $.prompt.section({ name: 'memory', text: 'core memory' })
+  expect(section.text).toContain('/cfg/memory')
+})
+
+test('with no CLAUDE_CONFIG_DIR and no HOME there is no global memory', async ($, on) => {
+  const files = engine(on, { env: {} })
+  await start($)
+
+  expect((await write($, 'short-answers')).deny).toContain('nor HOME is set')
+  expect(files.size).toBe(0)
 })
 
 test('writing a name again replaces it in place; delete removes file and line', async ($, on) => {
