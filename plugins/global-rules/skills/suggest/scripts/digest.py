@@ -254,6 +254,20 @@ def scan_session(path: Path, since: str | None, include_tests: bool, digest: Dig
     return project
 
 
+# global-memory writes the description with JSON.stringify, so a double-quoted value is decoded
+# as JSON; one that won't decode, and any other, just loses its quote marks.
+def front_matter_value(raw: str) -> str:
+    value = raw.strip()
+    if value.startswith('"'):
+        try:
+            decoded = json.loads(value)
+            if isinstance(decoded, str):
+                return decoded
+        except ValueError:
+            pass
+    return value.strip("\"'")
+
+
 def read_memory(path: Path, scope: str) -> Memory:
     text = path.read_text(errors="replace")
     meta: dict[str, str] = {}
@@ -265,7 +279,7 @@ def read_memory(path: Path, scope: str) -> Memory:
             for line in text[3:end].splitlines():
                 m = re.match(r"\s*(name|description|type):\s*(.*)", line)
                 if m and m.group(1) not in meta:
-                    meta[m.group(1)] = m.group(2).strip().strip("\"'")
+                    meta[m.group(1)] = front_matter_value(m.group(2))
     return Memory(scope, meta.get("name", path.stem), meta.get("type", "untyped"),
                   meta.get("description", ""), body.strip())
 

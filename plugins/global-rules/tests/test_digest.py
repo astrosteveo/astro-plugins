@@ -199,6 +199,13 @@ class DigestTest(unittest.TestCase):
         self.assertIn("### /home/u/Projects/alpha · renderer (project)", text)
         self.assertNotIn("MEMORY.md", text)
 
+    def test_a_description_global_memory_quoted_reads_as_written(self):
+        # global-memory writes the description with JSON.stringify.
+        path = self.config / "memory" / "quotes.md"
+        self.memory(path, '---\nname: quotes\ndescription: "Say \\"merge\\", not \\\\close\\\\"\n'
+                          'metadata:\n  type: feedback\n---\n\nBody.')
+        self.assertEqual(digest.read_memory(path, "global").description, 'Say "merge", not \\close\\')
+
     def test_header_reports_whether_claude_md_exists(self):
         self.fixture()
         self.assertIn("does not exist", self.run_digest())
