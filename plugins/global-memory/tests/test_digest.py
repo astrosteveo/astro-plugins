@@ -279,6 +279,14 @@ class DigestTest(unittest.TestCase):
         self.assertIn(f"Wrote {out}", result.stdout)
         self.assertTrue(out.exists())
 
+    def test_digest_goes_beside_the_memories_plugin_by_default(self):
+        self.fixture()
+        subprocess.run([sys.executable, "-I", str(SCRIPT), "--config-dir", str(self.config)],
+                       capture_output=True, text=True, check=True)
+        self.assertTrue((self.config / "global-memory" / "digest.md").exists())
+        # memory_files() reads every .md in memory/, so the digest must never land there.
+        self.assertFalse((self.config / "memory" / "digest.md").exists())
+
     def test_since_accepts_a_day_count_and_rejects_nonsense(self):
         self.assertEqual(digest.parse_since("2026-06-01"), "2026-06-01")
         self.assertRegex(digest.parse_since("30d"), r"^\d{4}-\d{2}-\d{2}$")
