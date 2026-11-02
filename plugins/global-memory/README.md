@@ -1,6 +1,12 @@
 # global-memory
 
-Claude keeps project memories on its own, but never a memory that holds in every project. This mod adds one.
+Claude keeps project memories on its own, but never a memory that holds in every project. This plugin adds one, and a skill, `/global-memory:suggest`, that turns those memories and your session history into rules for your global `~/.claude/CLAUDE.md`.
+
+Global memories are the quick path: Claude saves one the moment you correct it. The skill is the considered one: run it now and then to promote the memories that held up, with the rest of your history, into CLAUDE.md, and drop them from memory.
+
+This plugin was `global-memory` and `global-rules`. The marketplace renames `global-rules` to `global-memory`, so an install of `global-rules` moves over on its own; `/global-rules:suggest` is now `/global-memory:suggest`.
+
+## Global memories
 
 Global memories live in `~/.claude/memory/` (or `$CLAUDE_CONFIG_DIR/memory/` when that is set), one file per fact, with a `MEMORY.md` index. They are separate from your own `~/.claude/CLAUDE.md`.
 
@@ -13,6 +19,37 @@ Global memories live in `~/.claude/memory/` (or `$CLAUDE_CONFIG_DIR/memory/` whe
 - Each file is written to a temp file beside it and moved into place, so another session never reads a half-written index.
 
 No shell is used, but these commands must be on the path: `mkdir`, `mv` and `rm`. Windows is not supported.
+
+## Suggest rules for your global CLAUDE.md
+
+`/global-memory:suggest` does for your global `~/.claude/CLAUDE.md` what `/init` does for a project's. It reads your Claude Code session history and proposes rules for the file. Each rule comes with the evidence behind it. Nothing is written until you pick which to apply. If you have no global CLAUDE.md, it drafts a first one.
+
+```
+/global-memory:suggest                    # all history
+/global-memory:suggest --since 30d        # the last 30 days
+/global-memory:suggest --since 2026-10-01
+```
+
+### What it reads
+
+First, Claude Code's own guidance on CLAUDE.md files: [How Claude remembers your project](https://code.claude.com/docs/en/memory.md) and [Best practices for Claude Code](https://code.claude.com/docs/en/best-practices.md), fetched on each run. It words every rule the way those pages recommend. It also checks the lines already in your file against them, so it can propose rewording or removing a line even when your history says nothing about it. A line that belongs in a skill, a `~/.claude/rules/` file, a hook or a deny rule gets a note saying so. It stays in your CLAUDE.md until that replacement exists. If the pages can't be fetched, it says so and carries on without them.
+
+Then a script, `skills/suggest/scripts/digest.py`, goes through `~/.claude/projects/*/*.jsonl` and writes a Markdown digest to `~/.claude/global-memory/digest.md`. Claude reads that digest, not the raw transcripts. The digest holds:
+
+- What you typed: tool output, skill text and reminders the harness injected are left out. A paste is replaced by its size.
+- The tool calls you refused, with the reason you gave.
+- Likely corrections: messages that read like one, or came right after an interrupt or refusal, each with Claude's last words before it.
+- Messages you sent in more than one project, and tallies of short replies and commands.
+- Your global memories and project memories.
+- When each line of your global CLAUDE.md was put in place, worked out from the file's text before and after each of Claude's edits to it. Refusals and corrections carry a time of day too, so Claude can tell whether you corrected it after a line was already there without searching your transcripts. Times are UTC.
+
+It leaves out subagent transcripts, scripted (SDK) sessions and sessions run under `/tmp`. Pass `--include-tests` to keep the last two. A resumed session repeats the records it was resumed from, so messages are counted once, by id.
+
+### What it writes
+
+Only the rules you approve, in your CLAUDE.md's own style. It backs the file up first to `CLAUDE.md.bak-<date>` and shows you the diff. It never edits project CLAUDE.md files or project memories. It names project-specific findings so you can add them yourself. When an approved rule came from a global memory, it offers to delete that memory with `global_memory_delete`, so the rule isn't loaded twice.
+
+It needs `python3` (3.8 or later) on the PATH. It uses no packages beyond the standard library. It honours `CLAUDE_CONFIG_DIR`.
 
 ## Install
 
@@ -27,4 +64,5 @@ At the prompt of a terminal session:
 ```
 claude plugin validate plugins/global-memory
 claude plugin test plugins/global-memory
+python3 -m unittest discover -s plugins/global-memory/tests
 ```

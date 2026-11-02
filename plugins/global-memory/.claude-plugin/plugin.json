@@ -1,7 +1,7 @@
 {
   "name": "global-memory",
-  "version": "0.1.1",
-  "description": "Memories Claude writes for itself that hold in every project, kept in ~/.claude/memory with a MEMORY.md index in the system prompt.",
+  "version": "0.2.0",
+  "description": "Memories Claude writes for itself that hold in every project, kept in ~/.claude/memory with a MEMORY.md index in the system prompt, and /global-memory:suggest, which turns them and your session history into rules for your global ~/.claude/CLAUDE.md.",
   "author": {
     "name": "astrosteveo"
   },
