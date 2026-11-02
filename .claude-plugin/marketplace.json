@@ -21,6 +21,11 @@
       "name": "global-memory",
       "source": "./plugins/global-memory",
       "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session, and /global-memory:suggest, which turns them and your session history into rules for your global ~/.claude/CLAUDE.md. Writes only the rules you approve."
+    },
+    {
+      "name": "github-tracking",
+      "source": "./plugins/github-tracking",
+      "description": "Keeps a repo's GitHub issues, milestones and Projects board true while Claude works: each change starts from an issue on the board, larger steps split into sub-issues, and status updates say where the project stands."
     }
   ],
   "renames": {
