@@ -2,6 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import {
   TYPES,
   entryLine,
+  fileNote,
   guide,
   hasEntry,
   briefWrite,
@@ -46,7 +47,8 @@ const WRITE_TOOL = {
       },
       body: {
         type: 'string',
-        description: "The memory, at most 20,000 characters, structured as the system prompt's memory section says.",
+        description:
+          "The memory, structured as the system prompt's memory section says. With its front matter, the file is at most 4,096 bytes and 200 lines, the most recall shows of a memory.",
       },
     },
     required: ['name', 'description', 'type', 'body'],
@@ -198,7 +200,8 @@ async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
   // Checked against the index as it stands, as a blank title keeps the one its line has. The
   // index may not be readable: the change then fails under the lock, before anything is written.
   const line = entryLine(await readIndex($, dir).catch(() => ''), name, title, description)
-  const tooLong = overLimit({ line, body })
+  const fileOf = async () => memoryFile({ name, description, type: type as MemoryType, body, modified: await $.clock.now() })
+  const tooLong = overLimit({ line, file: await fileOf() })
   if (tooLong !== undefined) return { deny: tooLong }
 
   // The person is shown all of what is stored, and whether it replaces a memory, as the title and
@@ -219,13 +222,14 @@ async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
     const full = indexFull(index, next)
     if (full !== undefined) return { deny: full }
     const existed = await $.fs.exists(file)
-    await put($, file, memoryFile({ name, description, type: type as MemoryType, body, modified: await $.clock.now() }))
+    const text = await fileOf()
+    await put($, file, text)
     try {
       await put($, `${dir}/MEMORY.md`, next)
     } catch (error) {
       return { deny: `Wrote ${name}.md but could not update the index (${why(error)}), so it is not listed. Save it again to list it.` }
     }
-    return { result: `${existed ? 'Replaced' : 'Saved'} global memory ${name}.${indexNote(next)}` }
+    return { result: `${existed ? 'Replaced' : 'Saved'} global memory ${name}.${fileNote(text)}${indexNote(next)}` }
   })
 }
 
