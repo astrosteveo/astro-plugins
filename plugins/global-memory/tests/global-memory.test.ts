@@ -23,9 +23,12 @@ type Disk = {
   indexMoveFails?: boolean
   // The environment the plugin reads; HOME is /home/u when not given.
   env?: Record<string, string>
+  // Whether the engine keeps memory at all: its system prompt then has no memory section.
+  memoryOff?: boolean
 }
 
-// An in-memory disk under the plugin; the engine's memory section reads "core memory".
+// An in-memory disk under the plugin; the engine's memory section reads "core memory", and its
+// context carries the user's CLAUDE.md.
 function engine(on: On, disk: Disk = {}) {
   const files = new Map<string, string>()
   const log: string[] = []
@@ -46,6 +49,10 @@ function engine(on: On, disk: Disk = {}) {
   on('tool.register', (_, e) => ({ value: { tool: `mcp__global-memory__${e.name}` } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('prompt.section', (_, e) => ({ text: e.text }))
+  on('prompt.compose', () => ({
+    sections: disk.memoryOff ? [] : [{ id: 'memory', text: 'core memory', scope: 'session' as const }],
+  }))
+  on('prompt.context', (_, e) => ({ blocks: e.blocks, instructionFiles: e.instructionFiles }))
   on('fs.read', async (_, e) => {
     await Promise.resolve()
     const path = String(e.path)
@@ -143,9 +150,18 @@ const write = ($: any, name: string, extra: object = {}) =>
   })
 
 const read = ($: any, name: string) => $.tool.call({ tool: 'mcp__global-memory__global_memory_read', name })
+
+const CLAUDE_MD = { path: '/home/u/.claude/CLAUDE.md', kind: 'user' as const, content: '# About me' }
+
+// The instruction files the first message carries, the user's CLAUDE.md first.
+const context = async ($: any, files: unknown[] = [CLAUDE_MD]) =>
+  (await $.prompt.context({ blocks: [{ name: 'claudeMd', text: 'claude md' }], instructionFiles: files })).instructionFiles
+
+// The global index among them, as Claude Code's own MEMORY.md is: a file of the memory kind.
+const indexFile = async ($: any) => ((await context($)) ?? []).find((f: { path: string }) => f.path === INDEX)
 const remove = ($: any, name: string) => $.tool.call({ tool: 'mcp__global-memory__global_memory_delete', name })
 
-test('a saved memory is a file, a line in the index, and joins the memory section', async ($, on) => {
+test('a saved memory is a file and a line in the index, which joins the instruction files', async ($, on) => {
   const files = engine(on)
   await start($)
 
@@ -156,10 +172,25 @@ test('a saved memory is a file, a line in the index, and joins the memory sectio
   )
   expect(files.get(INDEX)).toBe('- [Short answers](short-answers.md) — The user wants answers short\n')
 
-  const section = await $.prompt.section({ name: 'memory', text: 'core memory' })
-  expect(section.text).toContain('core memory')
-  expect(section.text).toContain('- [Short answers](short-answers.md) — The user wants answers short')
-  expect(section.text).toContain(DIR)
+  expect(await context($)).toEqual([
+    CLAUDE_MD,
+    { path: INDEX, kind: 'memory', content: '- [Short answers](short-answers.md) — The user wants answers short' },
+  ])
+  // The system prompt says how to use the global memory, and holds no index that changes.
+  const section = String((await $.prompt.section({ name: 'memory', text: 'core memory' })).text)
+  expect(section).toContain(`${DIR}/MEMORY.md`)
+  expect(section).not.toContain('Short answers')
+})
+
+test('an empty index, or files a hook below made unknown, add no instruction file', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  expect(await context($)).toEqual([CLAUDE_MD])
+  files.set(INDEX, '\n')
+  expect(await context($)).toEqual([CLAUDE_MD])
+  await write($, 'a')
+  const unknown = await $.prompt.context({ blocks: [{ name: 'claudeMd', text: 'rewritten' }] })
+  expect(unknown.instructionFiles).toBeUndefined()
 })
 
 test('a memory file says when it was written, as Claude Code stamps its own memories', async ($, on) => {
@@ -229,10 +260,12 @@ test('read returns the file; a bad or unknown name is refused', async ($, on) =>
   expect((await write($, 'ok', { type: 'project' })).deny).toContain('type must be')
 })
 
-test('with the engine memory off, the section stays off', async ($, on) => {
-  engine(on)
+test('with the engine memory off, the section stays off and the index is not loaded', async ($, on) => {
+  engine(on, { memoryOff: true })
   await start($)
+  await write($, 'a')
   expect((await $.prompt.section({ name: 'memory', text: null })).text).toBeNull()
+  expect(await context($)).toEqual([CLAUDE_MD])
 })
 
 test('a description that links another memory does not stand for it', async ($, on) => {
@@ -260,8 +293,7 @@ test('an index that cannot be read is left alone, not written over', async ($, o
   expect(files.get(INDEX)).toBe('- [a](a.md) — x\n- [b](b.md) — y\n')
   expect(files.has(`${DIR}/a.md`)).toBe(true)
 
-  const section = await $.prompt.section({ name: 'memory', text: 'core memory' })
-  expect(section.text).toBe('core memory')
+  expect(await context($)).toEqual([CLAUDE_MD])
 })
 
 test('a delete whose rm fails says so and keeps the index line', async ($, on) => {
@@ -404,19 +436,6 @@ test('a lock that is never freed refuses the change and writes nothing', async (
   expect(files.has(INDEX)).toBe(false)
 })
 
-test('a compaction asks for the memory section again', async ($, on) => {
-  engine(on)
-  const invalidated: string[] = []
-  on('ui.invalidate', (_, e) => {
-    invalidated.push(e.event)
-    return { value: undefined }
-  })
-  on('session.compact', (_, e) => ({ messages: e.messages }))
-  await start($)
-  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
-  expect(invalidated).toEqual(['prompt.section'])
-})
-
 // Claude Code loads its own index up to 200 lines and 25 KB, warns at 80% of either and asks for 70%.
 const lines = (count: number, description = 'd') =>
   Array.from({ length: count }, (_, i) => `- [m${i}](m${i}.md) — ${description}`).join('\n') + '\n'
@@ -457,17 +476,17 @@ test('a change that leaves the index near its limit says to compact it', async (
   expect((await remove($, 'm1')).result).toBe('Deleted global memory m1.')
 })
 
-test('only the first 200 lines and 25 KB of the index join the memory section', async ($, on) => {
+test('only the first 200 lines and 25 KB of the index are loaded', async ($, on) => {
   const files = engine(on)
   files.set(INDEX, lines(210))
   await start($)
-  const section = (await $.prompt.section({ name: 'memory', text: 'core memory' })).text
-  expect(section).toContain('(m199.md)')
-  expect(section).not.toContain('(m200.md)')
-  expect(section).toContain('10 more lines of the index are past its read limit')
+  const cut = (await indexFile($)).content
+  expect(cut).toContain('(m199.md)')
+  expect(cut).not.toContain('(m200.md)')
+  expect(cut).toContain('10 more lines of the index are past its read limit')
 
   files.set(INDEX, lines(120, 'x'.repeat(240)))
-  const bytes = (await $.prompt.section({ name: 'memory', text: 'core memory' })).text
+  const bytes = (await indexFile($)).content
   expect(bytes).toContain('(m94.md)')
   expect(bytes).not.toContain('(m95.md)')
 })
