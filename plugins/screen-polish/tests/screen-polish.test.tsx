@@ -49,6 +49,31 @@ test('a finished call is one row: glyph, tool, path in the project, what came of
   expect(await texts($, site('ToolUse', CALL))).toEqual(['✓', 'Read', 'src/app.ts', '6 lines'])
 })
 
+test("a shell row says what the call is for, and falls back to the command", ALL, async ($, on) => {
+  engine(on)
+  await start($)
+  const bash = { ...CALL, tool: 'Bash', output: { stdout: Array(19).fill('x').join('\n'), stderr: '' } }
+
+  expect(
+    await texts($, site('ToolUse', { ...bash, input: { command: 'grep PATH ~/.zshrc', description: 'Check if $PATH exists in ~/.zshrc' } })),
+  ).toEqual(['✓', 'Bash', 'Check if $PATH exists in ~/.zshrc', '19 lines'])
+  expect((await texts($, site('ToolUse', { ...bash, input: { command: 'grep PATH ~/.zshrc' } })))[2]).toBe('grep PATH ~/.zshrc')
+})
+
+// The engine keeps its gutter out of a selection; a plugin can't, so rows
+// start at the left edge.
+test('a row is flush left, its tool named in full, its result right after what it did', ALL, async ($, on) => {
+  engine(on)
+  await start($)
+  const ui = await $.ui.mount(site('ToolUse', { ...CALL, tool: 'AskUserQuestion', input: { questions: [] }, output: {} }) as never)
+  const boxes = await ui.findAll({ type: 'Box' })
+
+  expect(boxes.some(b => (b.props.paddingLeft ?? 0) !== 0)).toBe(false)
+  expect(boxes.some(b => typeof b.props.width === 'number' && b.props.width < 'AskUserQuestion'.length + 1 && b.props.width !== 2)).toBe(false)
+  expect(boxes.filter(b => typeof b.props.width === 'number' && b.props.width > 16)).toEqual([])
+  await ui.unmount()
+})
+
 test('a running call says so, and a failed one says why', ALL, async ($, on) => {
   engine(on)
   await start($)

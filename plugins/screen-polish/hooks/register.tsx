@@ -19,6 +19,7 @@ type Hunk = { oldStart: number; newStart: number; lines: string[] }
 const GROUP_ROWS = 6
 const BODY_LINES = 30
 const ERROR_LINES = 3
+// Wide enough for most names; a longer one widens it, for every row of a group.
 const TOOL_COLUMN = 9
 
 const GLYPHS: Record<Status, { glyph: string; color: string }> = {
@@ -125,7 +126,7 @@ function target({ tool, input }: Call): string {
   }
   switch (tool) {
     case 'Bash':
-      return lines(text(input, 'command') ?? '')[0] ?? ''
+      return text(input, 'description') ?? lines(text(input, 'command') ?? '')[0] ?? ''
     case 'Grep': {
       const where = text(input, 'path')
       return `"${text(input, 'pattern') ?? ''}"${where === undefined ? '' : ` in ${relative(where)}`}`
@@ -291,26 +292,28 @@ function inPlaceOf(drawn: RenderElement, polished: RenderElement): RenderElement
   } as RenderElement
 }
 
-function row($: EngineInterface, e: RenderInput, call: Call, key: string): RenderElement {
+function toolWidth(calls: Call[]): number {
+  return Math.max(TOOL_COLUMN, ...calls.map(call => label(call.tool).length + 1))
+}
+
+// Flush left: a plugin can't keep a gutter out of a selection the way the
+// engine does. What the call did shrinks before what came of it.
+function row($: EngineInterface, e: RenderInput, call: Call, key: string, width: number): RenderElement {
   const { Box, Text } = $.ui.resolve(e)
   const state = status(call)
-  const columns = e.viewport?.columns ?? 100
-  const width = Math.max(12, Math.min(44, columns - 4 - TOOL_COLUMN - 22))
 
   return (
-    <Box key={key} flexDirection="row" paddingLeft={2}>
+    <Box key={key} flexDirection="row">
       <Box width={2} flexShrink={0}>
         <Text color={GLYPHS[state].color}>{GLYPHS[state].glyph}</Text>
       </Box>
-      <Box width={TOOL_COLUMN} flexShrink={0}>
-        <Text weight="semibold" wrap="truncate-end">
-          {label(call.tool)}
-        </Text>
+      <Box width={width} flexShrink={0}>
+        <Text weight="semibold">{label(call.tool)}</Text>
       </Box>
-      <Box width={width} flexShrink={0} marginRight={2}>
+      <Box flexShrink={3} marginRight={2}>
         <Text wrap="truncate-end">{target(call)}</Text>
       </Box>
-      <Box flexGrow={1} flexShrink={1}>
+      <Box flexShrink={1}>
         {state === 'failed' ? (
           <Text color="error" wrap="truncate-end">
             {summary(call)}
@@ -330,7 +333,7 @@ function result($: EngineInterface, e: RenderInput<'ToolResult'>): RenderElement
   const { tool, output } = e.props
   if (e.props.isErrored) {
     return (
-      <Box flexDirection="column" paddingLeft={4}>
+      <Box flexDirection="column" paddingLeft={2}>
         {errorLines(output)
           .slice(1, 1 + ERROR_LINES)
           .map(line => (
@@ -351,7 +354,7 @@ function result($: EngineInterface, e: RenderInput<'ToolResult'>): RenderElement
       : patchSource(Array.isArray(patch) ? (patch as Hunk[]) : [], BODY_LINES)
     if (source !== '') {
       return (
-        <Box flexDirection="column" paddingLeft={4}>
+        <Box flexDirection="column" paddingLeft={2}>
           {created ? <Code source={source} path={path} startLine={1} /> : <Code source={source} path={path} format="diff" />}
           {more > 0 && <Text dimColor>{`… ${more} more lines · ctrl+o`}</Text>}
         </Box>
@@ -366,15 +369,16 @@ function group($: EngineInterface, e: RenderInput<'ToolGroup'>): RenderElement {
   const { Box, Text } = $.ui.resolve(e)
   const { calls } = e.props
   const hidden = Math.max(0, calls.length - GROUP_ROWS)
+  const width = toolWidth(calls.slice(hidden))
 
   return (
     <Box flexDirection="column" marginTop={1}>
       {hidden > 0 && (
-        <Box paddingLeft={4}>
+        <Box paddingLeft={2}>
           <Text dimColor>{`⋯ ${hidden} earlier ${hidden === 1 ? 'call' : 'calls'} · ctrl+o`}</Text>
         </Box>
       )}
-      {calls.slice(hidden).map((call, n) => row($, e, call, call.tool_use_id ?? `call-${hidden + n}`))}
+      {calls.slice(hidden).map((call, n) => row($, e, call, call.tool_use_id ?? `call-${hidden + n}`, width))}
     </Box>
   )
 }
@@ -395,7 +399,7 @@ export const register: Register = (on, options) => {
     }
     const { Box } = $.ui.resolve(e)
 
-    return inPlaceOf(await next(e), <Box marginTop={1}>{row($, e, e.props, e.requestId)}</Box>)
+    return inPlaceOf(await next(e), <Box marginTop={1}>{row($, e, e.props, e.requestId, toolWidth([e.props]))}</Box>)
   })
 
   // The row says what came of the call; under it only an error's detail and
