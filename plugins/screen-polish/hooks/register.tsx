@@ -297,14 +297,14 @@ function toolWidth(calls: Call[]): number {
   return Math.max(TOOL_COLUMN, ...calls.map(call => label(call.tool).length + 1))
 }
 
-// Flush left: a plugin can't keep a gutter out of a selection the way the
-// engine does. What the call did shrinks before what came of it.
+// In the replies' two-column gutter, the glyph under a reply's text. What the
+// call did shrinks before what came of it.
 function row($: EngineInterface, e: RenderInput, call: Call, key: string, width: number): RenderElement {
   const { Box, Text } = $.ui.resolve(e)
   const state = status(call)
 
   return (
-    <Box key={key} flexDirection="row">
+    <Box key={key} flexDirection="row" paddingLeft={2}>
       <Box width={2} flexShrink={0}>
         <Text color={GLYPHS[state].color}>{GLYPHS[state].glyph}</Text>
       </Box>
@@ -335,7 +335,7 @@ function errorDetail($: EngineInterface, e: RenderInput, output: unknown): Rende
   const more = all.length - ERROR_LINES
 
   return (
-    <Box flexDirection="column" paddingLeft={2}>
+    <Box flexDirection="column" paddingLeft={4}>
       {all.slice(0, ERROR_LINES).map(line => (
         <Text color="error">{line}</Text>
       ))}
@@ -360,7 +360,7 @@ function result($: EngineInterface, e: RenderInput<'ToolResult'>): RenderElement
       : patchSource(Array.isArray(patch) ? (patch as Hunk[]) : [], BODY_LINES)
     if (source !== '') {
       return (
-        <Box flexDirection="column" paddingLeft={2}>
+        <Box flexDirection="column" paddingLeft={4}>
           {created ? <Code source={source} path={path} startLine={1} /> : <Code source={source} path={path} format="diff" />}
           {more > 0 && <Text dimColor>{`… ${more} more lines · ctrl+o`}</Text>}
         </Box>
@@ -380,7 +380,7 @@ function group($: EngineInterface, e: RenderInput<'ToolGroup'>): RenderElement {
   return (
     <Box flexDirection="column" marginTop={1}>
       {hidden > 0 && (
-        <Box paddingLeft={2}>
+        <Box paddingLeft={4}>
           <Text dimColor>{`⋯ ${hidden} earlier ${hidden === 1 ? 'call' : 'calls'} · ctrl+o`}</Text>
         </Box>
       )}

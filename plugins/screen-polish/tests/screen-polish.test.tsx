@@ -60,15 +60,13 @@ test("a shell row says what the call is for, and falls back to the command", ALL
   expect((await texts($, site('ToolUse', { ...bash, input: { command: 'grep PATH ~/.zshrc' } })))[2]).toBe('grep PATH ~/.zshrc')
 })
 
-// The engine keeps its gutter out of a selection; a plugin can't, so rows
-// start at the left edge.
-test('a row is flush left, its tool named in full, its result right after what it did', ALL, async ($, on) => {
+test('a row sits in the replies\' two-column gutter, its tool named in full, its result right after what it did', ALL, async ($, on) => {
   engine(on)
   await start($)
   const ui = await $.ui.mount(site('ToolUse', { ...CALL, tool: 'AskUserQuestion', input: { questions: [] }, output: {} }) as never)
   const boxes = await ui.findAll({ type: 'Box' })
 
-  expect(boxes.some(b => (b.props.paddingLeft ?? 0) !== 0)).toBe(false)
+  expect(boxes.filter(b => (b.props.paddingLeft ?? 0) !== 0).map(b => b.props.paddingLeft)).toEqual([2])
   expect(boxes.some(b => typeof b.props.width === 'number' && b.props.width < 'AskUserQuestion'.length + 1 && b.props.width !== 2)).toBe(false)
   expect(boxes.filter(b => typeof b.props.width === 'number' && b.props.width > 16)).toEqual([])
   await ui.unmount()
