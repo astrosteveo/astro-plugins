@@ -13,8 +13,17 @@ SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "suggest" / "scripts" 
 sys.path.insert(0, str(SCRIPT.parent))
 import digest  # noqa: E402
 
+FIXTURE = Path(__file__).resolve().parent / "memory-file.fixture.ts"
+
 ALPHA = "/home/u/Projects/alpha"
 BETA = "/home/u/Projects/beta"
+
+
+# The sample memory file both suites share: a TS module whose default export is plain JSON.
+def shared_sample():
+    text = FIXTURE.read_text()
+    start = "\nexport default "
+    return json.loads(text[text.index(start) + len(start):])
 
 
 def human(text, cwd=ALPHA, ts="2026-10-01T10:00:00Z", **extra):
@@ -199,12 +208,17 @@ class DigestTest(unittest.TestCase):
         self.assertIn("### /home/u/Projects/alpha · renderer (project)", text)
         self.assertNotIn("MEMORY.md", text)
 
-    def test_a_description_global_memory_quoted_reads_as_written(self):
-        # global-memory writes the description with JSON.stringify.
-        path = self.config / "memory" / "quotes.md"
-        self.memory(path, '---\nname: quotes\ndescription: "Say \\"merge\\", not \\\\close\\\\"\n'
-                          'metadata:\n  type: feedback\n---\n\nBody.')
-        self.assertEqual(digest.read_memory(path, "global").description, 'Say "merge", not \\close\\')
+    def test_reads_a_memory_file_as_global_memory_writes_it(self):
+        # global-memory.test.ts checks hooks/memory.ts still writes this sample.
+        sample = shared_sample()
+        path = self.config / "memory" / f"{sample['entry']['name']}.md"
+        self.memory(path, sample["file"])
+        memory = digest.read_memory(path, "global")
+        entry = sample["entry"]
+        self.assertEqual(
+            (memory.name, memory.type, memory.description, memory.body),
+            (entry["name"], entry["type"], entry["description"], entry["body"].strip()),
+        )
 
     def test_header_reports_whether_claude_md_exists(self):
         self.fixture()
