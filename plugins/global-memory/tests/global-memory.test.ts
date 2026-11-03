@@ -1,6 +1,8 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { briefWrite, memoryFile, saveQuestion } from '../hooks/memory'
+import type { MemoryType } from '../hooks/memory'
+import sample from './memory-file.fixture'
 
 const DIR = '/home/u/.claude/memory'
 const INDEX = `${DIR}/MEMORY.md`
@@ -212,6 +214,11 @@ test('the global section comes after the memory section and defers to it on how 
   expect(text).toContain('as the memory section above says')
   expect(text).toContain('no `project` type')
   expect(text).not.toContain('**Why:**')
+})
+
+// test_digest.py reads the same sample back, so a change to the format breaks one of the two.
+test('a memory file is written as the shared sample says', () => {
+  expect(memoryFile({ ...sample.entry, type: sample.entry.type as MemoryType })).toBe(sample.file)
 })
 
 test('CLAUDE_CONFIG_DIR moves the global memory with the rest of the config', async ($, on) => {
