@@ -19,14 +19,23 @@ function message(text: string, surface: 'terminal' | 'desktop' = 'terminal') {
   } as const
 }
 
-// Any cell left of the text, padding included, would be caught in a selection;
-// only the engine can mark cells unselectable.
-async function isFlush(ui: { findAll(q: { type: string }): Promise<{ props: Record<string, unknown> }[]> }) {
-  const boxes = await ui.findAll({ type: 'Box' })
-  return !boxes.some(b => b.props.width === 2 || (b.props.paddingLeft ?? 0) !== 0)
+// The engine's clipboard, selection and toasts, as the test's hooks answer them.
+function desk(on: On, selected?: { text: string; requestId?: string }) {
+  const copied: string[] = []
+  const toasts: string[] = []
+  on('ui.selection', () => ({ value: selected }))
+  on('ui.copy', (_, e) => {
+    copied.push(e.text)
+    return { value: { isCopied: true } }
+  })
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  return { copied, toasts }
 }
 
-test('by default inline code sits on a fill, flush left with no bullet, and other redraws are off', async ($, on) => {
+test('by default inline code sits on a fill, the reply keeps its gutter and bullet, and other redraws are off', async ($, on) => {
   engine(on)
   const ui = await $.ui.mount(message('Use `ls` and **bold**.'))
 
@@ -35,8 +44,7 @@ test('by default inline code sits on a fill, flush left with no bullet, and othe
     color: 'permission',
   })
   expect((await ui.find({ type: 'Text', text: /^bold$/ }))?.props).toMatchObject({ weight: 'bold' })
-  expect(await ui.find({ type: 'Text', text: '●' })).toBeUndefined()
-  expect(await isFlush(ui)).toBe(true)
+  expect((await ui.find({ type: 'Button', key: 'copy' }))?.props).toMatchObject({ label: '●' })
   await ui.unmount()
 
   const prompt = await $.ui.mount({
@@ -48,12 +56,42 @@ test('by default inline code sits on a fill, flush left with no bullet, and othe
   await prompt.unmount()
 })
 
-test('a plain reply is flush left too, so every reply lines up', async ($, on) => {
+test('a plain reply is drawn the same way, so every reply lines up', async ($, on) => {
   engine(on)
   const ui = await $.ui.mount(message('Plain **bold** words.'))
 
   expect((await ui.find({ type: 'Markdown' }))?.text).toBe('Plain **bold** words.')
-  expect(await isFlush(ui)).toBe(true)
+  expect(await ui.find({ type: 'Button', key: 'copy' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the bullet copies the whole reply as written when nothing in it is selected', async ($, on) => {
+  engine(on)
+  const { copied, toasts } = desk(on, { text: 'elsewhere', requestId: 'other' })
+  const ui = await $.ui.mount(message('Use `ls` and **bold**.'))
+  await ui.press({ key: 'copy' })
+
+  expect(copied).toEqual(['Use `ls` and **bold**.'])
+  expect(toasts).toEqual(['Copied the reply'])
+  await ui.unmount()
+})
+
+test('the bullet copies a selection in its reply without the gutter cells', async ($, on) => {
+  engine(on)
+  const { copied, toasts } = desk(on, { text: '● First line\n  - item one\n    - nested\n  last', requestId: 'm1' })
+  const ui = await $.ui.mount(message('anything'))
+  await ui.press({ key: 'copy' })
+
+  expect(copied).toEqual(['First line\n- item one\n  - nested\nlast'])
+  expect(toasts).toEqual(['Copied the selection'])
+  await ui.unmount()
+})
+
+test('a later block of a reply keeps the gutter but has no bullet to press', async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount({ ...message('Use `ls`.'), props: { text: 'Use `ls`.', isFirstOfReply: false } })
+
+  expect(await ui.find({ type: 'Button' })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -114,5 +152,6 @@ test('a plugin beneath that wraps the reply, as inline-thinking does, keeps its 
   const ui = await $.ui.mount(message('Use `ls`.'))
 
   expect((await ui.findAll({ type: 'Text' })).map(t => t.text).slice(0, 2)).toEqual(['thought', 'Use  ls .'])
+  expect(await ui.find({ type: 'Button', key: 'copy' })).toBeDefined()
   await ui.unmount()
 })

@@ -201,7 +201,7 @@ test("the person's prompt gets an accent marker; other user rows are the engine'
   ).toEqual([])
 })
 
-test('a reply draws as markdown, flush left', ALL, async ($, on) => {
+test('a reply draws as markdown', ALL, async ($, on) => {
   engine(on)
   await start($)
   const ui = await $.ui.mount(site('AssistantMessage', { text: 'Fixed **it**.', isFirstOfReply: true }) as never)

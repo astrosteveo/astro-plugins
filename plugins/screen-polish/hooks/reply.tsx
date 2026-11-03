@@ -2,15 +2,33 @@ import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 
 import { segments, type Features, type Line, type Span } from './markdown'
 
+// The gutter's cells as a selection holds them: the bullet or two blanks, at
+// the start of every line, since wrapped rows are joined back into lines.
+const GUTTER = /^(● | {2})/gm
+
 /**
- * A reply block as this plugin draws it: flush left, with no bullet. Claude
- * Code keeps its own gutter out of a selection, which a plugin cannot do, so a
- * gutter drawn here would be copied with every line.
+ * Copies, from a press on a reply's bullet, what the person selected in that
+ * reply, less the gutter a plugin cannot keep out of a selection; with nothing
+ * selected there, the whole reply as written.
+ */
+async function copy($: EngineInterface, e: RenderInput<'AssistantMessage'>, surface: RenderInput['surface']) {
+  const selected = await $.ui.selection()
+  const isPart = selected !== undefined && selected.requestId === e.requestId && selected.text !== ''
+  const text = isPart ? selected.text.replace(GUTTER, '') : e.props.text
+  const done = await $.ui.copy({ text, surface })
+
+  $.ui.toast(done.isCopied ? `Copied the ${isPart ? 'selection' : 'reply'}` : `Nothing copied: ${done.reason}`)
+}
+
+/**
+ * A reply block as this plugin draws it, in Claude Code's two-column gutter.
+ * The bullet is a button that copies the reply cleanly, since a mouse
+ * selection here takes the gutter's cells along.
  */
 export function reply($: EngineInterface, e: RenderInput<'AssistantMessage'>, features: Features): RenderElement {
   const parts = segments(e.props.text, features)
 
-  const { Box, Text, Link, Markdown } = $.ui.resolve(e)
+  const { Box, Button, Text, Link, Markdown } = $.ui.resolve(e)
   const columns = e.viewport?.columns ?? 80
 
   const runs = (spans: Span[]) =>
@@ -93,8 +111,17 @@ export function reply($: EngineInterface, e: RenderInput<'AssistantMessage'>, fe
     )
 
   return (
-    <Box flexDirection="column" marginTop={1}>
-      {body}
+    <Box flexDirection="row" marginTop={1}>
+      <Box flexShrink={0} width={2}>
+        {e.props.isFirstOfReply ? (
+          <Button key="copy" label="●" plain onPress={press => void copy($, e, press.surface)} />
+        ) : (
+          <Text> </Text>
+        )}
+      </Box>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+        {body}
+      </Box>
     </Box>
   )
 }
