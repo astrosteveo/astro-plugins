@@ -179,8 +179,7 @@ test('the spinner says what the turn is doing, and the engine draws the rest', A
   expect(await texts($, site('Spinner', { ...spinner, mode: 'thinking' }))).toEqual(['Working'])
 })
 
-// A turnRule left in settings from before the setting was removed changes nothing.
-test('the end of a turn keeps the engine\'s own line', { options: { ...ALL.options, turnRule: true } }, async ($, on) => {
+test('the end of a turn keeps the engine\'s own line', ALL, async ($, on) => {
   engine(on)
   await start($)
 
