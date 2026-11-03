@@ -35,6 +35,8 @@ No shell is used, but these commands must be on the path: `mkdir`, `mv` and `rm`
 
 First, Claude Code's own guidance on CLAUDE.md files: [How Claude remembers your project](https://code.claude.com/docs/en/memory.md) and [Best practices for Claude Code](https://code.claude.com/docs/en/best-practices.md), fetched on each run. It words every rule the way those pages recommend. It also checks the lines already in your file against them, so it can propose rewording or removing a line even when your history says nothing about it. A line that belongs in a skill, a `~/.claude/rules/` file, a hook or a deny rule gets a note saying so. It stays in your CLAUDE.md until that replacement exists. If the pages can't be fetched, it says so and carries on without them.
 
+It also reads your `settings.json`. If your CLAUDE.md sets commit or pull request rules, it checks `includeGitInstructions` and `attribution`, as Claude Code's own git instructions compete with those rules. It looks for hooks that enforce only a preference, which the pages say to delete.
+
 Then a script, `skills/suggest/scripts/digest.py`, goes through `~/.claude/projects/*/*.jsonl` and writes a Markdown digest to `~/.claude/global-memory/digest.md`. Claude reads that digest, not the raw transcripts. The digest holds:
 
 - What you typed: tool output, skill text and reminders the harness injected are left out. A paste is replaced by its size.
@@ -49,6 +51,8 @@ It leaves out subagent transcripts, scripted (SDK) sessions and sessions run und
 ### What it writes
 
 Only the rules you approve, in your CLAUDE.md's own style. It backs the file up first to `CLAUDE.md.bak-<date>` and shows you the diff. It never edits project CLAUDE.md files or project memories. It names project-specific findings so you can add them yourself. When an approved rule came from a global memory, it offers to delete that memory with `global_memory_delete`, so the rule isn't loaded twice.
+
+It never edits `settings.json`: the git setting to change and the hooks that could go come back as notes. It ends by suggesting `/doctor prompt-audit`, which checks your rules, skills, commands, subagents and output styles against the file for conflicts.
 
 It needs `python3` (3.8 or later) on the PATH. It uses no packages beyond the standard library. It honours `CLAUDE_CONFIG_DIR`.
 
