@@ -171,6 +171,18 @@ test('a memory file says when it was written, as Claude Code stamps its own memo
   )
 })
 
+// Claude Code's own memory section says how to write a memory, and changes as Claude Code does:
+// the global section follows it instead of keeping a copy.
+test('the global section comes after the memory section and defers to it on how to write a memory', async ($, on) => {
+  engine(on)
+  await start($)
+  const text = String((await $.prompt.section({ name: 'memory', text: 'core memory' })).text)
+  expect(text.startsWith('core memory\n\n# Global memory')).toBe(true)
+  expect(text).toContain('as the memory section above says')
+  expect(text).toContain('no `project` type')
+  expect(text).not.toContain('**Why:**')
+})
+
 test('CLAUDE_CONFIG_DIR moves the global memory with the rest of the config', async ($, on) => {
   const files = engine(on, { env: { HOME: '/home/u', CLAUDE_CONFIG_DIR: '/cfg' } })
   await start($)

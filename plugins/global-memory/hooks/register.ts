@@ -36,10 +36,18 @@ const WRITE_TOOL = {
       description: {
         type: 'string',
         description:
-          'One line for the index: the fact, and when a later session needs it. With the title and name, the index line is at most 150 characters.',
+          'One line for the index, used to decide relevance in future conversations, so be specific. With the title and name, the index line is at most 150 characters.',
       },
-      type: { type: 'string', enum: [...TYPES], description: 'user: who they are. feedback: how they want you to work. reference: where something lives.' },
-      body: { type: 'string', description: 'The memory, at most 20,000 characters. For feedback: the rule, then **Why:** and **How to apply:** lines.' },
+      type: {
+        type: 'string',
+        enum: [...TYPES],
+        description:
+          'user: who the user is (role, expertise, preferences). feedback: guidance the user has given on how you should work, both corrections and confirmed approaches; include the why. reference: pointers to external resources.',
+      },
+      body: {
+        type: 'string',
+        description: "The memory, at most 20,000 characters, structured as the system prompt's memory section says.",
+      },
     },
     required: ['name', 'description', 'type', 'body'],
   },
