@@ -162,6 +162,15 @@ test('a saved memory is a file, a line in the index, and joins the memory sectio
   expect(section.text).toContain(DIR)
 })
 
+test('a memory file says when it was written, as Claude Code stamps its own memories', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  await write($, 'short-answers')
+  expect(files.get(`${DIR}/short-answers.md`)).toContain(
+    `metadata:\n  type: feedback\n  modified: ${new Date(1_000_000).toISOString()}\n---\n`,
+  )
+})
+
 test('CLAUDE_CONFIG_DIR moves the global memory with the rest of the config', async ($, on) => {
   const files = engine(on, { env: { HOME: '/home/u', CLAUDE_CONFIG_DIR: '/cfg' } })
   await start($)

@@ -205,7 +205,7 @@ async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
     if (!hasEntry(index, name) && entryCount(index) >= MAX_ENTRIES)
       return { deny: `The index holds ${MAX_ENTRIES} memories, the most it can: delete or fold one first.` }
     const existed = await $.fs.exists(file)
-    await put($, file, memoryFile({ name, description, type: type as MemoryType, body }))
+    await put($, file, memoryFile({ name, description, type: type as MemoryType, body, modified: await $.clock.now() }))
     try {
       await put($, `${dir}/MEMORY.md`, withEntry(index, name, title, description))
     } catch (error) {

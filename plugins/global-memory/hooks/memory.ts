@@ -14,13 +14,16 @@ const oneLine = (text: string) => text.replace(/\s+/g, ' ').trim()
 // A title with a bracket would end the index link early.
 const plainTitle = (title: string) => oneLine(title).replace(/[[\]]/g, '')
 
-export function memoryFile(entry: { name: string; description: string; type: MemoryType; body: string }) {
+// `modified` is where Claude Code records when it wrote one of its own memories, so a later
+// session can tell how current the fact is.
+export function memoryFile(entry: { name: string; description: string; type: MemoryType; body: string; modified: number }) {
   return [
     '---',
     `name: ${entry.name}`,
     `description: ${JSON.stringify(oneLine(entry.description))}`,
     'metadata:',
     `  type: ${entry.type}`,
+    `  modified: ${new Date(entry.modified).toISOString()}`,
     '---',
     '',
     entry.body.trim(),
