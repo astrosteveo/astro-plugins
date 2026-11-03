@@ -201,7 +201,7 @@ Write a global memory as the memory section above says to write a memory: what t
 - There is no \`project\` type: a project's ongoing work belongs in that project's memory.
 - A \`[[name]]\` link names another global memory.
 
-Its index, ${dir}/MEMORY.md, is loaded into context with the instruction files when a conversation starts and after a compaction. When an entry looks relevant to the task, open it with mcp__global-memory__global_memory_read before you act.`
+Its index, ${dir}/MEMORY.md, is loaded into context with the instruction files when a conversation starts and after a compaction, once it holds any memories. When an entry looks relevant to the task, open it with mcp__global-memory__global_memory_read before you act.`
 }
 
 // A save call's input as its row prints it: the long description cut to a
