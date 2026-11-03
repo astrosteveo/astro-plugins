@@ -68,6 +68,11 @@ Check each candidate against the current CLAUDE.md. To tell whether a correction
 
 Then check the lines already in the file against the guidance, even with nothing in the history behind them. Propose rewording a vague or emphasized line, and removing one that tells Claude what it does anyway. For a line that belongs in a skill, a rules file, a hook or a deny rule, add a note. Propose removing that line only once its replacement exists, such as a matching hook or deny rule in settings.json. Until then the line is all that carries the instruction. If the file is longer than the guidance recommends, propose cuts.
 
+Check two things in settings.json too, and note what you find:
+
+- If the file sets commit or pull request rules, Claude Code's own git instructions compete with them. `includeGitInstructions: false` turns those off, and the git status snapshot with them; `attribution` sets the text Claude Code adds to commits and pull requests. Note the setting that would stop the conflict, unless it is already set.
+- A hook that enforces only a preference, not a rule that can't have exceptions: the guidance says to delete such a hook and let Claude decide.
+
 ## 4. Propose
 
 Show a numbered list of at most 12 items: first the ones the history backs, strongest evidence first, then the ones from the guidance alone. For each item give:
@@ -84,6 +89,7 @@ End with notes, one line each, that this skill does not write:
 
 - For each project where something project-specific stood out, what belongs in that project's CLAUDE.md.
 - For each line that belongs in a skill, a `~/.claude/rules/` file, a hook or a deny rule, what it would do, hold, run or block.
+- Each settings.json change from the check above: the git setting to set, or the hook that enforces only a preference and could go.
 
 Then ask which to apply. The user replies with numbers ("1, 3, 5"), "all" or "none", and may reword an item ("2, but say …"). For a first draft, the user approves it or asks for changes. Ask in plain text, not with AskUserQuestion: a list holds every item and lets the user reword one in the same reply. Write nothing until the user answers.
 
@@ -93,3 +99,4 @@ Then ask which to apply. The user replies with numbers ("1, 3, 5"), "all" or "no
 2. Apply each approved item with Edit, keeping the file's order and style. For a first CLAUDE.md, use Write.
 3. Show what changed: `diff -u <backup> <path>`, or the new file in full. Give the backup's path.
 4. If an approved rule came from a global memory, say so. Offer to delete that memory, so the rule is not loaded twice. Delete it with `global_memory_delete`, never with `rm`: the tool also clears its line from the `MEMORY.md` index, which every session loads.
+5. Suggest the user run `/doctor prompt-audit`. It checks the file against their rules, skills, commands, subagents and output styles for instructions that are outdated or contradict each other, which this skill does not read.
