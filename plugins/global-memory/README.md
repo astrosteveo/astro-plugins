@@ -51,7 +51,7 @@ It leaves out subagent transcripts, scripted (SDK) sessions and sessions run und
 
 ### What it writes
 
-Only the rules you approve, in your CLAUDE.md's own style. It backs the file up first to `CLAUDE.md.bak-<date>` and shows you the diff. It never edits project CLAUDE.md files or project memories. It names project-specific findings so you can add them yourself. When an approved rule came from a global memory, it offers to delete that memory with `global_memory_delete`, so the rule isn't loaded twice.
+Only the rules you approve, in your CLAUDE.md's own style. You pick items by answering with `/global-memory:suggest apply 1, 3`, which runs the skill again so its pre-approved tools hold for the turn that writes. It backs the file up first to `CLAUDE.md.bak-<date>` (with a `-2` suffix if that exists) and shows you the diff. The backup and the diff come from a small script, `skills/suggest/scripts/claude_md.py`, because Claude Code asks before `cp` or `diff` touches a file outside the session's working folders. It never edits project CLAUDE.md files or project memories. It names project-specific findings so you can add them yourself. When an approved rule came from a global memory, it offers to delete that memory with `global_memory_delete`, so the rule isn't loaded twice.
 
 It never edits `settings.json`: the git setting to change and the hooks that could go come back as notes. It ends by suggesting `/doctor prompt-audit`, which checks your rules, skills, commands, subagents and output styles against the file for conflicts.
 

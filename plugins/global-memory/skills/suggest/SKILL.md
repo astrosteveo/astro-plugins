@@ -1,13 +1,17 @@
 ---
 name: suggest
 description: Propose additions and changes to the user's global ~/.claude/CLAUDE.md from their Claude Code session history (what they typed, their corrections, the tool calls they refused, their global and project memories), checked against Claude Code's current CLAUDE.md guidance, and write only what they approve. Drafts a first CLAUDE.md when there is none. Use when the user asks to improve, update, tune, audit or start their global CLAUDE.md from their history, habits or past corrections.
-argument-hint: "[--since 30d | --since YYYY-MM-DD] [--include-tests]"
-allowed-tools: Read, Edit, Write, WebFetch(domain:code.claude.com), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py *), Bash(cp *), Bash(diff *)
+argument-hint: "[--since 30d | --since YYYY-MM-DD] [--include-tests] | apply <the items you picked>"
+allowed-tools: Read, Edit, Write, WebFetch(domain:code.claude.com), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py *), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/claude_md.py *)
 ---
 
 # Suggest global CLAUDE.md content from session history
 
 Turn what the user said across past sessions into a short list of rules for their global CLAUDE.md, written the way Claude Code's docs say CLAUDE.md files work best. Show the list, then write only the rules they pick. The global CLAUDE.md is loaded into every session in every project, so each line has to earn its place.
+
+This skill was invoked with: `$ARGUMENTS`
+
+If those arguments start with `apply`, the user has picked items from a list this skill proposed earlier in this conversation, or approved its first draft. Skip steps 1 to 4: don't fetch the guidance or build the digest again. Take what follows `apply` as the user's answer, rewordings included, and go to step 5 with it. If there is no such list or draft earlier in the conversation, say so and stop.
 
 ## 1. Read Claude Code's CLAUDE.md guidance
 
@@ -28,7 +32,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py $ARGUMENTS
 
 It prints where it wrote the digest, how big the digest is, and the path of the global CLAUDE.md and whether it exists. If python3 is missing, tell the user the skill needs Python 3.8 or later on the PATH, and stop.
 
-Read the CLAUDE.md at that path if it exists, and the settings.json in the same folder: its hooks and permission deny rules show what is already enforced. Then read the whole digest, in several Reads with offset and limit if it is long. It holds:
+Read the CLAUDE.md at that path if it exists, and the settings.json in the same folder, with the Read tool: its hooks and permission deny rules show what is already enforced. Then read the whole digest, in several Reads with offset and limit if it is long. It holds:
 
 - **When each global CLAUDE.md line was put in place**, by line number, worked out from Claude's past edits to the file. `since` is when the line appeared in its current wording. `by` means it was there then and may be older. Times are UTC, as on the refusals and corrections.
 - **Global memories** and **project memories**: rules Claude already saved, with their type.
@@ -91,12 +95,14 @@ End with notes, one line each, that this skill does not write:
 - For each line that belongs in a skill, a `~/.claude/rules/` file, a hook or a deny rule, what it would do, hold, run or block.
 - Each settings.json change from the check above: the git setting to set, or the hook that enforces only a preference and could go.
 
-Then ask which to apply. The user replies with numbers ("1, 3, 5"), "all" or "none", and may reword an item ("2, but say …"). For a first draft, the user approves it or asks for changes. Ask in plain text, not with AskUserQuestion: a list holds every item and lets the user reword one in the same reply. Write nothing until the user answers.
+Then ask which to apply. Ask in plain text, not with AskUserQuestion: a list holds every item and lets the user reword one in the same reply. Tell the user to answer with the command `/global-memory:suggest apply 1, 3`: numbers, "all", or an item reworded ("apply 2, but say …"). For a first draft, they answer `/global-memory:suggest apply` to approve it, or ask for changes. Write nothing until the user answers.
+
+This skill's allowed tools hold only for the turn that invokes it, and the user's answer starts a new turn. The command invokes the skill again, so the backup, the edits and the diff run without a permission prompt. If the user answers with items in plain words instead, invoke this skill again yourself before you write anything: the Skill tool with `global-memory:suggest` and `apply` followed by their whole answer. That call may need the user's permission. If it is refused, ask them to type the command, and write nothing. An answer of "none", or one that asks for changes to the list or draft, writes nothing and needs no new invocation.
 
 ## 5. Write
 
-1. If the file exists, copy it first to `<path>.bak-<today as YYYY-MM-DD>`, using `cp`.
+1. Back up the file: `python3 ${CLAUDE_SKILL_DIR}/scripts/claude_md.py backup <path>`. It prints the backup's path, or says there is no file yet. Use the script, not `cp`: Claude Code asks before `cp` or `diff` touches a path outside the session's working folders, which the global CLAUDE.md always is. If the backup fails, stop and write nothing. Never make a backup any other way, such as with Write from an earlier read.
 2. Apply each approved item with Edit, keeping the file's order and style. For a first CLAUDE.md, use Write.
-3. Show what changed: `diff -u <backup> <path>`, or the new file in full. Give the backup's path.
+3. Show what changed: `python3 ${CLAUDE_SKILL_DIR}/scripts/claude_md.py diff <backup> <path>`, or the new file in full. Give the backup's path.
 4. If an approved rule came from a global memory, say so. Offer to delete that memory, so the rule is not loaded twice. Delete it with `global_memory_delete`, never with `rm`: the tool also clears its line from the `MEMORY.md` index, which every session loads.
 5. Suggest the user run `/doctor prompt-audit`. It checks the file against their rules, skills, commands, subagents and output styles for instructions that are outdated or contradict each other, which this skill does not read.
