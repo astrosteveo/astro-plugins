@@ -158,7 +158,9 @@ export function saveQuestion(entry: {
   ].join('\n')
 }
 
-// What the system prompt adds to the memory section.
+// What the system prompt adds to the memory section. It follows Claude Code's own memory section,
+// which says what to save and how to write it and changes as Claude Code does, so it states only
+// where a global memory differs.
 export function guide(dir: string, index: string) {
   const loaded = loadedIndex(index)
   const cut =
@@ -170,9 +172,12 @@ export function guide(dir: string, index: string) {
 
 Besides the project's memory, you keep a global memory: facts that hold in every project, saved by you on your own. It lives in ${dir}.
 
-Save a global memory the moment the user corrects you, or tells you how they like to work, and the point holds beyond this project: their tools, their style of answers, how they review, what they want done without asking. Ask of each such fact: would it still be true in a different repo? If it would, save it globally. If it names this project's code, layout or decisions, it belongs in the project's memory. When unsure, save it to the project.
+When you would save a memory, ask of the fact: would it still be true in a different repo? Who the user is, how they like to work, their tools, how they want answers and what they want done without asking usually would: save those globally. If it names this project's code, layout or decisions, it belongs in the project's memory. When unsure, save it to the project.
 
-Save with mcp__global-memory__global_memory_write (one fact per memory, a short kebab-case name, a one-line description that tells a later session when it applies). Writing a name that exists replaces that memory, so read it first and fold the new point in. A feedback memory states the rule, then a **Why:** line and a **How to apply:** line. Do not save what the project's files, CLAUDE.md or git history already record. Remove one that has proved wrong with mcp__global-memory__global_memory_delete.
+Write a global memory as the memory section above says to write a memory: what to save and what not to, one fact per file, its name and description, its type and body, and its \`[[name]]\` links. Only these differ:
+- Save and replace one with mcp__global-memory__global_memory_write, and delete one with mcp__global-memory__global_memory_delete, never with file tools: they also write its index line. Writing a name that exists replaces that memory, so read it first and fold the new point in.
+- There is no \`project\` type: a project's ongoing work belongs in that project's memory.
+- A \`[[name]]\` link names another global memory.
 
 The index below is loaded at the start of every session. When an entry looks relevant to the task, open it with mcp__global-memory__global_memory_read before you act.
 
