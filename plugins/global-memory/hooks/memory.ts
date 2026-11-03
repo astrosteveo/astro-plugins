@@ -65,49 +65,67 @@ export function withoutEntry(index: string, name: string) {
 
 // The index joins every session's system prompt, so it keeps Claude Code's limits for its own
 // memory index: a line under 150 characters, and only the first 200 lines and 25 KB are loaded.
-// Claude Code warns at 80% of either and asks for 70%. A body over 4 MiB could not be read back.
-export const LIMITS = { line: 150, lines: 200, bytes: 25_000, body: 20_000 } as const
+// A memory file keeps to what Claude Code's memory recall shows of one: its first 4,096 bytes
+// and 200 lines, front matter included. Claude Code warns at 80% of a limit and asks for 70%.
+export const LIMITS = { line: 150, lines: 200, bytes: 25_000, fileLines: 200, fileBytes: 4096 } as const
 const NEAR = 0.8
 const TARGET = 0.7
-
-// What is too long about a memory, in words for the model; undefined when nothing is.
-export function overLimit(entry: { line: string; body: string }) {
-  if (entry.line.length > LIMITS.line)
-    return `The index line "${entry.line}" is ${entry.line.length} characters long; the most is ${LIMITS.line}. Shorten the description or the title.`
-  const body = entry.body.trim().length
-  return body > LIMITS.body ? `The body is ${body} characters long; the most is ${LIMITS.body}. Shorten it.` : undefined
-}
 
 const bytesOf = (text: string) => new TextEncoder().encode(text).length
 const linesOf = (index: string) => index.split('\n').filter(l => l.trim() !== '')
 const kb = (bytes: number) => `${Number((bytes / 1000).toFixed(1))} KB`
+const exact = (bytes: number) => bytes.toLocaleString('en-US')
 
-// How full the index is, by whichever of its lines and bytes is closer to its limit.
-function fullness(index: string) {
-  const lines = linesOf(index).length
-  const bytes = bytesOf(index)
+// How full a text is, by whichever of its lines and bytes is closer to its limit, in words.
+function fullness(lines: number, bytes: number, cap: { lines: number; bytes: number }, inKb: boolean) {
   const byLines = {
-    frac: lines / LIMITS.lines,
-    over: lines > LIMITS.lines,
+    frac: lines / cap.lines,
+    over: lines > cap.lines,
     size: `${lines} lines`,
-    cap: `${LIMITS.lines}-line`,
-    target: `${Math.floor(LIMITS.lines * TARGET)} lines`,
+    cap: `${cap.lines}-line`,
+    target: `${Math.floor(cap.lines * TARGET)} lines`,
   }
+  const size = (n: number) => (inKb ? kb(n) : `${exact(n)} bytes`)
   const byBytes = {
-    frac: bytes / LIMITS.bytes,
-    over: bytes > LIMITS.bytes,
-    size: kb(bytes),
-    cap: kb(LIMITS.bytes),
-    target: kb(Math.floor(LIMITS.bytes * TARGET)),
+    frac: bytes / cap.bytes,
+    over: bytes > cap.bytes,
+    size: size(bytes),
+    cap: inKb ? kb(cap.bytes) : `${exact(cap.bytes)}-byte`,
+    target: size(Math.floor(cap.bytes * TARGET)),
   }
   return { lines, bytes, ...(byBytes.frac > byLines.frac ? byBytes : byLines) }
+}
+
+const indexFullness = (index: string) =>
+  fullness(linesOf(index).length, bytesOf(index), { lines: LIMITS.lines, bytes: LIMITS.bytes }, true)
+
+const fileFullness = (file: string) =>
+  fullness(file.replace(/\n$/, '').split('\n').length, bytesOf(file), { lines: LIMITS.fileLines, bytes: LIMITS.fileBytes }, false)
+
+// What is too long about a memory, its index line or its whole file, in words for the model;
+// undefined when nothing is.
+export function overLimit(entry: { line: string; file: string }) {
+  if (entry.line.length > LIMITS.line)
+    return `The index line "${entry.line}" is ${entry.line.length} characters long; the most is ${LIMITS.line}. Shorten the description or the title.`
+  const now = fileFullness(entry.file)
+  return now.over
+    ? `The memory file would be ${now.size}, over the ${now.cap} limit recall shows of a memory, so nothing was saved. Keep it to one fact under ${now.target}: split distinct facts into their own memories, and summarize rather than append.`
+    : undefined
+}
+
+// What a save that leaves its file near the limit adds to its answer.
+export function fileNote(file: string) {
+  const now = fileFullness(file)
+  return now.frac < NEAR
+    ? ''
+    : ` The memory file is ${now.size}, approaching the ${now.cap} limit recall shows of a memory. Keep it under ${now.target}: one fact per file, split distinct facts into their own memories, and summarize rather than append.`
 }
 
 // Why a change may not leave the index as `after`: past a limit, and grown on the way there. A
 // change that shrinks an index already past one is let through, so it can be brought back under.
 export function indexFull(before: string, after: string) {
-  const was = fullness(before)
-  const now = fullness(after)
+  const was = indexFullness(before)
+  const now = indexFullness(after)
   const grew = now.lines > was.lines || now.bytes > was.bytes
   return now.over && grew
     ? `The global memory index would be ${now.size}, over its ${now.cap} read limit, so nothing was saved. Fold or delete memories, or shorten index lines, to bring it under ${now.target}.`
@@ -116,7 +134,7 @@ export function indexFull(before: string, after: string) {
 
 // What a change that leaves the index near or past a limit adds to its answer.
 export function indexNote(index: string) {
-  const now = fullness(index)
+  const now = indexFullness(index)
   if (now.frac < NEAR) return ''
   const state = now.over
     ? `over its ${now.cap} read limit, so the lines past it are not loaded`

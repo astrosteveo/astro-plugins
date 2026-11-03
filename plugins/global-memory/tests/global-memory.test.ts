@@ -1,6 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { briefWrite, saveQuestion } from '../hooks/memory'
+import { briefWrite, memoryFile, saveQuestion } from '../hooks/memory'
 
 const DIR = '/home/u/.claude/memory'
 const INDEX = `${DIR}/MEMORY.md`
@@ -510,14 +510,51 @@ test('a delete whose index cannot be updated says the file is gone, and a second
 })
 
 // "- [a](a.md) — " is 14 characters, so a description of 136 makes a line of 150.
-test('an index line is at most 150 characters, title and name included, and a body has a size', async ($, on) => {
+test('an index line is at most 150 characters, title and name included', async ($, on) => {
   const files = engine(on)
   await start($)
   expect((await write($, 'a', { description: 'x'.repeat(137) })).deny).toContain('is 151 characters long; the most is 150')
-  expect((await write($, 'a', { body: 'x'.repeat(20_001) })).deny).toContain('The body is 20001 characters')
   expect(files.size).toBe(0)
-  const atLimit = await write($, 'a', { description: 'x'.repeat(136), body: 'x'.repeat(20_000) })
-  expect(atLimit.result).toBe('Saved global memory a.')
+  expect((await write($, 'a', { description: 'x'.repeat(136) })).result).toBe('Saved global memory a.')
+})
+
+// Claude Code's memory recall shows the first 4,096 bytes and 200 lines of a memory file, front
+// matter included, and warns from 80%.
+const fileBytes = (body: string) =>
+  new TextEncoder().encode(
+    memoryFile({ name: 'a', description: 'The user wants answers short', type: 'feedback', body, modified: 1_000_000 }),
+  ).length
+
+test('a memory file is at most 4,096 bytes, front matter included', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  const room = 4096 - fileBytes('')
+  const over = await write($, 'a', { body: 'x'.repeat(room + 1) })
+  expect(over.deny).toBe(
+    'The memory file would be 4,097 bytes, over the 4,096-byte limit recall shows of a memory, so nothing was saved. ' +
+      'Keep it to one fact under 2,867 bytes: split distinct facts into their own memories, and summarize rather than append.',
+  )
+  expect(files.size).toBe(0)
+  const atLimit = await write($, 'a', { body: 'x'.repeat(room) })
+  expect(atLimit.result).toContain('Saved global memory a.')
+  expect(new TextEncoder().encode(files.get(`${DIR}/a.md`)).length).toBe(4096)
+})
+
+test('a memory file is at most 200 lines', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  expect((await write($, 'a', { body: Array(200).fill('x').join('\n') })).deny).toContain('over the 200-line limit recall shows')
+  expect(files.size).toBe(0)
+})
+
+test('a save that leaves its file near the limit says to keep it to one fact', async ($, on) => {
+  engine(on)
+  await start($)
+  const saved = await write($, 'a', { body: 'x'.repeat(3400 - fileBytes('')) })
+  expect(saved.result).toBe(
+    'Saved global memory a. The memory file is 3,400 bytes, approaching the 4,096-byte limit recall shows of a memory. ' +
+      'Keep it under 2,867 bytes: one fact per file, split distinct facts into their own memories, and summarize rather than append.',
+  )
 })
 
 test('a save that keeps a long title counts that title in its index line', async ($, on) => {
