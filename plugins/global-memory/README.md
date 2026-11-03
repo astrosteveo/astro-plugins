@@ -8,7 +8,7 @@ This plugin was `global-memory` and `global-rules`. The marketplace renames `glo
 
 ## Global memories
 
-Global memories live in `~/.claude/memory/` (or `$CLAUDE_CONFIG_DIR/memory/` when that is set), one file per fact, with a `MEMORY.md` index. They are separate from your own `~/.claude/CLAUDE.md`.
+Global memories live in `~/.claude/memory/` (or `$CLAUDE_CONFIG_DIR/memory/` when that is set), one file per fact, with a `MEMORY.md` index. Each file has the frontmatter Claude Code's own memories have, with the time it was written in `metadata.modified`. They are separate from your own `~/.claude/CLAUDE.md`.
 
 - The index joins the system prompt's memory section at the start of each session. A memory saved mid-session reaches the next session, so the conversation's prompt cache is kept. A compaction reads the index again.
 - When you correct Claude, or state a preference that holds in every repo, it saves a global memory. A fact about one project goes to that project's memory.
