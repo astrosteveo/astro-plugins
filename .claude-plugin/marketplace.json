@@ -30,7 +30,7 @@
     {
       "name": "screen-polish",
       "source": "./plugins/screen-polish",
-      "description": "Polishes Claude Code's terminal: inline code on a background, distinct heading levels, drawn rules, task-list checkboxes and quote bars in replies, plus optional tool-call rows, prompt marker, spinner words and turn rule. Each turns on or off in /config."
+      "description": "Polishes Claude Code's terminal: inline code on a background, distinct heading levels, drawn rules, task-list checkboxes and quote bars in replies, plus optional tool-call rows, prompt marker and spinner words. Each turns on or off in /config."
     }
   ],
   "renames": {

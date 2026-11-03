@@ -15,7 +15,7 @@ async function start($: Engine) {
 
 // The redraws screen-polish shipped with before its settings, all on; replies without the bullet.
 const ALL = {
-  options: { toolRows: true, promptMarker: true, spinnerWords: true, turnRule: true, modeLabels: true, replyBullet: false },
+  options: { toolRows: true, promptMarker: true, spinnerWords: true, modeLabels: true, replyBullet: false },
 }
 
 const VIEWPORT = { columns: 100, rows: 40, isFullscreen: true }
@@ -179,12 +179,12 @@ test('the spinner says what the turn is doing, and the engine draws the rest', A
   expect(await texts($, site('Spinner', { ...spinner, mode: 'thinking' }))).toEqual(['Working'])
 })
 
-test('a turn ends in a rule as wide as the transcript, with its duration', ALL, async ($, on) => {
+// A turnRule left in settings from before the setting was removed changes nothing.
+test('the end of a turn keeps the engine\'s own line', { options: { ...ALL.options, turnRule: true } }, async ($, on) => {
   engine(on)
   await start($)
-  const [line] = await texts($, { ...site('TurnDuration', { word: 'Baked', durationMs: 64_000, isExpanded: false }), viewport: { ...VIEWPORT, columns: 40 } })
 
-  expect(line).toBe(`${'─'.repeat(27)} 1m 4s ──`)
+  expect(await texts($, site('TurnDuration', { word: 'Baked', durationMs: 64_000, isExpanded: false }))).toEqual([])
 })
 
 test('mode labels are joined by a dot; none leaves the engine its own', ALL, async ($, on) => {
@@ -217,5 +217,4 @@ test("ctrl+o, --verbose and other surfaces get the engine's drawing", ALL, async
 
   expect(await texts($, site('ToolUse', { ...CALL, isExpanded: true }))).toEqual([])
   expect(await texts($, site('ToolUse', CALL, 'desktop'))).toEqual([])
-  expect(await texts($, site('TurnDuration', { word: 'Baked', durationMs: 1000, isExpanded: true }))).toEqual([])
 })

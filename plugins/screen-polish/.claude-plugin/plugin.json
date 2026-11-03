@@ -1,7 +1,7 @@
 {
   "name": "screen-polish",
   "version": "0.2.0",
-  "description": "Polishes Claude Code's terminal: inline code on a background, distinct heading levels, drawn rules, task-list checkboxes and quote bars in replies, plus optional tool-call rows, prompt marker, spinner words and turn rule. Each one turns on or off in /config.",
+  "description": "Polishes Claude Code's terminal: inline code on a background, distinct heading levels, drawn rules, task-list checkboxes and quote bars in replies, plus optional tool-call rows, prompt marker and spinner words. Each one turns on or off in /config.",
   "author": {
     "name": "astrosteveo"
   },
@@ -59,12 +59,6 @@
       "type": "boolean",
       "title": "Spinner says what's happening",
       "description": "The spinner names what the turn is doing (Waiting, Writing, Running) instead of a random word.",
-      "default": false
-    },
-    "turnRule": {
-      "type": "boolean",
-      "title": "Turn rule",
-      "description": "Ends each turn with a thin rule and its duration.",
       "default": false
     },
     "modeLabels": {

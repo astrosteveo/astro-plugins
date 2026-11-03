@@ -22,7 +22,6 @@ Claude Code's renderer gives inline code a color but no background, draws every 
 | Tool calls as rows | One aligned row per call with a status glyph (`✓` done, `✗` failed, `◐` running, `◌` waiting, `⊘` interrupted), the tool, its main argument and a short result (`6 lines`, `+3 −1`, `200 OK`). A folded run draws its last six. Under a row, only an edit's diff (up to 30 lines) or the lines of an error the row left out. |
 | Prompt marker | An accent `❯` before your prompt |
 | Spinner says what's happening | `Waiting`, `Writing`, `Working`, `Preparing` or `Running` in place of a random word |
-| Turn rule | A thin rule with the turn's duration at the end of each turn |
 | Mode labels joined by · | Mode labels joined by ` · ` in place of ` & ` |
 
 The ctrl+o transcript, `--verbose` and the desktop, VS Code and mobile apps keep Claude Code's own drawing. The hint line under the prompt is left alone, since rewriting it would remove the live permission-mode pill.

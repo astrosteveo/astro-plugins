@@ -472,22 +472,6 @@ export const register: Register = (on, options) => {
     return next({ ...e, props: { ...e.props, word: DOING[e.props.mode] ?? e.props.word } })
   })
 
-  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
-    if (!isOn(options, 'turnRule') || e.surface !== 'terminal' || e.props.isExpanded === true || e.props.waitingFor !== undefined) {
-      return next(e)
-    }
-    const { Box, Text } = $.ui.resolve(e)
-    const took = ` ${duration(e.props.durationMs)} `
-    const rule = Math.max(0, (e.viewport?.columns ?? 80) - 6 - took.length)
-
-    return inPlaceOf(
-      await next(e),
-      <Box paddingLeft={2} marginTop={1}>
-        <Text dimColor>{`${'─'.repeat(rule)}${took}──`}</Text>
-      </Box>,
-    )
-  })
-
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     if (!isOn(options, 'modeLabels') || e.surface !== 'terminal' || e.props.modes.length === 0) {
       return next(e)
