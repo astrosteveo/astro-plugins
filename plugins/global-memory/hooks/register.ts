@@ -5,6 +5,7 @@ import {
   fileNote,
   guide,
   hasEntry,
+  indexContent,
   briefWrite,
   indexFull,
   indexNote,
@@ -281,17 +282,22 @@ export const register: Register = on => {
   // Only where the engine keeps memory at all: its section is null when memory is off.
   on('prompt.section', { name: 'memory' }, async ($, e, next) => {
     const core = await next(e)
-    if (core.text === null || dir === '') return core
-    const index = await readIndex($, dir).catch(() => undefined)
-    return index === undefined ? core : { text: `${core.text}\n\n${guide(dir, index)}` }
+    return core.text === null || dir === '' ? core : { text: `${core.text}\n\n${guide(dir)}` }
   })
 
-  // The prompt section is cached for the session, so a memory saved since it was read is missing
-  // from it. A compaction rebuilds the conversation anyway: read the index again then.
-  on('session.compact', async ($, e, next) => {
-    const compacted = await next(e)
-    if (e.agentId === undefined) $.ui.invalidate('prompt.section')
-    return compacted
+  // The index reaches the model as Claude Code's own MEMORY.md does: an instruction file of the
+  // memory kind, in the first message's context, which the engine reads again after a compaction.
+  // This runs before the memory section is built, so the composed prompt says whether memory is on.
+  on('prompt.context', async ($, e, next) => {
+    const below = await next(e)
+    const files = below.instructionFiles ?? e.instructionFiles
+    if (files === undefined || dir === '') return below
+    const composed = await $.prompt.compose()
+    if (!composed.sections.some(section => section.id === 'memory')) return below
+    const index = await readIndex($, dir).catch(() => '')
+    const content = indexContent(index)
+    if (content === '') return below
+    return { ...below, instructionFiles: [...files, { path: `${dir}/MEMORY.md`, kind: 'memory' as const, content }] }
   })
 
   // A save's row names the memory and sizes its body; ctrl+o still shows all of it.

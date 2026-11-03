@@ -176,16 +176,20 @@ export function saveQuestion(entry: {
   ].join('\n')
 }
 
+// What the index file the first message carries holds: the part a session loads, and how many
+// lines that leaves out. Empty when there is nothing to load.
+export function indexContent(index: string) {
+  const loaded = loadedIndex(index)
+  if (loaded.text === '') return ''
+  return loaded.dropped === 0
+    ? loaded.text
+    : `${loaded.text}\n\n(${loaded.dropped} more lines of the index are past its read limit and not shown. Fold or delete memories to bring it under ${LIMITS.lines} lines and ${kb(LIMITS.bytes)}.)`
+}
+
 // What the system prompt adds to the memory section. It follows Claude Code's own memory section,
 // which says what to save and how to write it and changes as Claude Code does, so it states only
-// where a global memory differs.
-export function guide(dir: string, index: string) {
-  const loaded = loadedIndex(index)
-  const cut =
-    loaded.dropped === 0
-      ? ''
-      : `\n\n(${loaded.dropped} more lines of the index are past its read limit and not shown. Fold or delete memories to bring it under ${LIMITS.lines} lines and ${kb(LIMITS.bytes)}.)`
-  const listing = loaded.text === '' ? '(empty: nothing is saved yet)' : `${loaded.text}${cut}`
+// where a global memory differs. It holds no index, so it reads the same as memories change.
+export function guide(dir: string) {
   return `# Global memory
 
 Besides the project's memory, you keep a global memory: facts that hold in every project, saved by you on your own. It lives in ${dir}.
@@ -197,11 +201,7 @@ Write a global memory as the memory section above says to write a memory: what t
 - There is no \`project\` type: a project's ongoing work belongs in that project's memory.
 - A \`[[name]]\` link names another global memory.
 
-The index below is loaded at the start of every session. When an entry looks relevant to the task, open it with mcp__global-memory__global_memory_read before you act.
-
-## Global memory index
-
-${listing}`
+Its index, ${dir}/MEMORY.md, is loaded into context with the instruction files when a conversation starts and after a compaction. When an entry looks relevant to the task, open it with mcp__global-memory__global_memory_read before you act.`
 }
 
 // A save call's input as its row prints it: the long description cut to a
