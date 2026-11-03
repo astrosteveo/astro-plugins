@@ -405,13 +405,59 @@ test('a compaction asks for the memory section again', async ($, on) => {
   expect(invalidated).toEqual(['prompt.section'])
 })
 
+// Claude Code loads its own index up to 200 lines and 25 KB, warns at 80% of either and asks for 70%.
+const lines = (count: number, description = 'd') =>
+  Array.from({ length: count }, (_, i) => `- [m${i}](m${i}.md) — ${description}`).join('\n') + '\n'
+
 test('a full index takes no new memory, but replaces one it holds', async ($, on) => {
   const files = engine(on)
-  files.set(INDEX, Array.from({ length: 200 }, (_, i) => `- [m${i}](m${i}.md) — d`).join('\n') + '\n')
+  files.set(INDEX, lines(200))
   await start($)
-  expect((await write($, 'one-more')).deny).toContain('200 memories')
+  const refused = await write($, 'one-more')
+  expect(refused.deny).toContain('would be 201 lines, over its 200-line read limit')
+  expect(refused.deny).toContain('under 140 lines')
   expect(files.has(`${DIR}/one-more.md`)).toBe(false)
-  expect((await write($, 'm7')).result).toBe('Saved global memory m7.')
+  expect((await write($, 'm7')).result).toContain('Saved global memory m7.')
+})
+
+test('an index over 25 KB takes no new memory, but a save that shrinks it is made', async ($, on) => {
+  const files = engine(on)
+  files.set(INDEX, lines(100, 'x'.repeat(240)))
+  await start($)
+  expect((await write($, 'one-more')).deny).toContain('over its 25 KB read limit')
+  expect(files.has(`${DIR}/one-more.md`)).toBe(false)
+  const shrunk = await write($, 'm7', { description: 'short' })
+  expect(shrunk.result).toContain('Saved global memory m7.')
+  expect(shrunk.result).toContain('over its 25 KB read limit')
+  expect(shrunk.result).toContain('Compact it to under 17.5 KB now')
+})
+
+test('a change that leaves the index near its limit says to compact it', async ($, on) => {
+  const files = engine(on)
+  files.set(INDEX, lines(160))
+  await start($)
+  const saved = await write($, 'one-more')
+  expect(saved.result).toBe(
+    'Saved global memory one-more. The global memory index is 161 lines, approaching its 200-line read limit. ' +
+      "Compact it to under 140 lines now: keep each index line short, put detail in the memory's body, and fold or delete stale memories.",
+  )
+  expect((await remove($, 'm0')).result).toContain('160 lines, approaching')
+  expect((await remove($, 'm1')).result).toBe('Deleted global memory m1.')
+})
+
+test('only the first 200 lines and 25 KB of the index join the memory section', async ($, on) => {
+  const files = engine(on)
+  files.set(INDEX, lines(210))
+  await start($)
+  const section = (await $.prompt.section({ name: 'memory', text: 'core memory' })).text
+  expect(section).toContain('(m199.md)')
+  expect(section).not.toContain('(m200.md)')
+  expect(section).toContain('10 more lines of the index are past its read limit')
+
+  files.set(INDEX, lines(120, 'x'.repeat(240)))
+  const bytes = (await $.prompt.section({ name: 'memory', text: 'core memory' })).text
+  expect(bytes).toContain('(m94.md)')
+  expect(bytes).not.toContain('(m95.md)')
 })
 
 test('memory files and the index are moved into place whole, and no temp file is left', async ($, on) => {
@@ -451,15 +497,23 @@ test('a delete whose index cannot be updated says the file is gone, and a second
   expect(files.get(INDEX)).toBe('')
 })
 
-test('a title, a description and a body have a size', async ($, on) => {
+// "- [a](a.md) — " is 14 characters, so a description of 136 makes a line of 150.
+test('an index line is at most 150 characters, title and name included, and a body has a size', async ($, on) => {
   const files = engine(on)
   await start($)
-  expect((await write($, 'a', { title: 'x'.repeat(81) })).deny).toContain('The title is 81 characters long; the most is 80')
-  expect((await write($, 'a', { description: 'x'.repeat(401) })).deny).toContain('The description is 401 characters')
+  expect((await write($, 'a', { description: 'x'.repeat(137) })).deny).toContain('is 151 characters long; the most is 150')
   expect((await write($, 'a', { body: 'x'.repeat(20_001) })).deny).toContain('The body is 20001 characters')
   expect(files.size).toBe(0)
-  const atLimit = await write($, 'a', { title: 'x'.repeat(80), description: 'x'.repeat(400), body: 'x'.repeat(20_000) })
+  const atLimit = await write($, 'a', { description: 'x'.repeat(136), body: 'x'.repeat(20_000) })
   expect(atLimit.result).toBe('Saved global memory a.')
+})
+
+test('a save that keeps a long title counts that title in its index line', async ($, on) => {
+  const files = engine(on)
+  files.set(INDEX, `- [${'t'.repeat(120)}](a.md) — d\n`)
+  await start($)
+  expect((await write($, 'a', { description: 'x'.repeat(20) })).deny).toContain('is 153 characters long')
+  expect(files.get(INDEX)).toBe(`- [${'t'.repeat(120)}](a.md) — d\n`)
 })
 
 test('a folder that cannot be made refuses the change at once', async ($, on) => {

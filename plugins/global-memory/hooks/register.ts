@@ -1,11 +1,12 @@
 import type { EngineInterface, Register } from 'claude-code'
 import {
-  MAX_ENTRIES,
   TYPES,
-  entryCount,
+  entryLine,
   guide,
   hasEntry,
   briefWrite,
+  indexFull,
+  indexNote,
   isName,
   memoryFile,
   overLimit,
@@ -31,10 +32,11 @@ const WRITE_TOOL = {
     type: 'object',
     properties: {
       name: NAME,
-      title: { type: 'string', description: 'A few words for the index, at most 80 characters. Defaults to the name.' },
+      title: { type: 'string', description: 'A few words for the index line. Defaults to the name.' },
       description: {
         type: 'string',
-        description: 'One line for the index, at most 400 characters: the fact, and when a later session needs it.',
+        description:
+          'One line for the index: the fact, and when a later session needs it. With the title and name, the index line is at most 150 characters.',
       },
       type: { type: 'string', enum: [...TYPES], description: 'user: who they are. feedback: how they want you to work. reference: where something lives.' },
       body: { type: 'string', description: 'The memory, at most 20,000 characters. For feedback: the rule, then **Why:** and **How to apply:** lines.' },
@@ -185,7 +187,10 @@ async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
     return { deny: `"${name}" is not a name: use lowercase letters, digits and hyphens, such as "no-gui-tools" ("memory" is reserved).` }
   if (!TYPES.includes(type as MemoryType)) return { deny: `type must be one of ${TYPES.join(', ')}.` }
   if (description.trim() === '' || body.trim() === '') return { deny: 'A memory needs a description and a body.' }
-  const tooLong = overLimit({ title, description, body })
+  // Checked against the index as it stands, as a blank title keeps the one its line has. The
+  // index may not be readable: the change then fails under the lock, before anything is written.
+  const line = entryLine(await readIndex($, dir).catch(() => ''), name, title, description)
+  const tooLong = overLimit({ line, body })
   if (tooLong !== undefined) return { deny: tooLong }
 
   // The person is shown all of what is stored, and whether it replaces a memory, as the title and
@@ -202,16 +207,17 @@ async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
   // throw away the cache of the conversation.
   return changeWith($, dir, call, async () => {
     const index = await readIndex($, dir)
-    if (!hasEntry(index, name) && entryCount(index) >= MAX_ENTRIES)
-      return { deny: `The index holds ${MAX_ENTRIES} memories, the most it can: delete or fold one first.` }
+    const next = withEntry(index, name, title, description)
+    const full = indexFull(index, next)
+    if (full !== undefined) return { deny: full }
     const existed = await $.fs.exists(file)
     await put($, file, memoryFile({ name, description, type: type as MemoryType, body, modified: await $.clock.now() }))
     try {
-      await put($, `${dir}/MEMORY.md`, withEntry(index, name, title, description))
+      await put($, `${dir}/MEMORY.md`, next)
     } catch (error) {
       return { deny: `Wrote ${name}.md but could not update the index (${why(error)}), so it is not listed. Save it again to list it.` }
     }
-    return { result: `${existed ? 'Replaced' : 'Saved'} global memory ${name}.` }
+    return { result: `${existed ? 'Replaced' : 'Saved'} global memory ${name}.${indexNote(next)}` }
   })
 }
 
@@ -234,13 +240,14 @@ async function remove($: EngineInterface, dir: string, e: Args): Promise<Answer>
       if (removed.exitCode !== 0)
         return { deny: `Could not delete global memory ${name}: ${removed.stderr.trim() || `rm exited ${removed.exitCode}`}.` }
     }
+    const next = withoutEntry(index, name)
     try {
-      await put($, `${dir}/MEMORY.md`, withoutEntry(index, name))
+      await put($, `${dir}/MEMORY.md`, next)
     } catch (error) {
       const done = onDisk ? `Deleted ${name}.md` : `${name}.md was already gone`
       return { deny: `${done} but could not clear its index line (${why(error)}). Delete it again to clear the line.` }
     }
-    return { result: `Deleted global memory ${name}.` }
+    return { result: `Deleted global memory ${name}.${indexNote(next)}` }
   })
 }
 
