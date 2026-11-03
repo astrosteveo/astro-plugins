@@ -18,7 +18,7 @@ type Hunk = { oldStart: number; newStart: number; lines: string[] }
 // A folded run of 20 reads would otherwise grow 20 rows; ctrl+o shows them all.
 const GROUP_ROWS = 6
 const BODY_LINES = 30
-const ERROR_LINES = 3
+const ERROR_LINES = 8
 // Wide enough for most names; a longer one widens it, for every row of a group.
 const TOOL_COLUMN = 9
 
@@ -211,7 +211,8 @@ function summary(call: Call): string {
     case 'interrupted':
       return 'interrupted'
     case 'failed':
-      return errorLines(output)[0] ?? 'failed'
+      // The error itself wraps under the row, where it has the full width.
+      return 'failed'
     case 'done':
       break
   }
@@ -328,21 +329,26 @@ function row($: EngineInterface, e: RenderInput, call: Call, key: string, width:
   )
 }
 
+function errorDetail($: EngineInterface, e: RenderInput, output: unknown): RenderElement {
+  const { Box, Text } = $.ui.resolve(e)
+  const all = errorLines(output)
+  const more = all.length - ERROR_LINES
+
+  return (
+    <Box flexDirection="column" paddingLeft={2}>
+      {all.slice(0, ERROR_LINES).map(line => (
+        <Text color="error">{line}</Text>
+      ))}
+      {more > 0 && <Text dimColor>{`… ${more} more lines · ctrl+o`}</Text>}
+    </Box>
+  )
+}
+
 function result($: EngineInterface, e: RenderInput<'ToolResult'>): RenderElement {
   const { Box, Text, Code } = $.ui.resolve(e)
   const { tool, output } = e.props
   if (e.props.isErrored) {
-    return (
-      <Box flexDirection="column" paddingLeft={2}>
-        {errorLines(output)
-          .slice(1, 1 + ERROR_LINES)
-          .map(line => (
-            <Text color="error" dimColor wrap="truncate-end">
-              {line}
-            </Text>
-          ))}
-      </Box>
-    )
+    return errorDetail($, e, output)
   }
   const path = text(output, 'filePath')
   if ((tool === 'Edit' || tool === 'Write') && path !== undefined) {
@@ -378,7 +384,12 @@ function group($: EngineInterface, e: RenderInput<'ToolGroup'>): RenderElement {
           <Text dimColor>{`⋯ ${hidden} earlier ${hidden === 1 ? 'call' : 'calls'} · ctrl+o`}</Text>
         </Box>
       )}
-      {calls.slice(hidden).map((call, n) => row($, e, call, call.tool_use_id ?? `call-${hidden + n}`, width))}
+      {calls.slice(hidden).map((call, n) => (
+        <Box key={call.tool_use_id ?? `call-${hidden + n}`} flexDirection="column">
+          {row($, e, call, 'row', width)}
+          {status(call) === 'failed' && errorDetail($, e, call.output)}
+        </Box>
+      ))}
     </Box>
   )
 }

@@ -84,7 +84,7 @@ test('a running call says so, and a failed one says why', ALL, async ($, on) => 
     '✗',
     'Bash',
     'npm test',
-    'Exit code 1',
+    'failed',
   ])
 })
 
@@ -144,7 +144,25 @@ test("a shell result draws nothing under its row; a failure draws the detail its
   expect(await texts($, site('ToolResult', result))).toEqual([])
   expect(
     await texts($, site('ToolResult', { ...result, isErrored: true, output: 'Error: Exit code 2\nfirst\nsecond\nthird\nfourth' })),
-  ).toEqual(['first', 'second', 'third'])
+  ).toEqual(['Exit code 2', 'first', 'second', 'third', 'fourth'])
+})
+
+// A one-line error can be longer than the row; cut there, it said nothing.
+test('a failure shows its whole error, wrapped, up to 8 lines', ALL, async ($, on) => {
+  engine(on)
+  await start($)
+  const long = `This session is isolated in the worktree ${'/deep/path'.repeat(20)}`
+  const ui = await $.ui.mount(site('ToolResult', { tool_use_id: 'toolu_1', tool: 'Bash', isErrored: true, output: long }) as never)
+  const shown = await ui.findAll({ type: 'Text' })
+
+  expect(shown.map(t => t.text)).toEqual([long])
+  expect(shown[0]?.props.wrap).not.toBe('truncate-end')
+  await ui.unmount()
+
+  const many = Array.from({ length: 12 }, (_, n) => `line ${n}`).join('\n')
+  expect(
+    await texts($, site('ToolResult', { tool_use_id: 'toolu_1', tool: 'Bash', isErrored: true, output: many })),
+  ).toEqual([...Array.from({ length: 8 }, (_, n) => `line ${n}`), '… 4 more lines · ctrl+o'])
 })
 
 test('a folded run draws a row per call, the last six of a long one', ALL, async ($, on) => {
@@ -167,6 +185,7 @@ test("a run that holds more than calls keeps the engine's line, unless a call fa
     '✗',
     'Read',
     'src/app.ts',
+    'failed',
     'gone',
   ])
 })

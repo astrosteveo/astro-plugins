@@ -20,7 +20,7 @@ While any of these is on, replies sit flush left with no `●`, so selecting tex
 
 | Setting | What it draws |
 | --- | --- |
-| Tool calls as rows | One aligned row per call with a status glyph (`✓` done, `✗` failed, `◐` running, `◌` waiting, `⊘` interrupted), the tool, its main argument (for a shell call, its description) and a short result (`6 lines`, `+3 −1`, `200 OK`). A folded run draws its last six. Under a row, only an edit's diff (up to 30 lines) or the lines of an error the row left out. |
+| Tool calls as rows | One aligned row per call with a status glyph (`✓` done, `✗` failed, `◐` running, `◌` waiting, `⊘` interrupted), the tool, its main argument (for a shell call, its description) and a short result (`6 lines`, `+3 −1`, `200 OK`). A folded run draws its last six. Under a row, only an edit's diff (up to 30 lines) or a failed call's error, wrapped, up to 8 lines. |
 | Prompt marker | An accent `❯` before your prompt |
 | Spinner says what's happening | `Waiting`, `Writing`, `Working`, `Preparing` or `Running` in place of a random word |
 | Mode labels joined by · | Mode labels joined by ` · ` in place of ` & ` |
