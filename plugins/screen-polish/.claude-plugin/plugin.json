@@ -1,6 +1,6 @@
 {
   "name": "screen-polish",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Polishes Claude Code's terminal: inline code on a background, distinct heading levels, drawn rules, task-list checkboxes and quote bars in replies, plus optional tool-call rows, prompt marker and spinner words. Each one turns on or off in /config.",
   "author": {
     "name": "astrosteveo"
@@ -35,12 +35,6 @@
       "type": "boolean",
       "title": "Quote bars",
       "description": "Draws > quotes in replies in italics behind a bar, with inline code still on its background.",
-      "default": true
-    },
-    "replyBullet": {
-      "type": "boolean",
-      "title": "Reply bullet",
-      "description": "Keeps Claude Code's ● before each reply. Off, replies are only indented.",
       "default": true
     },
     "toolRows": {

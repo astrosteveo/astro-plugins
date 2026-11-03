@@ -19,7 +19,14 @@ function message(text: string, surface: 'terminal' | 'desktop' = 'terminal') {
   } as const
 }
 
-test('by default inline code sits on a fill, the bullet stays, and other redraws are off', async ($, on) => {
+// Any cell left of the text, padding included, would be caught in a selection;
+// only the engine can mark cells unselectable.
+async function isFlush(ui: { findAll(q: { type: string }): Promise<{ props: Record<string, unknown> }[]> }) {
+  const boxes = await ui.findAll({ type: 'Box' })
+  return !boxes.some(b => b.props.width === 2 || (b.props.paddingLeft ?? 0) !== 0)
+}
+
+test('by default inline code sits on a fill, flush left with no bullet, and other redraws are off', async ($, on) => {
   engine(on)
   const ui = await $.ui.mount(message('Use `ls` and **bold**.'))
 
@@ -28,7 +35,8 @@ test('by default inline code sits on a fill, the bullet stays, and other redraws
     color: 'permission',
   })
   expect((await ui.find({ type: 'Text', text: /^bold$/ }))?.props).toMatchObject({ weight: 'bold' })
-  expect((await ui.find({ type: 'Text', text: '●' }))?.text).toBe('●')
+  expect(await ui.find({ type: 'Text', text: '●' })).toBeUndefined()
+  expect(await isFlush(ui)).toBe(true)
   await ui.unmount()
 
   const prompt = await $.ui.mount({
@@ -40,10 +48,18 @@ test('by default inline code sits on a fill, the bullet stays, and other redraws
   await prompt.unmount()
 })
 
-test('a reply with nothing to draw, a summary and other surfaces stay the engine\'s', async ($, on) => {
+test('a plain reply is flush left too, so every reply lines up', async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount(message('Plain **bold** words.'))
+
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe('Plain **bold** words.')
+  expect(await isFlush(ui)).toBe(true)
+  await ui.unmount()
+})
+
+test('a summary and other surfaces stay the engine\'s', async ($, on) => {
   engine(on)
   for (const target of [
-    message('Plain **bold** words.'),
     message('Use `ls`.', 'desktop'),
     { ...message('Use `ls`.'), props: { text: 'Use `ls`.', isFirstOfReply: true, isSummary: true } },
   ] as const) {
@@ -53,11 +69,12 @@ test('a reply with nothing to draw, a summary and other surfaces stay the engine
   }
 })
 
-test('inline code off leaves code to the engine', { options: { inlineCode: false } }, async ($, on) => {
+test('inline code off leaves code to Claude Code\'s Markdown', { options: { inlineCode: false } }, async ($, on) => {
   engine(on)
   const ui = await $.ui.mount(message('Use `ls`.'))
 
-  expect(await ui.findAll({ type: 'Text' })).toEqual([])
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe('Use `ls`.')
+  expect(await ui.find({ type: 'Text', text: /^ ls $/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -74,12 +91,13 @@ test('headings step down, a rule spans the transcript, tasks get marks, quotes a
   await ui.unmount()
 })
 
-test('without the bullet a reply is only indented, even with nothing else to draw', { options: { replyBullet: false } }, async ($, on) => {
-  engine(on)
-  const ui = await $.ui.mount(message('Plain words.'))
+const OFF = { inlineCode: false, headings: false, rules: false, taskLists: false, quotes: false }
 
-  expect((await ui.find({ type: 'Markdown' }))?.text).toBe('Plain words.')
-  expect(await ui.find({ type: 'Text', text: '●' })).toBeUndefined()
+test('with every reply redraw off, the engine draws replies', { options: OFF }, async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount(message('Use `ls`.'))
+
+  expect(await ui.findAll({ type: 'Text' })).toEqual([])
   await ui.unmount()
 })
 
@@ -95,6 +113,6 @@ test('a plugin beneath that wraps the reply, as inline-thinking does, keeps its 
   })
   const ui = await $.ui.mount(message('Use `ls`.'))
 
-  expect((await ui.findAll({ type: 'Text' })).map(t => t.text).slice(0, 2)).toEqual(['thought', '●'])
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text).slice(0, 2)).toEqual(['thought', 'Use  ls .'])
   await ui.unmount()
 })

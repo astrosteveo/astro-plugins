@@ -3,18 +3,12 @@ import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 import { segments, type Features, type Line, type Span } from './markdown'
 
 /**
- * A reply block as this plugin draws it, or null to leave it to the engine.
- * `hasBullet` keeps Claude Code's `●` before a reply; without it the reply is
- * only indented.
+ * A reply block as this plugin draws it: flush left, with no bullet. Claude
+ * Code keeps its own gutter out of a selection, which a plugin cannot do, so a
+ * gutter drawn here would be copied with every line.
  */
-export function reply(
-  $: EngineInterface,
-  e: RenderInput<'AssistantMessage'>,
-  features: Features,
-  hasBullet: boolean,
-): RenderElement | null {
+export function reply($: EngineInterface, e: RenderInput<'AssistantMessage'>, features: Features): RenderElement {
   const parts = segments(e.props.text, features)
-  if (parts === null && hasBullet) return null
 
   const { Box, Text, Link, Markdown } = $.ui.resolve(e)
   const columns = e.viewport?.columns ?? 80
@@ -98,16 +92,9 @@ export function reply(
       ))
     )
 
-  // The engine's own row: a blank row above, and a two-column gutter that holds
-  // the reply's bullet on its first block.
   return (
-    <Box flexDirection="row" marginTop={1}>
-      <Box flexShrink={0} width={2}>
-        <Text color="text">{hasBullet && e.props.isFirstOfReply ? '●' : ' '}</Text>
-      </Box>
-      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-        {body}
-      </Box>
+    <Box flexDirection="column" marginTop={1}>
+      {body}
     </Box>
   )
 }

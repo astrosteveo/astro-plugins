@@ -13,9 +13,9 @@ async function start($: Engine) {
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
 }
 
-// The redraws screen-polish shipped with before its settings, all on; replies without the bullet.
+// The redraws screen-polish shipped with before its settings, all on.
 const ALL = {
-  options: { toolRows: true, promptMarker: true, spinnerWords: true, modeLabels: true, replyBullet: false },
+  options: { toolRows: true, promptMarker: true, spinnerWords: true, modeLabels: true },
 }
 
 const VIEWPORT = { columns: 100, rows: 40, isFullscreen: true }
@@ -157,7 +157,7 @@ test("the person's prompt gets an accent marker; other user rows are the engine'
   ).toEqual([])
 })
 
-test('a reply draws as markdown, indented, without the bullet', ALL, async ($, on) => {
+test('a reply draws as markdown, flush left', ALL, async ($, on) => {
   engine(on)
   await start($)
   const ui = await $.ui.mount(site('AssistantMessage', { text: 'Fixed **it**.', isFirstOfReply: true }) as never)

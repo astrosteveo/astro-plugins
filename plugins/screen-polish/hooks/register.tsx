@@ -446,20 +446,18 @@ export const register: Register = (on, options) => {
     if (e.surface !== 'terminal' || e.props.isSummary === true) {
       return next(e)
     }
-    const drawn = reply(
-      $,
-      e,
-      {
-        code: isOn(options, 'inlineCode'),
-        headings: isOn(options, 'headings'),
-        rules: isOn(options, 'rules'),
-        tasks: isOn(options, 'taskLists'),
-        quotes: isOn(options, 'quotes'),
-      },
-      isOn(options, 'replyBullet'),
-    )
+    const features = {
+      code: isOn(options, 'inlineCode'),
+      headings: isOn(options, 'headings'),
+      rules: isOn(options, 'rules'),
+      tasks: isOn(options, 'taskLists'),
+      quotes: isOn(options, 'quotes'),
+    }
+    if (!Object.values(features).some(Boolean)) {
+      return next(e)
+    }
 
-    return drawn === null ? next(e) : inPlaceOf(await next(e), drawn)
+    return inPlaceOf(await next(e), reply($, e, features))
   })
 
   // Rewrites the word alone, so the engine still draws the elapsed time and
