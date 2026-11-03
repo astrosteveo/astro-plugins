@@ -1,19 +1,33 @@
 # screen-polish
 
-Redraws Claude Code's terminal transcript in a cleaner, more compact style without adding rows.
+Polishes Claude Code's terminal. Each change below has its own setting: open `/config`, type `screen`, and press Enter on a row to turn it on or off.
 
-- **Tool calls**: one aligned row per call, with a status glyph (`✓` done, `✗` failed, `◐` running, `◌` waiting, `⊘` interrupted), the tool, its main argument (a path relative to the project, a command, a URL) and a short result (`6 lines`, `+3 −1`, `200 OK`, `Exit code 1`). A folded run of calls ("Read 3 files") draws as the same rows, at most the last six of it.
-- **Results**: under an edit, its diff, up to 30 lines. Under a failed call, the lines of its error that the row left out. Other output, such as a command's, stays in the ctrl+o transcript.
-- **Prompts and replies**: an accent `❯` before your prompt. Claude's replies are indented, without the bullet.
-- **Spinner**: says what the turn is doing (`Waiting`, `Writing`, `Working`, `Preparing`, `Running`) in place of a random word. Claude Code still draws the elapsed time and tokens beside it.
-- **End of a turn**: a thin rule with the turn's duration.
-- **Mode labels**: joined by ` · ` in place of ` & `.
+## Replies (on by default)
 
-The ctrl+o transcript, `--verbose` and other surfaces (desktop, VS Code, mobile) keep Claude Code's own drawing.
+Claude Code's renderer gives inline code a color but no background, draws every heading below `#` as plain bold, and prints `---`, `- [x]` and quotes much as written. screen-polish redraws the parts of a reply that hold one of these, and leaves the rest (code fences, tables, plain paragraphs) to Claude Code.
 
-The hint line under the prompt is left alone. Claude Code draws the live permission-mode pill on that line, and a mod that rewrites the hint also removes the pill.
+| Setting | What it draws |
+| --- | --- |
+| Inline code on a background | `code` as a chip on a fill, so it stands apart from **bold** |
+| Heading levels | `#` and `##` in the accent color, `#` underlined, `####` and below in italics |
+| Drawn rules | `---` as a line across the transcript |
+| Task list checkboxes | `- [ ]` as `○`, `- [x]` as a green `✓` with the item dimmed |
+| Quote bars | `> quotes` in italics behind a bar, inline code still on its fill |
+| Reply bullet | Claude Code's `●` before a reply; off, replies are only indented |
 
-The mod works with [inline-thinking](../inline-thinking): thinking still draws above the polished rows, whichever of the two mods Claude Code runs first.
+## The rest of the screen (off by default)
+
+| Setting | What it draws |
+| --- | --- |
+| Tool calls as rows | One aligned row per call with a status glyph (`✓` done, `✗` failed, `◐` running, `◌` waiting, `⊘` interrupted), the tool, its main argument and a short result (`6 lines`, `+3 −1`, `200 OK`). A folded run draws its last six. Under a row, only an edit's diff (up to 30 lines) or the lines of an error the row left out. |
+| Prompt marker | An accent `❯` before your prompt |
+| Spinner says what's happening | `Waiting`, `Writing`, `Working`, `Preparing` or `Running` in place of a random word |
+| Turn rule | A thin rule with the turn's duration at the end of each turn |
+| Mode labels joined by · | Mode labels joined by ` · ` in place of ` & ` |
+
+The ctrl+o transcript, `--verbose` and the desktop, VS Code and mobile apps keep Claude Code's own drawing. The hint line under the prompt is left alone, since rewriting it would remove the live permission-mode pill.
+
+It works with [inline-thinking](../inline-thinking): thinking still draws above the polished rows and replies, whichever of the two mods Claude Code runs first.
 
 ## Install
 

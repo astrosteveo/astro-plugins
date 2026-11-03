@@ -1,0 +1,300 @@
+// Splits a reply into the parts Claude Code's own Markdown keeps drawing and the
+// blocks this plugin draws itself, since Markdown has no way to style inline
+// code, heading levels, rules, task lists or quotes.
+
+export type Span = {
+  text: string
+  code?: true
+  bold?: true
+  italic?: true
+  strike?: true
+  href?: string
+}
+
+export type Line =
+  | { kind: 'heading'; depth: number; spans: Span[] }
+  | { kind: 'item'; indent: number; marker: string; task?: 'open' | 'done'; spans: Span[] }
+  | { kind: 'text'; indent: number; spans: Span[] }
+  | { kind: 'quote'; spans: Span[] }
+  | { kind: 'rule' }
+
+export type Segment = { kind: 'markdown'; text: string } | { kind: 'rich'; lines: Line[] }
+
+/** Which parts of a reply this plugin draws; the rest stays Claude Code's. */
+export type Features = {
+  code: boolean
+  headings: boolean
+  rules: boolean
+  tasks: boolean
+  quotes: boolean
+}
+
+type Style = Omit<Span, 'text'>
+
+const FENCE = /^ {0,3}(`{3,}|~{3,})/
+const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])(\s+)(.*)$/
+const TASK = /^\[([ xX])\]\s+(.*)$/
+const HEADING = /^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/
+const RULE = /^ {0,3}([-*_])( *\1){2,} *$/
+const QUOTE = /^ {0,3}>/
+
+/**
+ * The reply cut into parts, or null when it holds nothing this plugin draws,
+ * so the engine can draw the whole reply as before.
+ */
+export function segments(text: string, features: Features): Segment[] | null {
+  const lines = text.split('\n')
+  const blocks: { start: number; end: number; isRich: boolean }[] = []
+  let start = -1
+  let fence: string | null = null
+  let hasFence = false
+
+  const close = (end: number) => {
+    if (start < 0) return
+    blocks.push({ start, end, isRich: !hasFence && isRich(lines.slice(start, end), features) })
+    start = -1
+    hasFence = false
+  }
+
+  lines.forEach((line, i) => {
+    if (fence !== null) {
+      const closer = new RegExp(`^ {0,3}${fence[0] === '`' ? '`' : '~'}{${fence.length},}\\s*$`)
+      if (closer.test(line)) fence = null
+      return
+    }
+    const open = FENCE.exec(line)
+    if (open) {
+      if (start < 0) start = i
+      fence = open[1]!
+      hasFence = true
+      return
+    }
+    if (line.trim() === '') return close(i)
+    if (start < 0) start = i
+  })
+  close(lines.length)
+
+  if (!blocks.some(b => b.isRich)) return null
+
+  const out: Segment[] = []
+  for (let i = 0; i < blocks.length; ) {
+    const block = blocks[i]!
+    if (block.isRich) {
+      out.push({ kind: 'rich', lines: richLines(lines.slice(block.start, block.end)) })
+      i++
+      continue
+    }
+    let j = i
+    while (j + 1 < blocks.length && !blocks[j + 1]!.isRich) j++
+    // From the first line to the last of the run, so blank lines inside stay as written.
+    out.push({ kind: 'markdown', text: lines.slice(block.start, blocks[j]!.end).join('\n') })
+    i = j + 1
+  }
+  return out
+}
+
+function isRich(block: string[], f: Features): boolean {
+  const first = block[0]!
+  if (QUOTE.test(first)) return f.quotes
+  // Tables, HTML, indented code and setext headings (a rule under text) stay with the engine.
+  if (block.some(l => /^\s*\|/.test(l) || /^\s*</.test(l) || QUOTE.test(l))) return false
+  if (block.slice(1).some(l => RULE.test(l) || /^ {0,3}=+\s*$/.test(l))) return false
+  if (/^( {4,}|\t)/.test(first) && !ITEM.test(first)) return false
+
+  return block.some(
+    l =>
+      (f.code && inline(l).some(s => s.code)) ||
+      (f.headings && HEADING.test(l)) ||
+      (f.rules && RULE.test(l)) ||
+      (f.tasks && TASK.test(ITEM.exec(l)?.[4] ?? '')),
+  )
+}
+
+type Building =
+  | { kind: 'heading'; depth: number; raw: string }
+  | { kind: 'item'; indent: number; marker: string; task?: 'open' | 'done'; raw: string }
+  | { kind: 'text'; indent: number; raw: string }
+  | { kind: 'quote'; raw: string }
+  | { kind: 'rule' }
+
+function richLines(block: string[]): Line[] {
+  const out: Building[] = []
+  // Open list items: the column their content starts at as written, and where
+  // their marker and their content are drawn.
+  const stack: { written: number; drawnAt: number; contentAt: number }[] = []
+
+  for (const line of block) {
+    const indent = line.length - line.trimStart().length
+    const last = out.at(-1)
+
+    if (QUOTE.test(line) || (last?.kind === 'quote' && !RULE.test(line))) {
+      const body = line.replace(/^ {0,3}(> ?)+/, '').trim()
+      if (last?.kind === 'quote' && body !== '') last.raw += ` ${body}`
+      else out.push({ kind: 'quote', raw: body })
+      continue
+    }
+    if (RULE.test(line)) {
+      stack.length = 0
+      out.push({ kind: 'rule' })
+      continue
+    }
+    const heading = HEADING.exec(line)
+    if (heading) {
+      stack.length = 0
+      out.push({ kind: 'heading', depth: heading[1]!.length, raw: heading[2]! })
+      continue
+    }
+    const item = ITEM.exec(line)
+    if (item) {
+      while (stack.length > 0 && indent < stack.at(-1)!.written) stack.pop()
+      const marker = /\d/.test(item[2]!) ? item[2]!.replace(')', '.') : '-'
+      const drawnAt = stack.at(-1)?.contentAt ?? 0
+      stack.push({ written: indent + item[2]!.length + item[3]!.length, drawnAt, contentAt: drawnAt + marker.length + 1 })
+      const task = TASK.exec(item[4]!)
+      out.push(
+        task
+          ? { kind: 'item', indent: drawnAt, marker, task: task[1] === ' ' ? 'open' : 'done', raw: task[2]! }
+          : { kind: 'item', indent: drawnAt, marker, raw: item[4]! },
+      )
+      continue
+    }
+    // A soft line break: the line goes on the paragraph or item above, as markdown joins them.
+    if (last?.kind === 'item' || last?.kind === 'text') {
+      last.raw += ` ${line.trim()}`
+      continue
+    }
+    out.push({ kind: 'text', indent: 0, raw: line.trim() })
+  }
+
+  return out.map(l => {
+    if (l.kind === 'rule') return l
+    const { raw, ...rest } = l
+    return { ...rest, spans: inline(raw) } as Line
+  })
+}
+
+/** Inline markdown as styled runs: code, bold, italic, strikethrough and links. */
+export function inline(s: string, style: Style = {}): Span[] {
+  const out: Span[] = []
+  let text = ''
+  const flush = () => {
+    if (text) out.push({ ...style, text })
+    text = ''
+  }
+
+  for (let i = 0; i < s.length; ) {
+    const c = s[i]!
+
+    if (c === '\\' && i + 1 < s.length && /[!-/:-@[-`{-~]/.test(s[i + 1]!)) {
+      text += s[i + 1]
+      i += 2
+      continue
+    }
+
+    if (c === '`') {
+      const run = runOf(s, i, '`')
+      const end = findRun(s, i + run, run)
+      if (end < 0) {
+        text += '`'.repeat(run)
+        i += run
+        continue
+      }
+      let code = s.slice(i + run, end)
+      if (code.length > 2 && code.startsWith(' ') && code.endsWith(' ') && code.trim() !== '') code = code.slice(1, -1)
+      flush()
+      out.push({ ...style, text: code, code: true })
+      i = end + run
+      continue
+    }
+
+    if ((c === '*' || c === '_' || c === '~') && s[i + 1] === c && opens(s, i, 2, c)) {
+      const end = closing(s, i + 2, c + c)
+      if (end > i + 2) {
+        flush()
+        out.push(...inline(s.slice(i + 2, end), c === '~' ? { ...style, strike: true } : { ...style, bold: true }))
+        i = end + 2
+        continue
+      }
+    }
+
+    if ((c === '*' || c === '_') && s[i + 1] !== c && opens(s, i, 1, c)) {
+      const end = closing(s, i + 1, c)
+      if (end > i + 1) {
+        flush()
+        out.push(...inline(s.slice(i + 1, end), { ...style, italic: true }))
+        i = end + 1
+        continue
+      }
+    }
+
+    if (c === '[') {
+      const link = /^\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/.exec(s.slice(i))
+      if (link) {
+        flush()
+        out.push(...inline(link[1]!, { ...style, href: link[2]! }))
+        i += link[0].length
+        continue
+      }
+    }
+
+    text += c
+    i++
+  }
+  flush()
+  return out
+}
+
+function runOf(s: string, i: number, c: string): number {
+  let n = 0
+  while (s[i + n] === c) n++
+  return n
+}
+
+/** Where the next backtick run of exactly `n` starts, or -1. */
+function findRun(s: string, from: number, n: number): number {
+  for (let i = from; i < s.length; ) {
+    if (s[i] !== '`') {
+      i++
+      continue
+    }
+    const run = runOf(s, i, '`')
+    if (run === n) return i
+    i += run
+  }
+  return -1
+}
+
+/** A delimiter opens emphasis when text follows it, and `_` only at a word's start. */
+function opens(s: string, i: number, n: number, c: string): boolean {
+  const after = s[i + n]
+  if (after === undefined || /\s/.test(after)) return false
+  return c !== '_' || i === 0 || !/[\p{L}\p{N}]/u.test(s[i - 1]!)
+}
+
+/** Where `delim` closes emphasis after `from`, skipping code spans and escapes, or -1. */
+function closing(s: string, from: number, delim: string): number {
+  const c0 = delim[0]!
+  for (let i = from; i < s.length; ) {
+    const c = s[i]!
+    if (c === '\\') {
+      i += 2
+      continue
+    }
+    if (c === '`') {
+      const run = runOf(s, i, '`')
+      const end = findRun(s, i + run, run)
+      i = end < 0 ? i + run : end + run
+      continue
+    }
+    if (c === c0) {
+      const run = runOf(s, i, c0)
+      const after = s[i + run]
+      const isWordAfter = after !== undefined && /[\p{L}\p{N}]/u.test(after)
+      if (run === delim.length && !/\s/.test(s[i - 1]!) && (c0 !== '_' || !isWordAfter)) return i
+      i += run
+      continue
+    }
+    i++
+  }
+  return -1
+}

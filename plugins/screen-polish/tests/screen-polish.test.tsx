@@ -13,6 +13,11 @@ async function start($: Engine) {
   await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
 }
 
+// The redraws screen-polish shipped with before its settings, all on; replies without the bullet.
+const ALL = {
+  options: { toolRows: true, promptMarker: true, spinnerWords: true, turnRule: true, modeLabels: true, replyBullet: false },
+}
+
 const VIEWPORT = { columns: 100, rows: 40, isFullscreen: true }
 
 const CALL = {
@@ -37,14 +42,14 @@ async function texts($: Engine, target: ReturnType<typeof site>) {
   return found
 }
 
-test('a finished call is one row: glyph, tool, path in the project, what came of it', async ($, on) => {
+test('a finished call is one row: glyph, tool, path in the project, what came of it', ALL, async ($, on) => {
   engine(on)
   await start($)
 
   expect(await texts($, site('ToolUse', CALL))).toEqual(['✓', 'Read', 'src/app.ts', '6 lines'])
 })
 
-test('a running call says so, and a failed one says why', async ($, on) => {
+test('a running call says so, and a failed one says why', ALL, async ($, on) => {
   engine(on)
   await start($)
   const bash = { ...CALL, tool: 'Bash', input: { command: 'npm test\nnpm run lint' }, output: undefined }
@@ -58,14 +63,14 @@ test('a running call says so, and a failed one says why', async ($, on) => {
   ])
 })
 
-test('a call still being written, or waiting to run, is pending, not done', async ($, on) => {
+test('a call still being written, or waiting to run, is pending, not done', ALL, async ($, on) => {
   engine(on)
   await start($)
 
   expect(await texts($, site('ToolUse', { ...CALL, tool: 'Bash', input: {}, output: undefined }))).toEqual(['◌', 'Bash', '', ''])
 })
 
-test('each tool sums up its own result', async ($, on) => {
+test('each tool sums up its own result', ALL, async ($, on) => {
   engine(on)
   await start($)
   const cases: [string, unknown, unknown, string][] = [
@@ -85,7 +90,7 @@ test('each tool sums up its own result', async ($, on) => {
   }
 })
 
-test("an edit's result is its diff, cut at 30 lines with headers that still add up", async ($, on) => {
+test("an edit's result is its diff, cut at 30 lines with headers that still add up", ALL, async ($, on) => {
   engine(on)
   await start($)
   const lines = Array.from({ length: 40 }, (_, n) => (n % 2 === 0 ? `-old ${n}` : `+new ${n}`))
@@ -106,7 +111,7 @@ test("an edit's result is its diff, cut at 30 lines with headers that still add 
   await ui.unmount()
 })
 
-test("a shell result draws nothing under its row; a failure draws the detail its row left out", async ($, on) => {
+test("a shell result draws nothing under its row; a failure draws the detail its row left out", ALL, async ($, on) => {
   engine(on)
   await start($)
   const result = { tool_use_id: 'toolu_1', tool: 'Bash', isErrored: false, output: { stdout: 'lots\nof\noutput', stderr: '' } }
@@ -117,7 +122,7 @@ test("a shell result draws nothing under its row; a failure draws the detail its
   ).toEqual(['first', 'second', 'third'])
 })
 
-test('a folded run draws a row per call, the last six of a long one', async ($, on) => {
+test('a folded run draws a row per call, the last six of a long one', ALL, async ($, on) => {
   engine(on)
   await start($)
   const calls = Array.from({ length: 8 }, (_, n) => ({ ...CALL, tool_use_id: `toolu_${n}` }))
@@ -127,7 +132,7 @@ test('a folded run draws a row per call, the last six of a long one', async ($, 
   expect(found.filter(text => text === '✓')).toHaveLength(6)
 })
 
-test("a run that holds more than calls keeps the engine's line, unless a call failed", async ($, on) => {
+test("a run that holds more than calls keeps the engine's line, unless a call failed", ALL, async ($, on) => {
   engine(on)
   await start($)
   const group = { calls: [CALL], isActive: false, isExpanded: false, isCallsOnly: false }
@@ -141,7 +146,7 @@ test("a run that holds more than calls keeps the engine's line, unless a call fa
   ])
 })
 
-test("the person's prompt gets an accent marker; other user rows are the engine's", async ($, on) => {
+test("the person's prompt gets an accent marker; other user rows are the engine's", ALL, async ($, on) => {
   engine(on)
   await start($)
   const prompt = { text: 'fix the login bug', origin: { kind: 'composer' }, isExpanded: false } as never
@@ -152,7 +157,7 @@ test("the person's prompt gets an accent marker; other user rows are the engine'
   ).toEqual([])
 })
 
-test('a reply draws as markdown, indented, without the bullet', async ($, on) => {
+test('a reply draws as markdown, indented, without the bullet', ALL, async ($, on) => {
   engine(on)
   await start($)
   const ui = await $.ui.mount(site('AssistantMessage', { text: 'Fixed **it**.', isFirstOfReply: true }) as never)
@@ -161,7 +166,7 @@ test('a reply draws as markdown, indented, without the bullet', async ($, on) =>
   await ui.unmount()
 })
 
-test('the spinner says what the turn is doing, and the engine draws the rest', async ($, on) => {
+test('the spinner says what the turn is doing, and the engine draws the rest', ALL, async ($, on) => {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('ui.render', { component: 'Spinner' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
@@ -174,7 +179,7 @@ test('the spinner says what the turn is doing, and the engine draws the rest', a
   expect(await texts($, site('Spinner', { ...spinner, mode: 'thinking' }))).toEqual(['Working'])
 })
 
-test('a turn ends in a rule as wide as the transcript, with its duration', async ($, on) => {
+test('a turn ends in a rule as wide as the transcript, with its duration', ALL, async ($, on) => {
   engine(on)
   await start($)
   const [line] = await texts($, { ...site('TurnDuration', { word: 'Baked', durationMs: 64_000, isExpanded: false }), viewport: { ...VIEWPORT, columns: 40 } })
@@ -182,7 +187,7 @@ test('a turn ends in a rule as wide as the transcript, with its duration', async
   expect(line).toBe(`${'─'.repeat(27)} 1m 4s ──`)
 })
 
-test('mode labels are joined by a dot; none leaves the engine its own', async ($, on) => {
+test('mode labels are joined by a dot; none leaves the engine its own', ALL, async ($, on) => {
   engine(on)
   await start($)
 
@@ -190,7 +195,7 @@ test('mode labels are joined by a dot; none leaves the engine its own', async ($
   expect(await texts($, site('SessionMode', { modes: [] }))).toEqual([])
 })
 
-test('a plugin beneath that wraps the row, as inline-thinking does, keeps its part', async ($, on) => {
+test('a plugin beneath that wraps the row, as inline-thinking does, keeps its part', ALL, async ($, on) => {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('ui.render', ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
@@ -206,7 +211,7 @@ test('a plugin beneath that wraps the row, as inline-thinking does, keeps its pa
   expect(await texts($, site('ToolUse', CALL))).toEqual(['thought', '✓', 'Read', 'src/app.ts', '6 lines'])
 })
 
-test("ctrl+o, --verbose and other surfaces get the engine's drawing", async ($, on) => {
+test("ctrl+o, --verbose and other surfaces get the engine's drawing", ALL, async ($, on) => {
   engine(on)
   await start($)
 

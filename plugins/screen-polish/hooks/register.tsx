@@ -1,4 +1,6 @@
-import type { EngineInterface, Register, RenderElement, RenderInput } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register, RenderElement, RenderInput } from 'claude-code'
+
+import { reply } from './reply'
 
 type Call = {
   tool: string
@@ -268,7 +270,6 @@ function patchSource(patch: Hunk[], budget: number): { source: string; more: num
   return { source: out.join('\n'), more }
 }
 
-
 // A plugin beneath (inline-thinking, say) may wrap the engine's drawing in one
 // of its own; the polished tree takes the engine's place inside it, so both
 // show whichever order the plugins load in. A plugin beneath that drew no
@@ -378,7 +379,10 @@ function group($: EngineInterface, e: RenderInput<'ToolGroup'>): RenderElement {
   )
 }
 
-export const register: Register = on => {
+// Each redraw has a setting of its own (plugin.json's userConfig), shown in /config.
+const isOn = (options: PluginOptions, key: string) => options[key] === true
+
+export const register: Register = (on, options) => {
   on('session.start', async (_, e, next) => {
     cwd = e.cwd
 
@@ -386,7 +390,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.props.isExpanded === true) {
+    if (!isOn(options, 'toolRows') || e.surface !== 'terminal' || e.props.isExpanded === true) {
       return next(e)
     }
     const { Box } = $.ui.resolve(e)
@@ -397,7 +401,7 @@ export const register: Register = on => {
   // The row says what came of the call; under it only an error's detail and
   // an edit's diff, the parts worth reading.
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.props.isExpanded === true) {
+    if (!isOn(options, 'toolRows') || e.surface !== 'terminal' || e.props.isExpanded === true) {
       return next(e)
     }
 
@@ -409,7 +413,7 @@ export const register: Register = on => {
     const hasTrouble = calls.some(call => call.isErrored || call.isInterrupted)
     // A group can hold rows that are not calls (a recalled memory, a hook's
     // timing); only the engine's own line shows those.
-    if (e.surface !== 'terminal' || isExpanded || (isCallsOnly === false && !hasTrouble)) {
+    if (!isOn(options, 'toolRows') || e.surface !== 'terminal' || isExpanded || (isCallsOnly === false && !hasTrouble)) {
       return next(e)
     }
 
@@ -417,7 +421,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.props.origin.kind !== 'composer' || e.props.isExpanded) {
+    if (!isOn(options, 'promptMarker') || e.surface !== 'terminal' || e.props.origin.kind !== 'composer' || e.props.isExpanded) {
       return next(e)
     }
     const { Box, Text } = $.ui.resolve(e)
@@ -438,23 +442,30 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    // A summary row carries the terminal's own mark, which a tree of ours would drop.
     if (e.surface !== 'terminal' || e.props.isSummary === true) {
       return next(e)
     }
-    const { Box, Markdown } = $.ui.resolve(e)
-
-    return inPlaceOf(
-      await next(e),
-      <Box paddingLeft={2} marginTop={1}>
-        <Markdown text={e.props.text} />
-      </Box>,
+    const drawn = reply(
+      $,
+      e,
+      {
+        code: isOn(options, 'inlineCode'),
+        headings: isOn(options, 'headings'),
+        rules: isOn(options, 'rules'),
+        tasks: isOn(options, 'taskLists'),
+        quotes: isOn(options, 'quotes'),
+      },
+      isOn(options, 'replyBullet'),
     )
+
+    return drawn === null ? next(e) : inPlaceOf(await next(e), drawn)
   })
 
   // Rewrites the word alone, so the engine still draws the elapsed time and
   // tokens it keeps beside it.
   on('ui.render', { component: 'Spinner' }, (_, e, next) => {
-    if (e.surface !== 'terminal') {
+    if (!isOn(options, 'spinnerWords') || e.surface !== 'terminal') {
       return next(e)
     }
 
@@ -462,7 +473,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.props.isExpanded === true || e.props.waitingFor !== undefined) {
+    if (!isOn(options, 'turnRule') || e.surface !== 'terminal' || e.props.isExpanded === true || e.props.waitingFor !== undefined) {
       return next(e)
     }
     const { Box, Text } = $.ui.resolve(e)
@@ -478,7 +489,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || e.props.modes.length === 0) {
+    if (!isOn(options, 'modeLabels') || e.surface !== 'terminal' || e.props.modes.length === 0) {
       return next(e)
     }
     const { Text } = $.ui.resolve(e)

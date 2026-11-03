@@ -1,9 +1,77 @@
 {
   "name": "screen-polish",
-  "version": "0.1.0",
-  "description": "Redraws Claude Code's transcript in a refined style: one aligned row per tool call with a status glyph and a short result, an accent prompt marker, indented replies, a spinner that says what the turn is doing and a thin rule closing each turn.",
+  "version": "0.2.0",
+  "description": "Polishes Claude Code's terminal: inline code on a background, distinct heading levels, drawn rules, task-list checkboxes and quote bars in replies, plus optional tool-call rows, prompt marker, spinner words and turn rule. Each one turns on or off in /config.",
   "author": {
     "name": "astrosteveo"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "inlineCode": {
+      "type": "boolean",
+      "title": "Inline code on a background",
+      "description": "Draws `code` in replies as a chip on a background, so it stands apart from bold text.",
+      "default": true
+    },
+    "headings": {
+      "type": "boolean",
+      "title": "Heading levels",
+      "description": "Gives reply headings distinct levels: # and ## in the accent color, # underlined, #### and below in italics.",
+      "default": true
+    },
+    "rules": {
+      "type": "boolean",
+      "title": "Drawn rules",
+      "description": "Draws --- in replies as a line across the transcript instead of the literal dashes.",
+      "default": true
+    },
+    "taskLists": {
+      "type": "boolean",
+      "title": "Task list checkboxes",
+      "description": "Draws - [ ] and - [x] in replies as ○ and a green ✓, the done items dimmed.",
+      "default": true
+    },
+    "quotes": {
+      "type": "boolean",
+      "title": "Quote bars",
+      "description": "Draws > quotes in replies in italics behind a bar, with inline code still on its background.",
+      "default": true
+    },
+    "replyBullet": {
+      "type": "boolean",
+      "title": "Reply bullet",
+      "description": "Keeps Claude Code's ● before each reply. Off, replies are only indented.",
+      "default": true
+    },
+    "toolRows": {
+      "type": "boolean",
+      "title": "Tool calls as rows",
+      "description": "One aligned row per tool call with a status glyph and a short result; under it only an edit's diff or a failure's detail.",
+      "default": false
+    },
+    "promptMarker": {
+      "type": "boolean",
+      "title": "Prompt marker",
+      "description": "An accent ❯ before each prompt you send.",
+      "default": false
+    },
+    "spinnerWords": {
+      "type": "boolean",
+      "title": "Spinner says what's happening",
+      "description": "The spinner names what the turn is doing (Waiting, Writing, Running) instead of a random word.",
+      "default": false
+    },
+    "turnRule": {
+      "type": "boolean",
+      "title": "Turn rule",
+      "description": "Ends each turn with a thin rule and its duration.",
+      "default": false
+    },
+    "modeLabels": {
+      "type": "boolean",
+      "title": "Mode labels joined by ·",
+      "description": "Joins the session's mode labels with · instead of &.",
+      "default": false
+    }
+  }
 }
