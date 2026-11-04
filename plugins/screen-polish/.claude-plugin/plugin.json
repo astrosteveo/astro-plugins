@@ -1,6 +1,6 @@
 {
   "name": "screen-polish",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Polishes Claude Code's terminal: inline code on a background, distinct heading levels, drawn rules, task-list checkboxes and quote bars in replies, plus optional tool-call rows, prompt marker and spinner words. Each one turns on or off in /config.",
   "author": {
     "name": "astrosteveo"
