@@ -1,8 +1,9 @@
-import type { EngineInterface, PluginOptions, Register, RenderElement, RenderInput } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register, RenderElement, RenderInput, SessionMessage } from 'claude-code'
 
 import { reply } from './reply'
 
 type Call = {
+  tool_use_id?: string
   tool: string
   input: unknown
   isRunning: boolean
@@ -50,6 +51,9 @@ const DOING: Record<string, string> = {
 
 // Set at session.start, which a reload runs again, so a module variable holds.
 let cwd = ''
+
+// Once a call is in the transcript, what stands above it never changes.
+const isUnderCall = new Map<string, boolean>()
 
 function field(value: unknown, key: string): unknown {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined
@@ -297,6 +301,43 @@ function toolWidth(calls: Call[]): number {
   return Math.max(TOOL_COLUMN, ...calls.map(call => label(call.tool).length + 1))
 }
 
+// Whether the last row the transcript draws before `at` is a call's, passing
+// over thinking (no text) and tool results (drawn under their own row).
+function isCallAbove(rows: readonly SessionMessage[], at: number): boolean {
+  const drawn = rows
+    .slice(0, at)
+    .findLast(row => row.toolUses.length > 0 || (row.text !== '' && (row.toolResults ?? []).length === 0))
+
+  return (drawn?.toolUses.length ?? 0) > 0
+}
+
+// The engine spaces each transcript row inside the drawing these hooks
+// replace, so a row of ours puts its own blank line above it: under a reply
+// or the prompt, not under another call's row.
+async function gapAbove($: EngineInterface, call: Call | undefined): Promise<number> {
+  const id = call?.tool_use_id
+  if (call === undefined || id === undefined) {
+    return 1
+  }
+  const known = isUnderCall.get(id)
+  if (known !== undefined) {
+    return known ? 0 : 1
+  }
+  const rows = await $.session.messages()
+  const at = rows.findIndex(row => row.toolUses.some(use => use.tool_use_id === id))
+  if (at === -1) {
+    // A call whose input still streams joins the transcript last; a finished
+    // one missing from it is older than the rows the engine hands out.
+    return call.output === undefined && isCallAbove(rows, rows.length) ? 0 : 1
+  }
+  const row = rows[at]
+  const isUnder =
+    row?.toolUses[0]?.tool_use_id !== id || (row.text === '' && isCallAbove(rows, at))
+  isUnderCall.set(id, isUnder)
+
+  return isUnder ? 0 : 1
+}
+
 // In the replies' two-column gutter, the glyph under a reply's text. What the
 // call did shrinks before what came of it.
 function row($: EngineInterface, e: RenderInput, call: Call, key: string, width: number): RenderElement {
@@ -371,14 +412,14 @@ function result($: EngineInterface, e: RenderInput<'ToolResult'>): RenderElement
   return <Box />
 }
 
-function group($: EngineInterface, e: RenderInput<'ToolGroup'>): RenderElement {
+function group($: EngineInterface, e: RenderInput<'ToolGroup'>, gap: number): RenderElement {
   const { Box, Text } = $.ui.resolve(e)
   const { calls } = e.props
   const hidden = Math.max(0, calls.length - GROUP_ROWS)
   const width = toolWidth(calls.slice(hidden))
 
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" marginTop={gap}>
       {hidden > 0 && (
         <Box paddingLeft={4}>
           <Text dimColor>{`⋯ ${hidden} earlier ${hidden === 1 ? 'call' : 'calls'} · ctrl+o`}</Text>
@@ -410,7 +451,10 @@ export const register: Register = (on, options) => {
     }
     const { Box } = $.ui.resolve(e)
 
-    return inPlaceOf(await next(e), <Box marginTop={1}>{row($, e, e.props, e.requestId, toolWidth([e.props]))}</Box>)
+    return inPlaceOf(
+      await next(e),
+      <Box marginTop={await gapAbove($, e.props)}>{row($, e, e.props, e.requestId, toolWidth([e.props]))}</Box>,
+    )
   })
 
   // The row says what came of the call; under it only an error's detail and
@@ -432,7 +476,7 @@ export const register: Register = (on, options) => {
       return next(e)
     }
 
-    return inPlaceOf(await next(e), group($, e))
+    return inPlaceOf(await next(e), group($, e, await gapAbove($, calls[0])))
   })
 
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {

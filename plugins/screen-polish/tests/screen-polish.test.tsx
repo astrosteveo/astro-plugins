@@ -3,9 +3,10 @@ import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 // Nothing sits beneath the plugin: these hooks stand for the engine, whose own
-// drawing is the `engine` node.
-function engine(on: On) {
+// drawing is the `engine` node, and the transcript it holds.
+function engine(on: On, rows: readonly unknown[] = []) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.messages', () => ({ value: rows }) as never)
   on('ui.render', () => ({ type: 'engine', ref: 0 }) as never)
 }
 
@@ -188,6 +189,62 @@ test("a run that holds more than calls keeps the engine's line, unless a call fa
   ])
 })
 
+// The transcript as $.session.messages() holds it: each block its own row,
+// thinking an assistant row with no text.
+const prompt = { role: 'user', text: 'fix it', toolUses: [] } as const
+const thought = { role: 'assistant', text: '', toolUses: [] } as const
+const said = (text: string) => ({ role: 'assistant', text, toolUses: [] }) as const
+const called = (id: string) => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Read', input: {} }] }) as const
+const answered = (id: string) =>
+  ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'ok', isError: false }] }) as const
+
+async function gap($: Engine, target: ReturnType<typeof site>) {
+  const ui = await $.ui.mount(target as never)
+  const top = (await ui.find({ type: 'Box' }))?.props.marginTop ?? 0
+  await ui.unmount()
+
+  return top
+}
+
+test('a call right under another sits tight; under a reply or the prompt, a blank line parts them', ALL, async ($, on) => {
+  const rows = [
+    prompt,
+    called('a'),
+    answered('a'),
+    thought,
+    called('b'),
+    answered('b'),
+    said('Found it.'),
+    called('c'),
+    answered('c'),
+    called('d'),
+    { role: 'assistant', text: 'Two at once.', toolUses: [...called('f').toolUses, ...called('g').toolUses] },
+  ]
+  engine(on, rows)
+  await start($)
+  const use = (id: string) => site('ToolUse', { ...CALL, tool_use_id: id })
+  const group = (id: string) =>
+    site('ToolGroup', { calls: [{ ...CALL, tool_use_id: id }], isActive: false, isExpanded: false, isCallsOnly: true })
+
+  expect(await gap($, use('a'))).toBe(1)
+  expect(await gap($, use('b'))).toBe(0)
+  expect(await gap($, group('b'))).toBe(0)
+  expect(await gap($, use('c'))).toBe(1)
+  expect(await gap($, group('c'))).toBe(1)
+  expect(await gap($, use('d'))).toBe(0)
+  expect(await gap($, use('f'))).toBe(1)
+  expect(await gap($, use('g'))).toBe(0)
+  // Not in the transcript yet, its input still streaming: it lands last.
+  expect(await gap($, site('ToolUse', { ...CALL, tool_use_id: 'e', output: undefined }))).toBe(0)
+})
+
+test('a finished call the transcript no longer holds keeps its blank line', ALL, async ($, on) => {
+  engine(on, [prompt, called('a')])
+  await start($)
+
+  expect(await gap($, site('ToolUse', { ...CALL, tool_use_id: 'gone' }))).toBe(1)
+})
+
 test("the person's prompt gets an accent marker; other user rows are the engine's", ALL, async ($, on) => {
   engine(on)
   await start($)
@@ -238,6 +295,7 @@ test('mode labels are joined by a dot; none leaves the engine its own', ALL, asy
 
 test('a plugin beneath that wraps the row, as inline-thinking does, keeps its part', ALL, async ($, on) => {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.messages', () => ({ value: [] }) as never)
   on('ui.render', ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     return (
