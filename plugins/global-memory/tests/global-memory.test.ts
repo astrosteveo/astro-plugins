@@ -67,6 +67,17 @@ function engine(on: On, disk: Disk = {}) {
     await Promise.resolve()
     return { value: files.has(String(e.path)) }
   })
+  // The files directly in a folder; the lock's owner file is in a folder of its own.
+  on('fs.list', (_, e) => {
+    const folder = `${String(e.path)}/`
+    const names = [...files.keys()].filter(p => p.startsWith(folder) && !p.slice(folder.length).includes('/'))
+    return { value: names.map(p => ({ name: p.slice(folder.length), kind: 'file' as const, size: 0, mtimeMs: NOW, isLink: false })) }
+  })
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('ui.open', (_, e) => {
+    log.push(`open ${JSON.stringify(e)}`)
+    return { value: { isPlaced: true as const } }
+  })
   on('fs.write', async (_, e) => {
     await Promise.resolve()
     files.set(String(e.path), String(e.text))
@@ -648,4 +659,156 @@ test('a save call prints as its name and type, a cut description and the size of
   })
   expect(briefWrite({ name: 'a', description: 'short' })).toEqual({ name: 'a', description: 'short' })
   expect(briefWrite(undefined)).toEqual({})
+})
+
+const MENU_PANE = {
+  plugin: 'global-memory',
+  component: 'Pane',
+  requestId: 'global-memory',
+  surface: 'terminal',
+  props: {
+    title: 'Global memory',
+    isFocused: true,
+    bodyColumns: 80,
+    placement: 'inline',
+    scroll: { offset: 0, bodyRows: 30 },
+    view: {},
+  },
+} as const
+
+const menu = ($: any) => $.ui.mount(MENU_PANE)
+
+const keys = (rows: { key: string }[]) => rows.map(row => row.key)
+
+// A press's handler runs on its own: wait for what it leads to.
+async function until(check: () => Promise<boolean>) {
+  for (let tries = 0; tries < 1000; tries++) {
+    if (await check()) return
+    await Promise.resolve()
+  }
+  throw new Error('what the press leads to never came')
+}
+
+test('/global-memory opens the menu as a dialog the keys go to', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  const ran = await $.command.run({
+    command: 'global-memory',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 120 },
+  })
+  expect(ran.text).toBe('Opened the global memory menu.')
+  const opened = files.log.find(line => line.startsWith('open '))
+  expect(JSON.parse(String(opened).slice(5))).toMatchObject({ id: 'global-memory', focus: true, closeOnEscape: true })
+})
+
+test('the menu lists the index in order, then the files it does not list', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  await write($, 'short-answers', { title: 'Short answers' })
+  await write($, 'use-uv', { description: 'Run Python through uv' })
+  files.set(`${DIR}/stray.md`, 'A file no index line names.\n')
+  const ui = await menu($)
+  expect((await ui.find({ type: 'Text', text: /^3 memories/ }))?.text).toBe(
+    `3 memories · index 2 of 200 lines, 0.1 KB of 25 KB`,
+  )
+  const rows = await ui.findAll({ type: 'Button' })
+  expect(keys(rows)).toEqual(['memory:short-answers', 'memory:use-uv', 'memory:stray'])
+  expect(rows[0]?.text).toBe('Short answers — The user wants answers short')
+  expect(await ui.find({ type: 'Text', text: 'Not in the index, so no session loads them:' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an empty memory says how one is made', async ($, on) => {
+  engine(on)
+  await start($)
+  const ui = await menu($)
+  expect(await ui.find({ type: 'Text', text: /^No global memories yet/ })).toBeDefined()
+  expect(await ui.findAll({ type: 'Button' })).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('a memory opens to its whole body, and Back returns to the list', async ($, on) => {
+  engine(on)
+  await start($)
+  await write($, 'short-answers', { title: 'Short answers' })
+  const ui = await menu($)
+  await ui.press({ key: 'memory:short-answers' })
+  expect((await ui.find({ type: 'Text', text: /^feedback/ }))?.text).toBe(
+    `feedback · saved 1970-01-01 00:16 UTC · ${DIR}/short-answers.md`,
+  )
+  expect((await ui.find({ type: 'Markdown' }))?.props.text).toBe('Keep answers short.\n\n**Why:** they said so.')
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ key: 'memory:short-answers' })).toBeDefined()
+  await ui.unmount()
+})
+
+// The person pressed Delete and then confirmed it: that is the permission, so a rule that refuses
+// the model's delete does not refuse theirs.
+test('Delete asks first, then removes the file and its index line under the lock', async ($, on) => {
+  const disk: Disk = {}
+  const files = engine(on, disk)
+  await start($)
+  await write($, 'short-answers')
+  await write($, 'use-uv')
+  disk.verdict = 'deny'
+  const ui = await menu($)
+  await ui.press({ key: 'memory:short-answers' })
+  await ui.press({ key: 'delete' })
+  expect(await ui.find({ type: 'Text', text: /^Delete global memory "short-answers"\?/ })).toBeDefined()
+  expect(files.has(`${DIR}/short-answers.md`)).toBe(true)
+  const locks = files.log.length
+  await ui.press({ key: 'confirm' })
+  await until(async () => (await ui.find({ type: 'Text', text: 'Deleted "short-answers".' })) !== undefined)
+  expect(files.has(`${DIR}/short-answers.md`)).toBe(false)
+  expect(files.get(INDEX)).toBe('- [use-uv](use-uv.md) — The user wants answers short\n')
+  expect(files.log.slice(locks)).toEqual(['lock', 'unlock'])
+  expect(keys(await ui.findAll({ type: 'Button' }))).toEqual(['memory:use-uv'])
+  await ui.unmount()
+})
+
+// The tool's answer near the index's limits tells Claude to compact it: words for the model, not
+// for the person who pressed Delete.
+test('a delete in the menu says what went, without the advice the tool gives Claude', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  await write($, 'short-answers', { title: 'Short answers' })
+  const filler = Array.from({ length: 170 }, (_, i) => `- [m${i}](m${i}.md) — filler`).join('\n')
+  files.set(INDEX, `${files.get(INDEX)}${filler}\n`)
+  const ui = await menu($)
+  await ui.press({ key: 'memory:short-answers' })
+  await ui.press({ key: 'delete' })
+  await ui.press({ key: 'confirm' })
+  await until(async () => !files.has(`${DIR}/short-answers.md`) && (await ui.find({ key: 'memory:m0' })) !== undefined)
+  expect(await ui.find({ type: 'Text', text: 'Deleted "Short answers".' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Compact/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('Cancel keeps the memory and goes back to it', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  await write($, 'short-answers')
+  const ui = await menu($)
+  await ui.press({ key: 'memory:short-answers' })
+  await ui.press({ key: 'delete' })
+  await ui.press({ key: 'cancel' })
+  expect(await ui.find({ key: 'back' })).toBeDefined()
+  expect(files.has(`${DIR}/short-answers.md`)).toBe(true)
+  await ui.unmount()
+})
+
+test('a line whose file is gone says so, and opens to say only the line is left', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  await write($, 'short-answers')
+  files.delete(`${DIR}/short-answers.md`)
+  const ui = await menu($)
+  expect((await ui.find({ key: 'memory:short-answers' }))?.text).toBe(
+    'short-answers — The user wants answers short (its file is gone)',
+  )
+  await ui.press({ key: 'memory:short-answers' })
+  expect(await ui.find({ type: 'Text', text: 'Its file is gone; only its index line is left.' })).toBeDefined()
+  await ui.unmount()
 })

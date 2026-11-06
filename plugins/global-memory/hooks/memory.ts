@@ -40,6 +40,28 @@ const entryName = (line: string) => ENTRY.exec(line)?.[2]
 
 export const hasEntry = (index: string, name: string) => index.split('\n').some(l => entryName(l) === name)
 
+// The memories the index lists, in its order: each line's title, name and the description after it.
+export function entries(index: string) {
+  return index.split('\n').flatMap(line => {
+    const found = ENTRY.exec(line)
+    if (found === null) return []
+    const [whole, title = '', name = ''] = found
+    return [{ name, title: title || name, description: line.slice(whole.length).replace(/^\s*—\s*/, '').trim() }]
+  })
+}
+
+// A memory file's type, when it was written and its body, read back from the front matter
+// memoryFile writes. A file without that front matter is all body.
+export function memoryParts(file: string) {
+  const front = /^---\n([\s\S]*?)\n---\n/.exec(file)
+  const field = (key: string) => front?.[1]?.match(new RegExp(`^\\s*${key}: *(.*)$`, 'm'))?.[1]?.trim()
+  return {
+    type: field('type'),
+    modified: field('modified'),
+    body: (front === null ? file : file.slice(front[0].length)).trim(),
+  }
+}
+
 // The line the entry gets in the index. A blank title keeps the title of the line it replaces,
 // else the name.
 export function entryLine(index: string, name: string, title: string, description: string) {
@@ -119,6 +141,12 @@ export function fileNote(file: string) {
   return now.frac < NEAR
     ? ''
     : ` The memory file is ${now.size}, approaching the ${now.cap} limit recall shows of a memory. Keep it under ${now.target}: one fact per file, split distinct facts into their own memories, and summarize rather than append.`
+}
+
+// How much of its read limits the index takes, in words for the person.
+export function indexUsage(index: string) {
+  const lines = linesOf(index).length
+  return `${lines} of ${LIMITS.lines} lines, ${kb(bytesOf(index))} of ${kb(LIMITS.bytes)}`
 }
 
 // Why a change may not leave the index as `after`: past a limit, and grown on the way there. A
