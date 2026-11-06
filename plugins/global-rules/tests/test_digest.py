@@ -13,7 +13,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "suggest" / "scripts" 
 sys.path.insert(0, str(SCRIPT.parent))
 import digest  # noqa: E402
 
-FIXTURE = Path(__file__).resolve().parent / "memory-file.fixture.ts"
+# The sample lives with the plugin that writes memory files, and is shared, not copied.
+FIXTURE = Path(__file__).resolve().parents[2] / "global-memory" / "tests" / "memory-file.fixture.ts"
 
 ALPHA = "/home/u/Projects/alpha"
 BETA = "/home/u/Projects/beta"
@@ -209,7 +210,7 @@ class DigestTest(unittest.TestCase):
         self.assertNotIn("MEMORY.md", text)
 
     def test_reads_a_memory_file_as_global_memory_writes_it(self):
-        # global-memory.test.ts checks hooks/memory.ts still writes this sample.
+        # global-memory's own test checks its hooks/memory.ts still writes this sample.
         sample = shared_sample()
         path = self.config / "memory" / f"{sample['entry']['name']}.md"
         self.memory(path, sample["file"])
@@ -293,11 +294,11 @@ class DigestTest(unittest.TestCase):
         self.assertIn(f"Wrote {out}", result.stdout)
         self.assertTrue(out.exists())
 
-    def test_digest_goes_beside_the_memories_plugin_by_default(self):
+    def test_digest_goes_in_its_own_folder_by_default(self):
         self.fixture()
         subprocess.run([sys.executable, "-I", str(SCRIPT), "--config-dir", str(self.config)],
                        capture_output=True, text=True, check=True)
-        self.assertTrue((self.config / "global-memory" / "digest.md").exists())
+        self.assertTrue((self.config / "global-rules" / "digest.md").exists())
         # memory_files() reads every .md in memory/, so the digest must never land there.
         self.assertFalse((self.config / "memory" / "digest.md").exists())
 

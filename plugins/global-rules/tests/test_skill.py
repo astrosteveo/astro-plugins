@@ -49,7 +49,7 @@ class SkillTest(unittest.TestCase):
     # Claude invoking the skill itself asks first in default mode.
     def test_the_user_is_asked_to_reply_with_the_apply_command(self):
         propose = self.body[self.body.index("## 4. Propose"):self.body.index("## 5. Write")]
-        self.assertIn("`/global-memory:suggest apply 1, 3`", propose)
+        self.assertIn("`/global-rules:suggest apply 1, 3`", propose)
         self.assertIn("invoke this skill again", propose)
 
     # Claude Code asks before cp or diff touches a path outside the working folders, which the
@@ -83,6 +83,16 @@ class SkillTest(unittest.TestCase):
         # A plain rm leaves its MEMORY.md line in every later session's system prompt.
         write = self.body[self.body.index("## 5. Write"):]
         self.assertIn("global_memory_delete", write)
+
+    # The memory tools come from the global-memory plugin, which installs on its own.
+    def test_the_delete_is_offered_only_where_the_memory_tool_is_available(self):
+        write = self.body[self.body.index("## 5. Write"):]
+        self.assertIn("`global_memory_delete` tool is available", write)
+        self.assertIn("global-memory plugin is not installed", write)
+
+    def test_it_names_its_own_plugin_in_every_command(self):
+        self.assertNotIn("global-memory:suggest", self.body)
+        self.assertIn("global-rules:suggest", self.body)
 
 
 if __name__ == "__main__":

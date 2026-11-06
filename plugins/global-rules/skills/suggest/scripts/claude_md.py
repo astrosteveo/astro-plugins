@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Back up a CLAUDE.md, and show what changed in it since, for /global-memory:suggest.
+"""Back up a CLAUDE.md, and show what changed in it since, for /global-rules:suggest.
 
 The skill runs this instead of cp and diff: Claude Code asks before cp or diff touches a path
 outside the session's working folders, which the global CLAUDE.md always is, even when the skill

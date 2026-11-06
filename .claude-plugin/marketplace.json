@@ -20,7 +20,12 @@
     {
       "name": "global-memory",
       "source": "./plugins/global-memory",
-      "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session, and /global-memory:suggest, which turns them and your session history into rules for your global ~/.claude/CLAUDE.md. Writes only the rules you approve."
+      "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session."
+    },
+    {
+      "name": "global-rules",
+      "source": "./plugins/global-rules",
+      "description": "Writes and maintains your global ~/.claude/CLAUDE.md: /global-rules:suggest turns your session history, corrections and memories into rules for it, and writes only the rules you approve."
     },
     {
       "name": "github-tracking",
@@ -32,8 +37,5 @@
       "source": "./plugins/screen-polish",
       "description": "Polishes Claude Code's terminal: inline code on a background, distinct heading levels, drawn rules, task-list checkboxes and quote bars in replies, plus optional tool-call rows, prompt marker and spinner words. Each turns on or off in /config."
     }
-  ],
-  "renames": {
-    "global-rules": "global-memory"
-  }
+  ]
 }
