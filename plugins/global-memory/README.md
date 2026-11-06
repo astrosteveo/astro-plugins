@@ -22,6 +22,16 @@ Global memories live in `~/.claude/memory/` (or `$CLAUDE_CONFIG_DIR/memory/` whe
 
 No shell is used, but these commands must be on the path: `mkdir`, `mv` and `rm`. Windows is not supported.
 
+## Manage them: /global-memory
+
+`/global-memory` opens a menu of your global memories in a pane that takes the keys. Esc closes it.
+
+- The list shows each memory the index names, in its order, as its title and index line. A line whose file is gone says so. Files in the folder that the index doesn't name come last, since no session loads them. Above the list: how many memories there are, and how much of the index's 200-line and 25 KB read limits they take.
+- Arrows or Tab move between rows, and Enter opens one. It shows the memory's type, when it was saved (UTC), its path and its whole body. A long body scrolls with PageUp and PageDown.
+- `b` goes back to the list, `d` deletes. Delete asks first (`y` deletes, `n` cancels), then removes the file and its index line under the same lock as `global_memory_delete`. Your press is the permission, so no permission rule is checked.
+
+Editing a memory stays with Claude: ask it to change one, and it rewrites the memory with `global_memory_write`.
+
 ## Install
 
 At the prompt of a terminal session:

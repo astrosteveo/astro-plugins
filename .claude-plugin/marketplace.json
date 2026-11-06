@@ -20,7 +20,7 @@
     {
       "name": "global-memory",
       "source": "./plugins/global-memory",
-      "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session."
+      "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session, and /global-memory, a menu to browse, read and delete them."
     },
     {
       "name": "global-rules",
