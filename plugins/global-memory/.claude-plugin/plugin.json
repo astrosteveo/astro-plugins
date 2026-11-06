@@ -1,6 +1,6 @@
 {
   "name": "global-memory",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Memories Claude writes for itself that hold in every project, kept in ~/.claude/memory with a MEMORY.md index loaded into each session, and /global-memory, a menu to browse, read and delete them.",
   "types": "./types/index.d.ts",
   "author": {
