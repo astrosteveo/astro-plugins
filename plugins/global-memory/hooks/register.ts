@@ -1,7 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import {
   TYPES,
-  entryLine,
+  cutNote,
   fileNote,
   guide,
   hasEntry,
@@ -13,6 +13,7 @@ import {
   memoryFile,
   overLimit,
   saveQuestion,
+  titleTooLong,
   withEntry,
 } from './memory'
 import type { MemoryType } from './memory'
@@ -40,7 +41,7 @@ const WRITE_TOOL = {
       description: {
         type: 'string',
         description:
-          'One line for the index, used to decide relevance in future conversations, so be specific. With the title and name, the index line is at most 150 characters.',
+          'One line for the index, used to decide relevance in future conversations, so be specific. Keep it to about 80 characters: one that would take the index line, with its title and name, past 150 characters is cut to fit.',
       },
       type: {
         type: 'string',
@@ -118,9 +119,9 @@ async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
   if (description.trim() === '' || body.trim() === '') return { deny: 'A memory needs a description and a body.' }
   // Checked against the index as it stands, as a blank title keeps the one its line has. The
   // index may not be readable: the change then fails under the lock, before anything is written.
-  const line = entryLine(await readIndex($, dir).catch(() => ''), name, title, description)
+  const before = await readIndex($, dir).catch(() => '')
   const fileOf = async () => memoryFile({ name, description, type: type as MemoryType, body, modified: await $.clock.now() })
-  const tooLong = overLimit({ line, file: await fileOf() })
+  const tooLong = titleTooLong(before, name, title) ?? overLimit(await fileOf())
   if (tooLong !== undefined) return { deny: tooLong }
 
   // The person is shown all of what is stored, and whether it replaces a memory, as the title and
@@ -130,7 +131,7 @@ async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
     tool: 'global_memory_write',
     input: { name, title, description, type, body },
     what: `Save global memory "${name}"`,
-    question: saveQuestion({ name, title, description, type: type as MemoryType, body, replacing: await $.fs.exists(file) }),
+    question: saveQuestion({ name, title, description, type: type as MemoryType, body, replacing: await $.fs.exists(file), index: before }),
   }
 
   // The index joins the system prompt at the next session, not this one: a changed prompt would
@@ -148,7 +149,9 @@ async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
     } catch (error) {
       return { deny: `Wrote ${name}.md but could not update the index (${why(error)}), so it is not listed. Save it again to list it.` }
     }
-    return { result: `${existed ? 'Replaced' : 'Saved'} global memory ${name}.${fileNote(text)}${indexNote(next)}` }
+    return {
+      result: `${existed ? 'Replaced' : 'Saved'} global memory ${name}.${cutNote(index, name, title, description)}${fileNote(text)}${indexNote(next)}`,
+    }
   })
 }
 
