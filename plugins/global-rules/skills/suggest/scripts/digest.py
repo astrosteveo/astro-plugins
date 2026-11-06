@@ -254,8 +254,8 @@ def scan_session(path: Path, since: str | None, include_tests: bool, digest: Dig
     return project
 
 
-# The memory tools (hooks/memory.ts) write the description with JSON.stringify, so a double-quoted value is decoded
-# as JSON; one that won't decode, and any other, just loses its quote marks.
+# The global-memory plugin's tools (its hooks/memory.ts) write the description with JSON.stringify, so a
+# double-quoted value is decoded as JSON; one that won't decode, and any other, just loses its quote marks.
 def front_matter_value(raw: str) -> str:
     value = raw.strip()
     if value.startswith('"'):
@@ -430,13 +430,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-chars", type=int, default=500, help="cut each message after this many characters")
     parser.add_argument("--config-dir", default=os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude",
                         help="Claude Code's config folder (default: $CLAUDE_CONFIG_DIR or ~/.claude)")
-    parser.add_argument("--out", help="where to write the digest (default: <config-dir>/global-memory/digest.md)")
+    parser.add_argument("--out", help="where to write the digest (default: <config-dir>/global-rules/digest.md)")
     args = parser.parse_args(argv)
 
     config = Path(args.config_dir).expanduser()
     digest = scan(config, args.since, args.include_tests)
     text = render(digest, config / "CLAUDE.md", args.max_chars)
-    out = Path(args.out).expanduser() if args.out else config / "global-memory" / "digest.md"
+    out = Path(args.out).expanduser() if args.out else config / "global-rules" / "digest.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text)
     print(f"Wrote {out} ({len(text):,} chars, {text.count(chr(10)):,} lines).")
