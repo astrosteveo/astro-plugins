@@ -62,12 +62,49 @@ export function memoryParts(file: string) {
   }
 }
 
-// The line the entry gets in the index. A blank title keeps the title of the line it replaces,
+// The title the entry's index line shows. A blank title keeps the title of the line it replaces,
 // else the name.
-export function entryLine(index: string, name: string, title: string, description: string) {
+function lineTitle(index: string, name: string, title: string) {
   const kept = ENTRY.exec(index.split('\n').find(l => entryName(l) === name) ?? '')?.[1]
-  return `- [${plainTitle(title) || kept || name}](${name}.md) — ${oneLine(description)}`
+  return plainTitle(title) || kept || name
 }
+
+const lineHead = (name: string, title: string) => `- [${title}](${name}.md) — `
+
+// The fewest characters of description an index line keeps room for.
+const MIN_DESCRIPTION = 40
+
+// The description as the index line shows it. A model counts characters badly, so a refusal of a
+// line a few characters long had it retry, often more than once: a description that would take
+// the line past LIMITS.line is cut at a word instead, and the memory file keeps it whole.
+export function indexDescription(index: string, name: string, title: string, description: string) {
+  const text = oneLine(description)
+  const room = LIMITS.line - lineHead(name, lineTitle(index, name, title)).length
+  if (text.length <= room) return text
+  const cut = text.slice(0, room - 1)
+  const words = /\s/.test(text[room - 1] ?? '') ? cut : cut.replace(/\s*\S*$/, '')
+  return `${(words || cut).replace(/[\s,;:.—-]+$/, '')}…`
+}
+
+export function entryLine(index: string, name: string, title: string, description: string) {
+  return lineHead(name, lineTitle(index, name, title)) + indexDescription(index, name, title, description)
+}
+
+// Why the title leaves too little room for a description, with the longest title that fits, so
+// the model has nothing to count; undefined when it fits.
+export function titleTooLong(index: string, name: string, title: string) {
+  const shown = lineTitle(index, name, title)
+  if (LIMITS.line - lineHead(name, shown).length >= MIN_DESCRIPTION) return undefined
+  const most = LIMITS.line - MIN_DESCRIPTION - lineHead(name, '').length
+  return `The title "${shown}" leaves too little of the ${LIMITS.line}-character index line for the description. Use a title of at most ${most} characters.`
+}
+
+// What a save whose description was cut adds to its answer. It is not worded as a fault, so the
+// model doesn't save again to shorten it.
+export const cutNote = (index: string, name: string, title: string, description: string) =>
+  indexDescription(index, name, title, description) === oneLine(description)
+    ? ''
+    : ` Its index line was cut to fit ${LIMITS.line} characters; the file keeps the whole description.`
 
 // The index with the entry's line added, or replaced where the entry is already listed. A later
 // line for the same name is a duplicate, and goes.
@@ -86,7 +123,8 @@ export function withoutEntry(index: string, name: string) {
 }
 
 // The index joins every session's system prompt, so it keeps Claude Code's limits for its own
-// memory index: a line under 150 characters, and only the first 200 lines and 25 KB are loaded.
+// memory index: only the first 200 lines and 25 KB are loaded, and its guidance of a line "under
+// ~150 characters", which Claude Code asks for but doesn't enforce.
 // A memory file keeps to what Claude Code's memory recall shows of one: its first 4,096 bytes
 // and 200 lines, front matter included. Claude Code warns at 80% of a limit and asks for 70%.
 export const LIMITS = { line: 150, lines: 200, bytes: 25_000, fileLines: 200, fileBytes: 4096 } as const
@@ -124,12 +162,9 @@ const indexFullness = (index: string) =>
 const fileFullness = (file: string) =>
   fullness(file.replace(/\n$/, '').split('\n').length, bytesOf(file), { lines: LIMITS.fileLines, bytes: LIMITS.fileBytes }, false)
 
-// What is too long about a memory, its index line or its whole file, in words for the model;
-// undefined when nothing is.
-export function overLimit(entry: { line: string; file: string }) {
-  if (entry.line.length > LIMITS.line)
-    return `The index line "${entry.line}" is ${entry.line.length} characters long; the most is ${LIMITS.line}. Shorten the description or the title.`
-  const now = fileFullness(entry.file)
+// Why a memory's file is too long, in words for the model; undefined when it isn't.
+export function overLimit(file: string) {
+  const now = fileFullness(file)
   return now.over
     ? `The memory file would be ${now.size}, over the ${now.cap} limit recall shows of a memory, so nothing was saved. Keep it to one fact under ${now.target}: split distinct facts into their own memories, and summarize rather than append.`
     : undefined
@@ -185,7 +220,8 @@ export function loadedIndex(index: string) {
   return { text: kept.join('\n'), dropped: lines.length - kept.length }
 }
 
-// What the person is asked before a memory is saved: all of what will be stored, the body in part.
+// What the person is asked before a memory is saved: all of what will be stored, the body in part,
+// and the description as `index` will show it.
 export function saveQuestion(entry: {
   name: string
   title: string
@@ -193,13 +229,14 @@ export function saveQuestion(entry: {
   type: MemoryType
   body: string
   replacing: boolean
+  index: string
 }) {
   const body = entry.body.trim()
   const title = plainTitle(entry.title)
   return [
     `${entry.replacing ? 'Replace' : 'Save'} global memory "${entry.name}" (${entry.type})?`,
     ...(title === '' ? [] : [`Title: ${title}`]),
-    `Index line: ${oneLine(entry.description)}`,
+    `Index line: ${indexDescription(entry.index, entry.name, entry.title, entry.description)}`,
     `Body: ${body.length > 300 ? `${body.slice(0, 300)}…` : body}`,
   ].join('\n')
 }

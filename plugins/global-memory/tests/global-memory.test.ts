@@ -550,9 +550,34 @@ test('a delete whose index cannot be updated says the file is gone, and a second
 test('an index line is at most 150 characters, title and name included', async ($, on) => {
   const files = engine(on)
   await start($)
-  expect((await write($, 'a', { description: 'x'.repeat(137) })).deny).toContain('is 151 characters long; the most is 150')
-  expect(files.size).toBe(0)
   expect((await write($, 'a', { description: 'x'.repeat(136) })).result).toBe('Saved global memory a.')
+  expect(files.get(INDEX)).toBe(`- [a](a.md) — ${'x'.repeat(136)}\n`)
+})
+
+// A model counts characters badly: a refusal for a line a few characters over had it retry, often
+// more than once. The description is cut instead, and the file keeps it whole.
+test('a description too long for the index line is cut at a word, and the file keeps it whole', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  const description = 'word '.repeat(30).trim()
+  const saved = await write($, 'a', { description })
+  expect(saved.result).toBe('Saved global memory a. Its index line was cut to fit 150 characters; the file keeps the whole description.')
+  expect(files.get(INDEX)).toBe(`- [a](a.md) — ${'word '.repeat(27).trim()}…\n`)
+  expect(files.get(`${DIR}/a.md`)).toContain(`description: "${description}"`)
+})
+
+test('a description with no space to cut at is cut at the limit', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  expect((await write($, 'a', { description: 'x'.repeat(137) })).result).toContain('Its index line was cut')
+  expect(files.get(INDEX)).toBe(`- [a](a.md) — ${'x'.repeat(135)}…\n`)
+})
+
+test('a cut leaves no comma or space before its mark', async ($, on) => {
+  const files = engine(on)
+  await start($)
+  await write($, 'a', { description: `${'x'.repeat(133)}, more words` })
+  expect(files.get(INDEX)).toBe(`- [a](a.md) — ${'x'.repeat(133)}…\n`)
 })
 
 // Claude Code's memory recall shows the first 4,096 bytes and 200 lines of a memory file, front
@@ -594,12 +619,18 @@ test('a save that leaves its file near the limit says to keep it to one fact', a
   )
 })
 
-test('a save that keeps a long title counts that title in its index line', async ($, on) => {
+// The refusal names the longest title that fits, so the model has nothing to count.
+test('a title that leaves the description under 40 characters is refused, a kept one included', async ($, on) => {
   const files = engine(on)
   files.set(INDEX, `- [${'t'.repeat(120)}](a.md) — d\n`)
   await start($)
-  expect((await write($, 'a', { description: 'x'.repeat(20) })).deny).toContain('is 153 characters long')
+  expect((await write($, 'a', { description: 'x'.repeat(20) })).deny).toBe(
+    `The title "${'t'.repeat(120)}" leaves too little of the 150-character index line for the description. Use a title of at most 97 characters.`,
+  )
   expect(files.get(INDEX)).toBe(`- [${'t'.repeat(120)}](a.md) — d\n`)
+  expect((await write($, 'a', { title: 't'.repeat(98) })).deny).toContain('Use a title of at most 97 characters.')
+  expect((await write($, 'a', { title: 't'.repeat(97), description: 'x'.repeat(41) })).result).toContain('Saved global memory a.')
+  expect(files.get(INDEX)).toBe(`- [${'t'.repeat(97)}](a.md) — ${'x'.repeat(39)}…\n`)
 })
 
 test('a folder that cannot be made refuses the change at once', async ($, on) => {
@@ -627,16 +658,23 @@ test('a delete asks about a memory that is there, not one that is not', async ($
 test('the question shows what is stored, the body in part, and whether it replaces a memory', () => {
   const entry = { name: 'short-answers', title: ' Short [answers] ', description: 'The user\nwants answers short', type: 'feedback' as const }
   const body = `Keep answers short. ${'y'.repeat(400)}`
-  const shown = saveQuestion({ ...entry, body, replacing: false })
+  const shown = saveQuestion({ ...entry, body, replacing: false, index: '' })
   expect(shown.split('\n')).toEqual([
     'Save global memory "short-answers" (feedback)?',
     'Title: Short answers',
     'Index line: The user wants answers short',
     `Body: ${body.slice(0, 300)}…`,
   ])
-  expect(saveQuestion({ ...entry, title: '', body: 'Short.', replacing: true })).toBe(
+  expect(saveQuestion({ ...entry, title: '', body: 'Short.', replacing: true, index: '' })).toBe(
     'Replace global memory "short-answers" (feedback)?\nIndex line: The user wants answers short\nBody: Short.',
   )
+})
+
+test('the question shows the index line cut as it will be stored', () => {
+  const entry = { name: 'a', title: '', description: 'word '.repeat(30).trim(), type: 'feedback' as const, body: 'b', replacing: false }
+  expect(saveQuestion({ ...entry, index: '' })).toContain(`\nIndex line: ${'word '.repeat(27).trim()}…\n`)
+  // A blank title keeps the indexed one, which leaves less room.
+  expect(saveQuestion({ ...entry, index: `- [${'t'.repeat(40)}](a.md) — d\n` })).toContain(`\nIndex line: ${'word '.repeat(19).trim()}…\n`)
 })
 
 test('an index line with a bullet or an indent is an entry, and a duplicate goes when its memory is saved again', async ($, on) => {
