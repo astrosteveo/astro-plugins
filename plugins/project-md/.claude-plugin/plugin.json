@@ -1,0 +1,9 @@
+{
+  "name": "project-md",
+  "version": "0.1.0",
+  "description": "/project-md:review drafts and reviews PROJECT.md, a committed document that says what a project is for: the problem, who it's for, goals, non-goals, what success and failure look like, priorities, constraints and decisions. Run it any time: it checks the file against what changed since its last commit and changes only what you approve.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT"
+}
