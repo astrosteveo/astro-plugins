@@ -28,7 +28,7 @@ Finds bugs and reproduces each one before calling it a bug. One skill, `/bug-hun
 
 1. **Map.** `skills/hunt/scripts/inventory.py` lists the code by directory with line counts, test files and how many of the last 300 commits touched each part. It leaves out vendored, generated and binary files, and its output stays short on a large repo. Claude reads the README, manifests and entry points, then groups the list into components of about 3,000 lines each, named for what they do and ranked by risk.
 2. **Hunt.** One `bug-hunt:hunter` subagent per component. It has only Read, Grep and Glob, so hunters can run side by side without touching your working tree or asking for permissions. Each reads its component in full and the code on either side of its seams. It tries to disprove each suspicion, and reports the rest, each with a concrete failure and the test that would reproduce it.
-3. **Confirm.** Your session takes the findings one at a time. For each, it adds the repro to the project's own tests, runs it, and checks that it fails for the reason given. Then it removes exactly what it added. It never runs `git checkout`, `restore`, `reset`, `stash` or `clean`, so your uncommitted work is safe, and `git status` ends as it started.
+3. **Confirm.** Your session takes the findings one at a time. For each, it adds the repro to the project's own tests, runs it, and checks that it fails for the reason given, on input the program can really receive and against behavior its docs, tests or callers expect. Then it removes exactly what it added. It never runs `git checkout`, `restore`, `reset`, `stash` or `clean`, so your uncommitted work is safe, and `git status` ends as it started.
 4. **Report.** Findings are sorted into confirmed (with the command and the failing output), suspected (with why it couldn't be shown here and the repro that would show it) and ruled out. The report ends with coverage: which components were hunted, which weren't, and which files a hunter didn't read in full.
 
 Each finding is written to a run file, `.bug-hunt/<date>-<target>.md`, as it arrives, so a long hunt loses nothing when the conversation is compacted. The run file keeps each confirmed bug's repro in full, ready to add as the failing test when you fix it. The folder holds a `.gitignore` of `*`, so git ignores it without a change to your repo's `.gitignore`.
@@ -48,17 +48,17 @@ A hunt reads every line it hunts and runs a repro for every finding, so its cost
 | Target | Hunters | Findings | Time | Cost |
 | --- | --- | --- | --- | --- |
 | A 108-line sample repo, whole | 4 | 6 confirmed | 2 minutes | $1.14 |
-| A 24,000-line Python and GDScript repo, whole | 10 | 44 confirmed, 5 suspected, 1 ruled out | 40 minutes | $32.82 |
+| A 24,000-line Python and GDScript repo, whole | 10 | 40 confirmed, 9 suspected, 1 ruled out | 40 minutes | $32.82 |
 
-To spend less, hunt only the paths you care about, or hunt a change with `diff`.
+The second run labelled 44 findings confirmed. 4 of those carried notes that the input might never occur or the expected behavior wasn't checked, so the skill now leaves such findings suspected; the table counts them that way. To spend less, hunt only the paths you care about, or hunt a change with `diff`.
 
 ## Requirements
 
-- `python3` 3.8 or later for the map. Without it, the skill maps from `git ls-files` and says the map is rougher.
+- `python3` 3.8 or later for the map. Without it, the skill is told to map from `git ls-files` and say the map is rougher; that hasn't been tried in a session yet.
 - git for change targets and recent-commit counts. A folder that isn't a git repo can still be hunted by path or whole.
 - `gh` only for a PR target.
 
-On Windows, the skill runs where Claude Code has a Bash tool (Git Bash), with `python3` on the PATH.
+It hasn't been tried on Windows yet. There it would need Claude Code's Bash tool (Git Bash) and `python3` on the PATH.
 
 ## Tests
 
