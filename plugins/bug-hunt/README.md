@@ -41,6 +41,17 @@ Claude Code's `/code-review` already reviews a diff, PR, branch or range, so bug
 
 If Claude can't start `/code-review`, for example because your settings make it user-invocable only, the skill asks you to run `/code-review TARGET` and then `/bug-hunt:hunt confirm`. A change has to be checked out to be reproduced. For a PR or branch that isn't, its findings stay suspected until you check it out and run `/bug-hunt:hunt confirm`.
 
+## Cost
+
+A hunt reads every line it hunts and runs a repro for every finding, so its cost grows with the code. Two runs on Claude Opus with Claude Code 2.1.322, at the cost Claude Code reported:
+
+| Target | Hunters | Findings | Time | Cost |
+| --- | --- | --- | --- | --- |
+| A 108-line sample repo, whole | 4 | 6 confirmed | 2 minutes | $1.14 |
+| A 24,000-line Python and GDScript repo, whole | 10 | 44 confirmed, 5 suspected, 1 ruled out | 40 minutes | $32.82 |
+
+To spend less, hunt only the paths you care about, or hunt a change with `diff`.
+
 ## Requirements
 
 - `python3` 3.8 or later for the map. Without it, the skill maps from `git ls-files` and says the map is rougher.
