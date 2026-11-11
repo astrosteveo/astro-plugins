@@ -115,7 +115,7 @@ The repros in step 5 run against the working tree, so it has to hold the change:
 
 With `confirm` as the target, take the findings from earlier in this conversation and write them to the run file as suspected first.
 
-Before the first repro, keep the output of `git status --short` as the baseline, and run one existing test file the way the project does, to check the command works.
+Before the first repro, keep the output of `git status --short` as the baseline, and run one existing test file the way the project does, to check the command works. Outside a git repo, keep a list of the files you add or change instead, and check each one is gone or back as it was after its repro.
 
 Then take the findings one at a time, most severe first:
 
