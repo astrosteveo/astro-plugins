@@ -4,7 +4,7 @@ Personal Claude Code plugins that remove the frictions a solo developer runs int
 
 ## What it is
 
-A public Claude Code plugin marketplace with seven plugins, each installed on its own: inline-thinking, gates, global-memory, global-rules, github-tracking, screen-polish and project-md. Install one with `/plugin install NAME --marketplace astrosteveo/astro-plugins`.
+A public Claude Code plugin marketplace with eight plugins, each installed on its own: inline-thinking, gates, global-memory, global-rules, github-tracking, screen-polish, project-md and bug-hunt. Install one with `/plugin install NAME --marketplace astrosteveo/astro-plugins`.
 
 ## The problem
 
@@ -67,4 +67,4 @@ None yet.
 
 ## Status
 
-Seven plugins are published. global-rules took /global-memory:suggest out of global-memory as /global-rules:suggest (#55), global-memory gained /global-memory, a menu to browse, read and delete global memories (#56), and github-tracking now follows the user's own workflow rules instead of setting its own (#63). Parked: #44, letting memory recall pick global memories, until recall can be turned on in local sessions.
+Eight plugins are published. bug-hunt (#67) hunts bugs across a whole codebase, component by component, and reproduces each finding; it leaves reviewing changes to Claude Code's /code-review. global-rules took /global-memory:suggest out of global-memory as /global-rules:suggest (#55), global-memory gained /global-memory, a menu to browse, read and delete global memories (#56), and github-tracking now follows the user's own workflow rules instead of setting its own (#63). Parked: #44, letting memory recall pick global memories, until recall can be turned on in local sessions.
