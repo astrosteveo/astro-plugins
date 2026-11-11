@@ -252,6 +252,20 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(len(units), 20000)
         self.assertLess(time.monotonic() - started, 2.0)
 
+    def test_a_unit_holding_only_some_of_its_directory_says_so(self):
+        # Listing shopgame/pricing and shopgame/shop.py labelled their unit shopgame/, as if it held
+        # all of shopgame.
+        self.git("init", "-q")
+        self.write("shopgame/pricing/prices.py", lines(5))
+        self.write("shopgame/shop.py", lines(5))
+        self.write("shopgame/saves/files.py", lines(5))
+        self.write("shopgame/tests/test_saves.py", lines(2))
+        self.commit()
+        text = self.run_report("shopgame/pricing", "shopgame/shop.py")
+        self.assertEqual(self.units(text), ["shopgame/ (only the listed paths in it)"])
+        self.assertNotIn("test file inside", text)
+        self.assertEqual(self.units(self.run_report("shopgame")), ["shopgame/"])
+
     def test_the_script_parses_as_python_3_8(self):
         # The plugins' constraint is Python 3.8+ with the standard library only.
         ast.parse(SCRIPT.read_text(), feature_version=(3, 8))
