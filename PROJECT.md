@@ -12,7 +12,7 @@ Claude Code's defaults don't fit how the author works. It folds its thinking int
 
 ## Who it's for
 
-The author: a solo developer on Linux who uses Claude Code for hobby projects. The repo is public, so anyone can install the plugins, but they're built around the author's workflow. They're not meant for teams or for Windows.
+The author: a solo developer on Linux who uses Claude Code for hobby projects. The repo is public, so anyone can install the plugins, but they're built around the author's workflow. They're not meant for teams.
 
 ## Goals
 
@@ -22,7 +22,6 @@ The author: a solo developer on Linux who uses Claude Code for hobby projects. T
 
 ## Non-goals
 
-- Windows support. Why: the author works on Linux.
 - Settings or features for needs other than the author's, such as team or org setups. Why: these are personal plugins for solo hobby projects.
 - Doing what Claude Code already does itself. A plugin is dropped once Claude Code ships the same feature. Why: a plugin like that is upkeep with no gain.
 
@@ -48,12 +47,13 @@ The author: a solo developer on Linux who uses Claude Code for hobby projects. T
 
 - Every plugin is listed in `.claude-plugin/marketplace.json` and passes `claude plugin validate`.
 - Hook plugins are written in TypeScript. Skill scripts use only Python 3.8+'s standard library.
-- Linux only.
+- Runs on Linux without assuming a distro, and on Windows where it can. A plugin that doesn't work on Windows says so in its README.
 - MIT license, public on GitHub.
 
 ## Decisions
 
 - 2026-11-10: github-tracking says what to keep on GitHub and leaves how the work is done (branches, commits, what goes in a change, labels) to the user's CLAUDE.md and the repo's rules. Why: its own workflow rules contradicted the author's global CLAUDE.md.
+- 2026-11-10: Plugins aim to support both Linux, on any distro, and Windows, replacing the Linux-only constraint and the Windows non-goal. Why: the author works on WSL now and wants the plugins not to depend on one setup; Windows support may lag behind Linux.
 
 ## Open questions
 
