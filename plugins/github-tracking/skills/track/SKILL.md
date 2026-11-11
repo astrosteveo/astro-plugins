@@ -19,13 +19,12 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/board.py update on-track FILE    # a status 
 
 `move` adds the item to the board when it isn't there yet. A status update is `on-track`, `at-risk`, `off-track`, `complete` or `inactive`. If gh says it lacks the `project` scope, ask the user to run `! gh auth refresh -s project`.
 
-The repo's own CLAUDE.md may add to this: its labels, what its milestones stand for (such as one per slice), or which issue is a larger step's parent. Follow it where it's more specific.
+This skill says what to keep on GitHub, not how to do the work. Branches, commits, what belongs in a change and how issues are labelled and titled follow the user's CLAUDE.md and the repo's own rules. Those rules may also say what the repo's milestones stand for (such as one per slice) or which issue is a larger step's parent. Where they say something, follow them over this skill.
 
 ## Start each change from an issue
 
-1. Find the change's issue (`gh issue list --search WORDS`) or open one. Give it the label for its kind, matching the commit type it will land as (feat, fix, chore, test, or one the repo has), and the milestone of the step it belongs to. A title says what changes for the user, as a commit subject does.
+1. Find the change's issue (`gh issue list --search WORDS`) or open one. Give it the repo's label for its kind of change and the milestone of the step it belongs to.
 2. Put it on the board as In Progress: `board.py move N "In Progress"`. A new issue isn't on the board until something adds it, and the API can't turn on a board's auto-add workflow, so add it yourself.
-3. Work on its own branch.
 
 ## Link the PR
 
@@ -35,7 +34,7 @@ The repo's own CLAUDE.md may add to this: its labels, what its milestones stand 
 
 ## File what you find
 
-Fix small, clearly correct things beside the change in the change itself. Anything bigger that turns up gets its own issue, labelled, in the milestone it belongs to, on the board as Todo (`board.py move N Todo`). Tell the user what you filed.
+Something that turns up and doesn't go in the current change, by the user's and repo's rules or because it's bigger, gets its own issue, labelled, in the milestone it belongs to, on the board as Todo (`board.py move N Todo`). Tell the user what you filed.
 
 ## Plan a larger step
 
