@@ -12,7 +12,7 @@ Claude Code's defaults don't fit how the author works. It folds its thinking int
 
 ## Who it's for
 
-The author: a solo developer on Arch Linux who uses Claude Code for hobby projects. The repo is public, so anyone can install the plugins, but they're built around the author's workflow. They're not meant for teams or for Windows.
+The author: a solo developer on Linux who uses Claude Code for hobby projects. The repo is public, so anyone can install the plugins, but they're built around the author's workflow. They're not meant for teams or for Windows.
 
 ## Goals
 
@@ -53,7 +53,7 @@ The author: a solo developer on Arch Linux who uses Claude Code for hobby projec
 
 ## Decisions
 
-None yet.
+- 2026-11-10: github-tracking says what to keep on GitHub and leaves how the work is done (branches, commits, what goes in a change, labels) to the user's CLAUDE.md and the repo's rules. Why: its own workflow rules contradicted the author's global CLAUDE.md.
 
 ## Open questions
 
@@ -67,4 +67,4 @@ None yet.
 
 ## Status
 
-Seven plugins are published. global-rules took /global-memory:suggest out of global-memory as /global-rules:suggest (#55), and global-memory gained /global-memory, a menu to browse, read and delete global memories (#56). Parked: #44, letting memory recall pick global memories, until recall can be turned on in local sessions.
+Seven plugins are published. global-rules took /global-memory:suggest out of global-memory as /global-rules:suggest (#55), global-memory gained /global-memory, a menu to browse, read and delete global memories (#56), and github-tracking now follows the user's own workflow rules instead of setting its own (#63). Parked: #44, letting memory recall pick global memories, until recall can be turned on in local sessions.
