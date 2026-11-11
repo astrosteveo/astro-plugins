@@ -38,6 +38,11 @@
       "description": "Polishes Claude Code's terminal: inline code on a background, distinct heading levels, drawn rules, task-list checkboxes and quote bars in replies, plus optional tool-call rows, prompt marker and spinner words. Each turns on or off in /config."
     },
     {
+      "name": "bug-hunt",
+      "source": "./plugins/bug-hunt",
+      "description": "/bug-hunt:hunt finds bugs and reproduces each one before calling it a bug: a whole codebase component by component, a path or area, or a change that Claude Code's /code-review reviews first."
+    },
+    {
       "name": "project-md",
       "source": "./plugins/project-md",
       "description": "/project-md:review drafts and reviews PROJECT.md, a committed document that says what a project is for and what it won't do, so Claude has it in every session. Run it any time to check the work against it; it changes only what you approve."

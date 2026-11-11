@@ -1,0 +1,9 @@
+{
+  "name": "bug-hunt",
+  "version": "0.1.0",
+  "description": "/bug-hunt:hunt finds bugs and reproduces each one before calling it a bug. Give it nothing to hunt the whole codebase component by component, a path or an area to hunt part of it, or a change, which Claude Code's /code-review reviews first. Every finding is confirmed by a repro that ran, or reported as suspected with the repro that would confirm it.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT"
+}
