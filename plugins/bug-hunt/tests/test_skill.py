@@ -111,6 +111,16 @@ class SkillTest(unittest.TestCase):
     def test_the_run_folder_ignores_itself(self):
         self.assertIn("If `.bug-hunt/.gitignore` doesn't exist, create it holding the single line `*`", self.body)
 
+    def test_the_run_file_has_one_layout_with_the_sections_the_steps_fill(self):
+        # Runs left to choose their own layout wrote it differently each time, one with an empty
+        # Coverage section; a fixed layout is what a run reads back after a compaction.
+        layout = re.search(r"^````markdown\n(.*?)^````$", self.body, re.M | re.S).group(1)
+        for heading in ("## Map", "## Findings", "## Coverage"):
+            self.assertIn(heading, layout)
+        self.assertIn("(suspected | confirmed | ruled out; critical | major | minor)", layout)
+        self.assertIn("| Component | Files | Lines | Risk | Status |", layout)
+        self.assertIn("as a numbered table: component, files, lines, risk, status", self.body)
+
     def test_the_report_names_what_was_not_hunted(self):
         report = self.section("## 6. Report")
         self.assertIn("Code that wasn't hunted wasn't checked", report)

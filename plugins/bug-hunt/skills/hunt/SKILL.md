@@ -42,7 +42,33 @@ Read the arguments, in this order:
 
 Tell a branch or commit from words with `git rev-parse --verify --quiet WORD`.
 
-Then start the run file: `.bug-hunt/YYYY-MM-DD-<target in a few words>.md` at the repo root, with today's date, and `-2`, `-3` added if that name is taken. If `.bug-hunt/.gitignore` doesn't exist, create it holding the single line `*`, so git ignores the folder without a change to the repo's own `.gitignore`. The run file starts with the target and the finder. It gets the map, each finding and the coverage as the run goes.
+Then start the run file: `.bug-hunt/YYYY-MM-DD-<target in a few words>.md` at the repo root, with today's date, and `-2`, `-3` added if that name is taken. If `.bug-hunt/.gitignore` doesn't exist, create it holding the single line `*`, so git ignores the folder without a change to the repo's own `.gitignore`. Keep the run file in this layout, filling it in as the run goes, and change a finding's status in its heading when it changes:
+
+````markdown
+# Bug hunt: <target>
+
+- Finder: hunters | /code-review | the conversation
+- Baseline: <git status --short before the first repro>
+- One test file: <the command that runs one test file>
+
+## Map
+
+| # | Component | Files | Lines | Risk | Status |
+| --- | --- | --- | --- | --- | --- |
+
+## Findings
+
+### F1. <title> (suspected | confirmed | ruled out; critical | major | minor)
+
+- Where, failure and cause, as the finder gave them
+- Repro: <the file it goes in>, and its code in a fenced block
+- Command: <the command that runs only the repro>
+- Outcome: <the output that shows the failure, why it was ruled out, or why it stays suspected>
+
+## Coverage
+
+- Hunted, not hunted and why, and files not read in full
+````
 
 ## 2. Map the code into components
 
