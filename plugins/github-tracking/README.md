@@ -13,13 +13,13 @@ Keeps a repo's GitHub issues, milestones and Projects board true while Claude wo
 | A change starts | Finds or opens its issue, with a label for its kind and its milestone, and puts it on the board as In Progress |
 | A PR opens | Its body says `Closes #N`, and it goes on the board too |
 | A PR merges | Checks the board moved both to Done, and closes a milestone whose last issue closed |
-| Something turns up | Small fixes go in the change; anything bigger gets its own issue, on the board as Todo |
+| Something turns up | Whatever doesn't go in the current change gets its own issue, on the board as Todo |
 | A larger step is planned | One parent issue in its milestone: what exists today, then open questions with recommendations. Once you decide them, it splits into sub-issues |
 | Where things stand changes | A short status update on the board: what's done, what's next, what's in the way |
 | You ask where a project is | Answers from the board, the milestones and git, and fixes what's out of step |
 | A repo has no board | Offers to set one up: the board, linked to the repo, its labels and milestones |
 
-A repo's CLAUDE.md can add to this, such as its labels or what its milestones stand for. The skill follows it where it's more specific.
+The skill says what to keep on GitHub, not how to do the work: branches, commits, what goes in a change and how issues are labelled follow your CLAUDE.md and the repo's own rules. Those rules can also say what the repo's milestones stand for; the skill follows them over its own.
 
 ## The script
 
