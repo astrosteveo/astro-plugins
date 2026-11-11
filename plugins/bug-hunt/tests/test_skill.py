@@ -114,6 +114,18 @@ class SkillTest(unittest.TestCase):
         confirm = self.section("## 5. Confirm", "## 6.")
         self.assertIn("Outside a git repo, keep a list of the files you add or change", confirm)
 
+    def test_confirmed_needs_a_real_input_and_a_written_expectation(self):
+        # On a large repo, repros on hand-made input the program may never produce, and
+        # expectations nobody wrote down, were marked confirmed with the gap noted beside them.
+        confirm = self.section("## 5. Confirm", "## 6.")
+        self.assertIn("an input the program can really receive through one of its entry points", confirm)
+        self.assertIn("an expectation its docs, tests or callers state", confirm)
+        self.assertIn("stays suspected, saying what's left to check", confirm)
+
+    def test_claude_passes_a_target_when_it_starts_a_hunt_itself(self):
+        # With no arguments it hunts the whole codebase, which costs far more than a change.
+        self.assertIn("When starting it yourself after a change, pass `diff`", self.front["description"])
+
     def test_the_run_folder_ignores_itself(self):
         self.assertIn("If `.bug-hunt/.gitignore` doesn't exist, create it holding the single line `*`", self.body)
 
