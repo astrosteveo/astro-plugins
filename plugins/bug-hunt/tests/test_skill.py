@@ -108,6 +108,12 @@ class SkillTest(unittest.TestCase):
         for outcome in ("**Confirmed:**", "**Ruled out:**", "**Suspected:**"):
             self.assertIn(outcome, confirm)
 
+    def test_cleanup_is_checked_outside_a_git_repo_too(self):
+        # The check after each repro relied on git status, which fails in a folder without git,
+        # and the skill hunts such folders.
+        confirm = self.section("## 5. Confirm", "## 6.")
+        self.assertIn("Outside a git repo, keep a list of the files you add or change", confirm)
+
     def test_the_run_folder_ignores_itself(self):
         self.assertIn("If `.bug-hunt/.gitignore` doesn't exist, create it holding the single line `*`", self.body)
 
