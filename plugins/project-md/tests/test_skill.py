@@ -102,6 +102,29 @@ class SkillTest(unittest.TestCase):
         self.assertEqual(re.findall(r"(?<!\.)\./\S*", self.body), [])
         self.assertIn("at the repo root, not in the current folder", write)
 
+    def test_an_import_in_dot_claude_claude_md_reaches_the_root_project_md(self):
+        # Claude Code reads an @path from the folder of the file that holds it, so @PROJECT.md in
+        # .claude/CLAUDE.md names .claude/PROJECT.md and the root PROJECT.md never loads. In Claude
+        # Code 2.1.322, @../PROJECT.md there loaded it.
+        write = self.body[self.body.index("## 6. Write"):]
+        imports = re.findall(r"^\s+See (@\S+)\s", write, re.M)
+        self.assertIn("@../PROJECT.md", imports)
+        lines = dict(re.findall(r"In (\S+), add this line:\n\n\s+```\n\s+See (@\S+)\s", write))
+        self.assertEqual(lines, {"CLAUDE.md": "@PROJECT.md", ".claude/CLAUDE.md": "@../PROJECT.md"})
+
+    def test_a_broken_import_in_dot_claude_claude_md_is_corrected_not_counted(self):
+        # Earlier runs added @PROJECT.md to .claude/CLAUDE.md. Counting it as done leaves PROJECT.md
+        # unloaded, and a hand-fixed @../PROJECT.md must count, or the broken line is added again.
+        write = self.body[self.body.index("## 6. Write"):]
+        self.assertIn(
+            "A `@PROJECT.md` there names .claude/PROJECT.md, so it doesn't count: "
+            "offer to change it to `@../PROJECT.md` instead of adding the line again.",
+            write,
+        )
+        counted = dict(re.findall(r"^\s+- (\S+) imports it with `(@[^`]+)`", write, re.M))
+        self.assertEqual(counted.get("CLAUDE.md"), "@PROJECT.md")
+        self.assertEqual(counted.get(".claude/CLAUDE.md"), "@../PROJECT.md")
+
     def test_the_argument_hint_names_both_uses(self):
         hint = next(line for line in self.front.splitlines() if line.startswith("argument-hint:"))
         self.assertIn("section", hint)

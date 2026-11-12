@@ -153,11 +153,22 @@ Compare the idea with Goals, Non-goals, Priorities, Constraints and Decisions. S
 
 1. Write nothing until the user approves the draft or the edits. Then write a new file with Write, or change an existing one with Edit, keeping its wording and its own sections.
 2. Show what changed: `git diff -- :/PROJECT.md`, or the new file in full.
-3. If no instruction file imports PROJECT.md yet, offer to add the import, so Claude reads it in every session. Look for `@PROJECT.md` in CLAUDE.md, .claude/CLAUDE.md and AGENTS.md at the repo root, not in the current folder, and don't add it twice. Add it to whichever of CLAUDE.md or .claude/CLAUDE.md exists there. If there is neither, create CLAUDE.md at the repo root. If the repo has an AGENTS.md and you create CLAUDE.md, make `@AGENTS.md` its first line: once a CLAUDE.md exists, Claude Code stops reading AGENTS.md unless CLAUDE.md imports it, and some setups never read AGENTS.md on its own. Add this line, as plain text outside backticks and code blocks, because Claude Code doesn't import a path inside them:
+3. If no instruction file imports PROJECT.md yet, offer to add the import, so Claude reads it in every session. Check CLAUDE.md, .claude/CLAUDE.md and AGENTS.md at the repo root, not in the current folder, and don't add it twice. Claude Code reads an `@path` from the folder of the file that holds it, so:
+   - CLAUDE.md imports it with `@PROJECT.md`.
+   - .claude/CLAUDE.md imports it with `@../PROJECT.md`. A `@PROJECT.md` there names .claude/PROJECT.md, so it doesn't count: offer to change it to `@../PROJECT.md` instead of adding the line again.
+   - AGENTS.md imports it with `@PROJECT.md`.
+
+   Add the import to CLAUDE.md if it exists, or else to .claude/CLAUDE.md. If there is neither, create CLAUDE.md at the repo root. If the repo has an AGENTS.md and you create CLAUDE.md, make `@AGENTS.md` its first line: once a CLAUDE.md exists, Claude Code stops reading AGENTS.md unless CLAUDE.md imports it, and some setups never read AGENTS.md on its own. Add the line as plain text outside backticks and code blocks, because Claude Code doesn't import a path inside them. In CLAUDE.md, add this line:
 
    ```
    See @PROJECT.md for what this project is for. If a request conflicts with its non-goals or constraints, say so before starting.
    ```
 
+   In .claude/CLAUDE.md, add this line:
+
+   ```
+   See @../PROJECT.md for what this project is for. If a request conflicts with its non-goals or constraints, say so before starting.
+   ```
+
    If the user says no, save that in the project's memory and don't offer again in this repo.
-4. Offer to commit PROJECT.md, and the import line if you added it, following the repo's git rules. The next review starts from that commit.
+4. Offer to commit PROJECT.md, and the import line if you added or changed it, following the repo's git rules. The next review starts from that commit.

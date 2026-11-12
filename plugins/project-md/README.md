@@ -38,13 +38,13 @@ What keeps repeated runs quiet:
 
 ## Loading it in every session
 
-With your approval, the skill adds this line to the repo's CLAUDE.md (or `.claude/CLAUDE.md`), unless it is already there:
+With your approval, the skill adds this line to the CLAUDE.md at the repo root, unless something already imports PROJECT.md:
 
 ```
 See @PROJECT.md for what this project is for. If a request conflicts with its non-goals or constraints, say so before starting.
 ```
 
-Claude Code expands an `@path` outside backticks into the file's contents at session start. If the repo has an AGENTS.md and no CLAUDE.md, the new CLAUDE.md starts with `@AGENTS.md`: once a CLAUDE.md exists, Claude Code reads AGENTS.md only through that import, and with its AGENTS.md reader turned off it never reads AGENTS.md on its own.
+Claude Code expands an `@path` outside backticks into the file's contents at session start, reading the path from the folder of the file that holds it. So if the repo has only a `.claude/CLAUDE.md`, the line goes there as `See @../PROJECT.md …`. A `@PROJECT.md` in `.claude/CLAUDE.md` names `.claude/PROJECT.md`, so the skill offers to change it to `@../PROJECT.md`. If the repo has an AGENTS.md and no CLAUDE.md, the new CLAUDE.md starts with `@AGENTS.md`: once a CLAUDE.md exists, Claude Code reads AGENTS.md only through that import, and with its AGENTS.md reader turned off it never reads AGENTS.md on its own.
 
 An imported file costs context in every session, like the CLAUDE.md that imports it. Claude Code's docs aim to keep that under 200 lines, so the skill keeps PROJECT.md under 150 and proposes folding old decisions when it grows past that.
 
