@@ -49,6 +49,16 @@ class ClaudeMdTest(unittest.TestCase):
         self.assertIn("-- Keep it simple.\n", text)
         self.assertIn("+- Build the simplest thing.\n", text)
 
+    def test_a_rule_added_after_a_last_line_with_no_newline_keeps_diff_lines_apart(self):
+        old = self.dir / "CLAUDE.md.bak-2026-11-03"
+        old.write_text("# Code\n- Keep it simple.")
+        self.path.write_text("# Code\n- Keep it simple.\n- Test first.")
+        text = claude_md.diff(old, self.path)
+        self.assertNotIn("simple.+- Keep", text)
+        # As diff -u marks a last line with no newline.
+        self.assertIn("-- Keep it simple.\n\\ No newline at end of file\n+- Keep it simple.\n", text)
+        self.assertTrue(text.endswith("+- Test first.\n\\ No newline at end of file\n"), text)
+
     def test_the_cli_prints_the_backup_or_says_there_was_no_file(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

@@ -29,12 +29,15 @@ def backup(path: Path, today: date) -> Path | None:
     return target
 
 
+# A last line with no newline would run into the next line of the diff, so it is ended and marked
+# the way diff -u marks it.
 def diff(old: Path, new: Path) -> str:
-    return "".join(difflib.unified_diff(
-        old.read_text().splitlines(keepends=True),
-        new.read_text().splitlines(keepends=True),
-        str(old), str(new),
-    ))
+    return "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+                   for line in difflib.unified_diff(
+                       old.read_text().splitlines(keepends=True),
+                       new.read_text().splitlines(keepends=True),
+                       str(old), str(new),
+                   ))
 
 
 def main(argv: list[str] | None = None) -> None:
