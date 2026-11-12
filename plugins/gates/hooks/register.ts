@@ -4,7 +4,10 @@ import type { Register } from 'claude-code'
 // what to run instead. Each pattern is tested line by line, as a shell reads a script.
 type Gate = { refuses: (command: string) => boolean; reason: string }
 
-const anyLine = (command: string, pattern: RegExp) => command.split('\n').some(line => pattern.test(line))
+// The lines a shell reads: a line that ends in a backslash runs on into the next.
+const lines = (command: string) => command.replace(/\\\n/g, '').split('\n')
+
+const anyLine = (command: string, pattern: RegExp) => lines(command).some(line => pattern.test(line))
 
 // A word on its own: not part of a longer name such as pkill-style.
 const word = (name: string) => new RegExp(`(^|[^A-Za-z0-9_-])${name}([^A-Za-z0-9_-]|$)`)
@@ -12,11 +15,11 @@ const word = (name: string) => new RegExp(`(^|[^A-Za-z0-9_-])${name}([^A-Za-z0-9
 // What a kill finds its targets by: each pgrep -f, and the first grep that ps feeds, with its
 // arguments up to where that command ends.
 const LOOKUPS = [
-  /(^|[^A-Za-z0-9_-])(?<lookup>pgrep[^|;&)\n]*\s(-[A-Za-z0-9]*f|--full)[^|;&)\n]*)/g,
-  /(^|[^A-Za-z0-9_-])ps(\s[^|\n]*)?\|.*?(?<lookup>grep[^|;&)\n]*)/g,
+  /(^|[^A-Za-z0-9_-])(?<lookup>pgrep[^|;&)]*\s(-[A-Za-z0-9]*f|--full)[^|;&)]*)/g,
+  /(^|[^A-Za-z0-9_-])ps(\s[^|]*)?\|.*?(?<lookup>grep[^|;&)]*)/g,
 ]
-const unbracketed = (command: string) =>
-  LOOKUPS.some(lookup => [...command.matchAll(lookup)].some(match => !/\[[^\]]+\]/.test(match.groups!.lookup)))
+const unbracketed = (line: string) =>
+  LOOKUPS.some(lookup => [...line.matchAll(lookup)].some(match => !/\[[^\]]+\]/.test(match.groups!.lookup)))
 
 // git, perhaps with -C DIR or -c KEY=VALUE, then a subcommand; the rest of that one command, up
 // to the next ; & or |; and where an argument ends.
@@ -34,7 +37,7 @@ const GATES: Gate[] = [
     // The Bash tool runs each command as `<shell> -c '<command>'`, so a pattern found by
     // command line matches that shell too, and kill takes it down. A bracketed letter in the
     // pattern ('[g]odot') matches the process but not the shell; one elsewhere does nothing.
-    refuses: command => anyLine(command, word('kill')) && unbracketed(command),
+    refuses: command => anyLine(command, word('kill')) && lines(command).some(unbracketed),
     reason:
       "This kills its own shell: the Bash tool runs the command as `<shell> -c <command>`, so the pgrep -f or grep pattern matches that shell too. Bracket one letter of the pattern so it still matches the process but not the shell, e.g. pgrep -f '[g]odot' or grep '[g]odot'.",
   },

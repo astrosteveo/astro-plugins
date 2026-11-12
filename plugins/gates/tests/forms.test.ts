@@ -20,6 +20,12 @@ const FORMS: [string, string | null][] = [
   ["echo \"[done]\" && kill $(pgrep -f '[g]odot')", null],
   ["[ -n \"$(pgrep -f '[g]odot')\" ] && kill $(pgrep -f '[g]odot')", null],
   ["ps aux | grep '[g]odot' | awk '{print $2}' | xargs kill", null],
+
+  // A line that ends in a backslash runs on into the next.
+  ['git -C /home/me/Projects/game \\\n  add -A', 'git add -A, --all'],
+  ['git commit \\\n  -a -m x', 'git commit -a or --all'],
+  ['git add docs/a.md \\\n  docs/b.md', null],
+  ['git commit -m x \\\n  && git log --all', null],
 ]
 
 for (const [command, reason] of FORMS) {
