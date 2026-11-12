@@ -31,7 +31,8 @@ export type Features = {
 
 type Style = Omit<Span, 'text'>
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})/
+// At any indent, since a fence inside a list item sits at the item's content column.
+const FENCE = /^\s*(`{3,}|~{3,})/
 const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])(\s+)(.*)$/
 const TASK = /^\[([ xX])\]\s+(.*)$/
 const HEADING = /^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/
@@ -58,7 +59,7 @@ export function segments(text: string, features: Features): Segment[] | null {
 
   lines.forEach((line, i) => {
     if (fence !== null) {
-      const closer = new RegExp(`^ {0,3}${fence[0] === '`' ? '`' : '~'}{${fence.length},}\\s*$`)
+      const closer = new RegExp(`^\\s*${fence[0] === '`' ? '`' : '~'}{${fence.length},}\\s*$`)
       if (closer.test(line)) fence = null
       return
     }
