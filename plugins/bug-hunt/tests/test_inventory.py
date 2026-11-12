@@ -97,6 +97,27 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(self.units(text), ["lib/{a.py, b.py}", "lib/big.py", "lib/c.py"])
         self.assertIn("lib/big.py  1 file, 500 lines, 1 commit (one file over the budget)", text)
 
+    def test_a_flat_directory_of_many_small_files_is_not_listed_file_by_file(self):
+        # 1,500 Rails-style migrations of 15 lines named every file in their units' labels, in a
+        # report of 57,000 characters.
+        names = [f"{20190101000000 + i}_change_column_{i}.rb" for i in range(1500)]
+        for name in names:
+            self.write(f"db/migrate/{name}", lines(15))
+        text = self.run_report()
+        named = sum(1 for name in names if name in text)
+        self.assertLess(named, 30, f"the report names {named} files and runs to {len(text):,} characters")
+        self.assertLess(len(text.split("\nunits:\n")[1]), 2000)
+
+    def test_a_long_group_is_named_by_its_first_and_last_file(self):
+        for name in "abcde":
+            self.write(f"lib/{name}.py", lines(10))
+        self.write("lib/f_big.py", lines(500))
+        self.write("lib/g.py", lines(10))
+        # A file over the budget ends the group before it, so the range never takes it in.
+        self.assertEqual(
+            self.units(self.run_report(budget=100)), ["lib/{a.py, ..., e.py}", "lib/f_big.py", "lib/g.py"]
+        )
+
     def test_vendored_generated_and_binary_files_are_left_out(self):
         self.git("init", "-q")
         self.write("app.py", lines(10))

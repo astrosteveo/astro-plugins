@@ -19,6 +19,7 @@ from pathlib import Path
 
 DEFAULT_BUDGET = 3000
 MAX_UNITS = 300
+LABEL_NAMES = 3  # a group of more files is labelled by its first and last
 RECENT_COMMITS = 300
 
 # Directories whose files someone else wrote or a tool made. Within git, ignored build output is
@@ -238,11 +239,15 @@ def make_units(code: dict[str, int], budget: int) -> list[Unit]:
             units.append(Unit(f"{where}* (files directly in it)", mine, d, False))
             return
         # A file over the budget is a unit of its own; the rest are packed in name order, which
-        # keeps related names such as bridge.gd and bridge_host.gd together.
+        # keeps related names such as bridge.gd and bridge_host.gd together. A group ends before a
+        # file over the budget, so a label naming its first and last file never takes that file in.
         groups: list[list[str]] = []
         group: list[str] = []
         for f in mine:
             if code[f] > budget:
+                if group:
+                    groups.append(group)
+                    group = []
                 groups.append([f])
                 continue
             if group and sum(code[g] for g in group) + code[f] > budget:
@@ -269,6 +274,9 @@ def chunk_label(where: str, group: list[str]) -> str:
     names = [g.rsplit("/", 1)[-1] for g in group]
     if len(names) == 1:
         return where + names[0]
+    if len(names) > LABEL_NAMES:
+        # Naming every file would turn a directory of many small files into a file listing.
+        names = [names[0], "...", names[-1]]
     return f"{where}{{{', '.join(names)}}}"
 
 
