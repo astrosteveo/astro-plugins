@@ -9,7 +9,7 @@ Gates that refuse risky Bash commands before they run, and tell Claude why and w
 | stage everything | `git add -A`, `--all`, `-u`, `--update` or `.` | check `git status` and stage files by name |
 | commit everything | `git commit -a` or `--all` | stage by name, then commit without `-a` |
 
-A gate reads each line of a command on its own, as a shell does, with a line that ends in `\` run on into the next, and catches a command after `cd … &&` or `;`, and `git -C dir`. It reads text too, so a commit message that names a refused command, such as one describing these gates, trips it. Every refusal says the way round: put the text in a file and pass the file, `git commit -F FILE`.
+A gate reads each line of a command on its own, as a shell does, with a line that ends in `\` run on into the next, and catches a command after `cd … &&` or `;`, git called by path (`/usr/bin/git`), and `git -C dir` with a quoted dir such as `"My Projects/repo"`. It reads text too, so a commit message that names a refused command, such as one describing these gates, trips it. Every refusal says the way round: put the text in a file and pass the file, `git commit -F FILE`.
 
 A gate that fails refuses the command: a broken gate never waves one through. Claude Code skips a failed hook and runs the tool, so the module's `.catch` answers with a refusal in its place.
 

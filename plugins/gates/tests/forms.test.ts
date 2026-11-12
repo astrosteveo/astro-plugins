@@ -26,6 +26,17 @@ const FORMS: [string, string | null][] = [
   ['git commit \\\n  -a -m x', 'git commit -a or --all'],
   ['git add docs/a.md \\\n  docs/b.md', null],
   ['git commit -m x \\\n  && git log --all', null],
+
+  // git called by path, and -C or -c with a quoted value.
+  ['/usr/bin/git add -A', 'git add -A, --all'],
+  ['/usr/bin/git commit -am x', 'git commit -a or --all'],
+  ['git -C "/mnt/c/My Projects/repo" add -A', 'git add -A, --all'],
+  ['git -c user.name="A B" commit -am x', 'git commit -a or --all'],
+  ['/usr/bin/git add docs/x.md', null],
+  ['/usr/bin/git status', null],
+  ['git -C "a b" status', null],
+  ['git -C "/mnt/c/My Projects/repo" add docs/x.md', null],
+  ['git -c user.name="A B" commit -m x', null],
 ]
 
 for (const [command, reason] of FORMS) {
