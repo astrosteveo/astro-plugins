@@ -47,7 +47,7 @@ The author: a solo developer on Linux who uses Claude Code for hobby projects. T
 
 - Every plugin is listed in `.claude-plugin/marketplace.json` and passes `claude plugin validate`.
 - Hook plugins are written in TypeScript. Skill scripts use only Python 3.8+'s standard library.
-- Runs on Linux without assuming a distro, and on Windows where it can. A plugin that doesn't work on Windows says so in its README.
+- Plugins are all tested on Linux.
 - MIT license, public on GitHub.
 
 ## Decisions
