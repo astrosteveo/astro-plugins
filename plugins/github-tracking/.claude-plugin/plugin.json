@@ -1,6 +1,6 @@
 {
   "name": "github-tracking",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Keeps a repo's GitHub issues, milestones and Projects board true while Claude works: each change starts from an issue on the board, PRs close their issues, larger steps split into sub-issues, and status updates say where the project stands. A script makes the board's API calls, so no CLAUDE.md keeps a project's ids.",
   "author": {
     "name": "astrosteveo"
