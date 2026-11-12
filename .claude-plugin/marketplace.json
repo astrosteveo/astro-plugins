@@ -45,7 +45,7 @@
     {
       "name": "project-md",
       "source": "./plugins/project-md",
-      "description": "/project-md:review drafts and reviews PROJECT.md, a committed document that says what a project is for and what it won't do, so Claude has it in every session. Run it any time to check the work against it; it changes only what you approve."
+      "description": "/project-md:review drafts and reviews PROJECT.md, a committed document that says what a project is for and what it won't do, and loads it into every session, with no line in CLAUDE.md. Run it any time to check the work against it; it changes only what you approve."
     }
   ]
 }
