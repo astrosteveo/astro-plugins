@@ -5,7 +5,7 @@ Gates that refuse risky Bash commands before they run, and tell Claude why and w
 | Gate | Refuses | Says to |
 | --- | --- | --- |
 | pkill | any `pkill` | find the one process with `pgrep -f '[g]odot'` and `kill` its PID |
-| kill by pattern | `kill` with `pgrep -f` or `ps \| grep`, unless a letter of the pattern is bracketed | bracket a letter, so the pattern can't match the Bash tool's own shell |
+| kill by pattern | `kill` with `pgrep -f` or `ps \| grep`, unless a letter of that pattern is bracketed (a bracket elsewhere in the command doesn't count) | bracket a letter, so the pattern can't match the Bash tool's own shell |
 | stage everything | `git add -A`, `--all`, `-u`, `--update` or `.` | check `git status` and stage files by name |
 | commit everything | `git commit -a` or `--all` | stage by name, then commit without `-a` |
 
