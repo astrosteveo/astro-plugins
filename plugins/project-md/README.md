@@ -47,7 +47,7 @@ PROJECT.md says what this project is for. If a request conflicts with its non-go
 
 Claude Code sends the file again after a compaction or `/clear`. With no PROJECT.md, the hook does nothing. If a CLAUDE.md already imports PROJECT.md with `@PROJECT.md`, the hook skips it so it doesn't load twice, and you can delete that line. Since the hook does the loading, PROJECT.md loads only where project-md is installed. Someone who clones the repo without the plugin doesn't get it.
 
-PROJECT.md costs context in every session, like CLAUDE.md. Claude Code's docs aim to keep that under 200 lines, so the skills keep PROJECT.md under 150, and review proposes folding old decisions when it grows past that.
+PROJECT.md costs context in every session, like CLAUDE.md. Claude Code's docs aim to keep that under 200 lines, so the skills keep PROJECT.md under 150, and review proposes folding old decisions when it grows past that. Review rewrites Status as where things stand rather than adding a line per change, so Status stays a few lines.
 
 ## Tests
 

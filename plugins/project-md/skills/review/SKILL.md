@@ -60,7 +60,7 @@ Look for:
   - A success or failure line too vague to check. Propose a checkable one.
   - Lines that contradict each other, such as a goal that a non-goal rules out.
   - A section from the list above that's missing, or a `Not decided yet.` that the repo now answers.
-  - Status that holds something that changes with every commit, such as a commit count.
+  - Status that reads as a log of past changes rather than where the project stands, or holds something that changes with every commit, such as a commit count.
   - Over 150 lines: propose folding old Decisions into fewer lines and cutting Status to where things stand now.
 
 Drop any finding the file already answers: a decision, non-goal or open question that covers it. Review the scope, not the code: don't run, test or change the code.
@@ -73,7 +73,8 @@ Draft an edit for each finding the user answers:
 
 - A change of scope goes in Goals, Non-goals or Constraints, in the user's words.
 - Work the user keeps although it's outside the goals goes in Decisions, with their reason. Otherwise the next review raises it again.
-- A success check met, a question answered or a new status updates its section. An answered open question moves to Decisions.
+- A success check met or a question answered updates its section. An answered open question moves to Decisions.
+- A new status rewrites Status as where the project stands now: what works, what's next and what's parked. Keep a past change only while it's still useful context, and drop finished work and anything Decisions, What it is or a README already records. Don't add a line per change: Status stays a few lines however long the project runs.
 
 A Decisions line reads `- YYYY-MM-DD: what was decided. Why: the reason.`, dated today. For example: `- 2026-11-05: Kept the level editor, though it's not a goal. Why: it makes testing levels faster.`
 
