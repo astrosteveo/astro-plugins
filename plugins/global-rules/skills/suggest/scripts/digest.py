@@ -71,8 +71,9 @@ class Digest:
     sessions: set[str] = field(default_factory=set)
     skipped: int = 0
     claude_md: Path | None = None
-    # (timestamp, order seen, the file's whole text) for each state of claude_md the transcripts show.
-    snapshots: list[tuple[str, int, str]] = field(default_factory=list)
+    # (timestamp, order seen, whether Claude's edit wrote this state, the file's whole text) for each
+    # state of claude_md the transcripts show: the file as an edit found it, and as the edit left it.
+    snapshots: list[tuple[str, int, bool, str]] = field(default_factory=list)
     # A resumed session's transcript repeats the records it was resumed from, ids and all.
     seen: set[str] = field(default_factory=set)
 
@@ -178,9 +179,9 @@ def take_snapshot(record: dict, digest: Digest) -> None:
     if isinstance(before, str) and isinstance(result.get("oldString"), str):
         after = before.replace(result["oldString"], result.get("newString") or "",
                                -1 if result.get("replaceAll") else 1)
-    for text in (before, after):
+    for written, text in ((False, before), (True, after)):
         if isinstance(text, str):
-            digest.snapshots.append((record.get("timestamp") or "", len(digest.snapshots), text))
+            digest.snapshots.append((record.get("timestamp") or "", len(digest.snapshots), written, text))
 
 
 def scan_session(path: Path, since: str | None, include_tests: bool, digest: Digest) -> str | None:
@@ -317,11 +318,11 @@ def quote(text: str, limit: int) -> str:
     return '"' + cut(one_line(text), limit) + '"'
 
 
-def line_times(text: str, snapshots: list[tuple[str, int, str]], changed: str) -> list[str]:
+def line_times(text: str, snapshots: list[tuple[str, int, bool, str]], changed: str) -> list[str]:
     """When each line of the file, in its current wording, was put in place."""
     if not snapshots:
         return [f"No edits to it in the transcripts; every line was in place by {changed}."]
-    states = [{line.strip() for line in snapshot.splitlines()} for _, _, snapshot in snapshots]
+    states = [{line.strip() for line in snapshot.splitlines()} for _, _, _, snapshot in snapshots]
     out = []
     for number, line in enumerate(text.splitlines(), 1):
         key = line.strip()
@@ -334,8 +335,10 @@ def line_times(text: str, snapshots: list[tuple[str, int, str]], changed: str) -
             first = len(states) - 1
             while first and key in states[first - 1]:
                 first -= 1
-            # Already in the earliest state the transcripts show, so it may be older.
-            when = f"{'by' if first == 0 else 'since'} {minute(snapshots[first][0])}"
+            # Only a line an edit wrote appeared then. One already in the earliest state the transcripts
+            # show, or first seen in the file as an edit found it (added by hand), may be older.
+            written = first > 0 and snapshots[first][2]
+            when = f"{'since' if written else 'by'} {minute(snapshots[first][0])}"
         out.append(f"- {number} · {when} · {cut(key, 100)}")
     return out
 
