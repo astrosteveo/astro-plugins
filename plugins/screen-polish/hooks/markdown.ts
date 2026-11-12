@@ -96,7 +96,8 @@ export function segments(text: string, features: Features): Segment[] | null {
 
 function isRich(block: string[], f: Features): boolean {
   const first = block[0]!
-  if (QUOTE.test(first)) return f.quotes
+  // A quote is drawn as one paragraph, so a fence or a list inside it stays with the engine.
+  if (QUOTE.test(first)) return f.quotes && !block.some(l => FENCE.test(unquoted(l)) || ITEM.test(unquoted(l)))
   // Tables, HTML, indented code and setext headings (a rule under text) stay with the engine.
   if (block.some(l => /^\s*\|/.test(l) || /^\s*</.test(l) || QUOTE.test(l))) return false
   if (block.slice(1).some(l => RULE.test(l) || /^ {0,3}=+\s*$/.test(l))) return false
@@ -109,6 +110,11 @@ function isRich(block: string[], f: Features): boolean {
       (f.rules && RULE.test(l)) ||
       (f.tasks && TASK.test(ITEM.exec(l)?.[4] ?? '')),
   )
+}
+
+/** A quote's line less its `>` marks. */
+function unquoted(line: string): string {
+  return line.replace(/^ {0,3}(> ?)+/, '')
 }
 
 type Building =
@@ -129,7 +135,7 @@ function richLines(block: string[]): Line[] {
     const last = out.at(-1)
 
     if (QUOTE.test(line) || (last?.kind === 'quote' && !RULE.test(line))) {
-      const body = line.replace(/^ {0,3}(> ?)+/, '').trim()
+      const body = unquoted(line).trim()
       if (last?.kind === 'quote' && body !== '') last.raw += ` ${body}`
       else out.push({ kind: 'quote', raw: body })
       continue

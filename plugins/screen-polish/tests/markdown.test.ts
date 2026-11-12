@@ -107,3 +107,13 @@ test('a fence four spaces deep in a nested list item stays with the engine', asy
     { kind: 'rich', lines: [{ kind: 'text', indent: 0, spans: [{ text: 'Then run ' }, { text: 'y', code: true }, { text: '.' }] }] },
   ])
 })
+
+test('a fenced code block inside a quote is not joined into one line', async () => {
+  expect(segments('> Output:\n> ```\n> error: boom\n> exit 1\n> ```', ALL)).toBeNull()
+})
+
+test('a list inside a quote keeps its items apart', async () => {
+  expect(segments('> Steps:\n> - one\n> - two', ALL)).not.toEqual([
+    { kind: 'rich', lines: [{ kind: 'quote', spans: [{ text: 'Steps: - one - two' }] }] },
+  ])
+})
