@@ -567,6 +567,30 @@ test('a save whose index cannot be updated says the file was written', async ($,
   expect(files.has(INDEX)).toBe(false)
 })
 
+test('a replace whose index cannot be updated says its old line is still there', async ($, on) => {
+  const disk: Disk = {}
+  const files = engine(on, disk)
+  await start($)
+  await write($, 'a')
+  disk.indexMoveFails = true
+  const saved = await write($, 'a', { description: 'changed' })
+  // The index still lists a, with its old description, and every session loads that line.
+  expect(files.get(INDEX)).toBe('- [a](a.md) — The user wants answers short\n')
+  expect(saved.deny).not.toContain('so it is not listed')
+  expect(saved.deny).toContain('Wrote a.md but could not update the index')
+  expect(saved.deny).toContain('so its index line still has the old title and description')
+})
+
+// The file is there from the first try, but the index has no line for it yet.
+test('a save again of a memory the index never listed still says it is not listed', async ($, on) => {
+  const files = engine(on, { indexMoveFails: true })
+  await start($)
+  await write($, 'a')
+  const again = await write($, 'a')
+  expect(again.deny).toContain('so it is not listed')
+  expect(files.has(INDEX)).toBe(false)
+})
+
 test('a delete whose index cannot be updated says the file is gone, and a second delete clears the line', async ($, on) => {
   const disk: Disk = {}
   const files = engine(on, disk)
