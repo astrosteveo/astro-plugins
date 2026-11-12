@@ -171,6 +171,16 @@ class Sub(BoardTest):
             board.sub("o/r", "7", ["9"])
         self.assertEqual(fake.mutations("addSubIssue"), [])
 
+    def test_a_refused_child_links_none_of_the_others(self):
+        # Linking #8 and then failing on a later child would leave #8 linked without saying so.
+        for bad, why in (("9", "#9 is a pull request"), ("40", "no issue or PR #40")):
+            with self.subTest(child=bad):
+                fake = self.use(FakeGh())
+                code, out, err = self.run_main("sub", "7", "8", bad)
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn(why, err)
+                self.assertEqual(fake.mutations("addSubIssue"), [])
+
 
 class Update(BoardTest):
     def test_posts_the_body_from_a_file_with_the_status_graphql_spells(self):

@@ -109,11 +109,13 @@ def sub(repo: str, parent: str, children: list[str]) -> list[str]:
     parent_id, kind, parent_number = content(repo, parent)
     if kind != "Issue":
         raise Fail(f"#{parent_number} is a pull request; only an issue has sub-issues")
-    said = []
-    for child in children:
-        child_id, kind, number = content(repo, child)
+    # Check every child before linking any, so a bad one leaves nothing linked.
+    found = [content(repo, child) for child in children]
+    for _, kind, number in found:
         if kind != "Issue":
             raise Fail(f"#{number} is a pull request; only an issue can be a sub-issue")
+    said = []
+    for child_id, _, number in found:
         graphql("mutation($p:ID!,$c:ID!){addSubIssue(input:{issueId:$p,subIssueId:$c}){issue{id}}}",
                 p=parent_id, c=child_id)
         said.append(f"#{number} is a sub-issue of #{parent_number}")
