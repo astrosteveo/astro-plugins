@@ -139,6 +139,64 @@ test('with every reply redraw off, the engine draws replies', { options: OFF }, 
   await ui.unmount()
 })
 
+const ON = { inlineCode: true, headings: true, rules: true, taskLists: true, quotes: true }
+
+// A redraw that is off leaves its part to Claude Code's Markdown, even in a
+// block another setting would redraw.
+test('inline code off draws no chip in a heading', { options: { ...ON, inlineCode: false } }, async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount(message('## Run `ls`'))
+
+  expect(await ui.find({ type: 'Text', text: /^ ls $/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe('## Run `ls`')
+  await ui.unmount()
+})
+
+test('inline code off draws no chip in a quote', { options: { ...ON, inlineCode: false } }, async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount(message('> Run `ls`'))
+
+  expect(await ui.find({ type: 'Text', text: /^ ls $/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe('> Run `ls`')
+  await ui.unmount()
+})
+
+test('task lists off draws no checkbox on an item with inline code', { options: { ...ON, taskLists: false } }, async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount(message('- [ ] run `ls`'))
+
+  expect(await ui.find({ type: 'Text', text: '○ ' })).toBeUndefined()
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe('- [ ] run `ls`')
+  await ui.unmount()
+})
+
+test('heading levels off leaves a heading with inline code uncolored', { options: { ...ON, headings: false } }, async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount(message('## Run `ls`'))
+
+  expect((await ui.find({ type: 'Text', text: /^Run/ }))?.props ?? {}).not.toHaveProperty('color')
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe('## Run `ls`')
+  await ui.unmount()
+})
+
+test('drawn rules off draws no line above a list with inline code', { options: { ...ON, rules: false } }, async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount(message('---\n- run `ls`'))
+
+  expect(await ui.find({ type: 'Text', text: /^─+$/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe('---\n- run `ls`')
+  await ui.unmount()
+})
+
+test('with one redraw off, a block that lacks its part is still drawn', { options: { ...ON, inlineCode: false } }, async ($, on) => {
+  engine(on)
+  const ui = await $.ui.mount(message('## Plan\n\nRun `ls`.'))
+
+  expect((await ui.find({ type: 'Text', text: /^Plan$/ }))?.props).toMatchObject({ color: 'claude' })
+  expect((await ui.find({ type: 'Markdown' }))?.text).toBe('Run `ls`.')
+  await ui.unmount()
+})
+
 test('a plugin beneath that wraps the reply, as inline-thinking does, keeps its part', async ($, on) => {
   on('ui.render', ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
