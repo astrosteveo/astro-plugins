@@ -22,7 +22,7 @@ Gives each project a `PROJECT.md`: a document committed with the code that says 
 | PROJECT.md exists | Reads what changed since PROJECT.md's last commit and reports whether the work is on track, with numbered findings: work a non-goal rules out, success checks now met, decisions the file doesn't record, questions the commits answered, vague or stale lines. Then it asks what only you can answer |
 | You name an idea | Says whether it fits, conflicts (quoting the line) or isn't covered, recommends what to do, and records your decision |
 | You answer | Drafts the edits: scope changes in your words, and work you keep anyway goes in Decisions with your reason, so it isn't raised again |
-| You approve | Writes the file, shows the diff, offers to import it from CLAUDE.md, and offers to commit |
+| You approve | Writes the file, shows the diff and offers to commit |
 
 It writes nothing until you approve, and it reviews the scope, not the code.
 
@@ -38,21 +38,20 @@ What keeps repeated runs quiet:
 
 ## Loading it in every session
 
-With your approval, the skill adds this line to the CLAUDE.md at the repo root, unless something already imports PROJECT.md:
+The plugin loads PROJECT.md for you, so your CLAUDE.md doesn't need to import it. When a session starts, a hook looks for PROJECT.md at the root of the git repo you're in, or in the session's folder outside a repo. If it's there, the hook adds it to the files Claude Code sends with your first message, the same way it sends CLAUDE.md, and starts it with this line:
 
 ```
-See @PROJECT.md for what this project is for. If a request conflicts with its non-goals or constraints, say so before starting.
+PROJECT.md says what this project is for. If a request conflicts with its non-goals or constraints, say so before starting.
 ```
 
-Claude Code expands an `@path` outside backticks into the file's contents at session start, reading the path from the folder of the file that holds it. So if the repo has only a `.claude/CLAUDE.md`, the line goes there as `See @../PROJECT.md …`. A `@PROJECT.md` in `.claude/CLAUDE.md` names `.claude/PROJECT.md`, so the skill offers to change it to `@../PROJECT.md`.
+Claude Code sends the file again after a compaction or `/clear`. With no PROJECT.md, the hook does nothing. If a CLAUDE.md already imports PROJECT.md with `@PROJECT.md`, the hook skips it so it doesn't load twice, and you can delete that line. Since the hook does the loading, PROJECT.md loads only where project-md is installed. Someone who clones the repo without the plugin doesn't get it.
 
-If the repo has an AGENTS.md and no CLAUDE.md, the new CLAUDE.md starts with `@AGENTS.md`: once a CLAUDE.md exists, Claude Code reads AGENTS.md only through that import, and with its AGENTS.md reader turned off it never reads AGENTS.md on its own. For the same reason, a `@PROJECT.md` in AGENTS.md counts as the import only when a CLAUDE.md imports AGENTS.md, or when the repo has no CLAUDE.md, `.claude/CLAUDE.md` or `CLAUDE.local.md`.
-
-An imported file costs context in every session, like the CLAUDE.md that imports it. Claude Code's docs aim to keep that under 200 lines, so the skill keeps PROJECT.md under 150 and proposes folding old decisions when it grows past that.
+PROJECT.md costs context in every session, like CLAUDE.md. Claude Code's docs aim to keep that under 200 lines, so the skill keeps PROJECT.md under 150 and proposes folding old decisions when it grows past that.
 
 ## Tests
 
 ```
 python3 -m unittest discover -s plugins/project-md/tests
 claude plugin validate plugins/project-md
+claude plugin test plugins/project-md
 ```
