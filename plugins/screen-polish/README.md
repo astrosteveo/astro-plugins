@@ -4,7 +4,7 @@ Polishes Claude Code's terminal. Each change below has its own setting: open `/c
 
 ## Replies (on by default)
 
-Claude Code's renderer gives inline code a color but no background, draws every heading below `#` as plain bold, and prints `---`, `- [x]` and quotes much as written. screen-polish redraws the parts of a reply that hold one of these, and leaves the rest (code fences, tables, plain paragraphs) to Claude Code.
+Claude Code's renderer gives inline code a color but no background, draws every heading below `#` as plain bold, and prints `---`, `- [x]` and quotes much as written. screen-polish redraws the parts of a reply that hold one of these, and leaves the rest (code fences, tables, plain paragraphs) to Claude Code. A part that holds something whose setting is off is left to Claude Code whole, so that thing looks as Claude Code draws it: with inline code off, a heading holding `code` loses its accent color too.
 
 While any of these is on, a mouse selection in a reply also takes the gutter's two cells, which a plugin can't keep out of it the way Claude Code does. Click a reply's `●` to copy cleanly: your selection in that reply without the gutter, or the whole reply as markdown when nothing in it is selected.
 

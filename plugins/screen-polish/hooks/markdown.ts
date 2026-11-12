@@ -45,14 +45,15 @@ const QUOTE = /^ {0,3}>/
  */
 export function segments(text: string, features: Features): Segment[] | null {
   const lines = text.split('\n')
-  const blocks: { start: number; end: number; isRich: boolean }[] = []
+  // Each block with the lines this plugin draws for it, or null for the engine's.
+  const blocks: { start: number; end: number; drawn: Line[] | null }[] = []
   let start = -1
   let fence: string | null = null
   let hasFence = false
 
   const close = (end: number) => {
     if (start < 0) return
-    blocks.push({ start, end, isRich: !hasFence && isRich(lines.slice(start, end), features) })
+    blocks.push({ start, end, drawn: hasFence ? null : drawn(lines.slice(start, end), features) })
     start = -1
     hasFence = false
   }
@@ -75,18 +76,18 @@ export function segments(text: string, features: Features): Segment[] | null {
   })
   close(lines.length)
 
-  if (!blocks.some(b => b.isRich)) return null
+  if (blocks.every(b => b.drawn === null)) return null
 
   const out: Segment[] = []
   for (let i = 0; i < blocks.length; ) {
     const block = blocks[i]!
-    if (block.isRich) {
-      out.push({ kind: 'rich', lines: richLines(lines.slice(block.start, block.end)) })
+    if (block.drawn !== null) {
+      out.push({ kind: 'rich', lines: block.drawn })
       i++
       continue
     }
     let j = i
-    while (j + 1 < blocks.length && !blocks[j + 1]!.isRich) j++
+    while (j + 1 < blocks.length && blocks[j + 1]!.drawn === null) j++
     // From the first line to the last of the run, so blank lines inside stay as written.
     out.push({ kind: 'markdown', text: lines.slice(block.start, blocks[j]!.end).join('\n') })
     i = j + 1
@@ -94,22 +95,33 @@ export function segments(text: string, features: Features): Segment[] | null {
   return out
 }
 
-function isRich(block: string[], f: Features): boolean {
+/** The block's lines as this plugin draws them, or null when the engine draws it. */
+function drawn(block: string[], f: Features): Line[] | null {
+  if (!canDraw(block)) return null
+  const out = richLines(block)
+
+  // A block that holds a part whose setting is off stays with the engine whole,
+  // so that part looks just as Claude Code draws it.
+  const holds: Record<keyof Features, boolean> = {
+    code: out.some(l => l.kind !== 'rule' && l.spans.some(s => s.code)),
+    headings: out.some(l => l.kind === 'heading'),
+    rules: out.some(l => l.kind === 'rule'),
+    tasks: out.some(l => l.kind === 'item' && l.task !== undefined),
+    quotes: out.some(l => l.kind === 'quote'),
+  }
+  const parts = (Object.keys(holds) as (keyof Features)[]).filter(k => holds[k])
+  return parts.length > 0 && parts.every(k => f[k]) ? out : null
+}
+
+function canDraw(block: string[]): boolean {
   const first = block[0]!
   // A quote is drawn as one paragraph, so a fence or a list inside it stays with the engine.
-  if (QUOTE.test(first)) return f.quotes && !block.some(l => FENCE.test(unquoted(l)) || ITEM.test(unquoted(l)))
+  if (QUOTE.test(first)) return !block.some(l => FENCE.test(unquoted(l)) || ITEM.test(unquoted(l)))
   // Tables, HTML, indented code and setext headings (a rule under text) stay with the engine.
   if (block.some(l => /^\s*\|/.test(l) || /^\s*</.test(l) || QUOTE.test(l))) return false
   if (block.slice(1).some(l => RULE.test(l) || /^ {0,3}=+\s*$/.test(l))) return false
   if (/^( {4,}|\t)/.test(first) && !ITEM.test(first)) return false
-
-  return block.some(
-    l =>
-      (f.code && inline(l).some(s => s.code)) ||
-      (f.headings && HEADING.test(l)) ||
-      (f.rules && RULE.test(l)) ||
-      (f.tasks && TASK.test(ITEM.exec(l)?.[4] ?? '')),
-  )
+  return true
 }
 
 /** A quote's line less its `>` marks. */
