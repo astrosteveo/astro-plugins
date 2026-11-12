@@ -1,6 +1,6 @@
 {
   "name": "project-md",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "/project-md:init drafts PROJECT.md, a committed document that says what a project is for: the problem, who it's for, goals, non-goals, what success and failure look like, priorities, constraints and decisions. /project-md:review checks it against what changed since its last commit, and changes only what you approve. The plugin loads PROJECT.md into every session, with no line in CLAUDE.md.",
   "author": {
     "name": "astrosteveo"
