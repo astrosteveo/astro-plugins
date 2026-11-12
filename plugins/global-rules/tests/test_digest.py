@@ -221,6 +221,20 @@ class DigestTest(unittest.TestCase):
             (entry["name"], entry["type"], entry["description"], entry["body"].strip()),
         )
 
+    def test_an_unquoted_description_ending_in_a_quoted_word_keeps_its_closing_quote(self):
+        path = self.config / "memory" / "close-means-merge.md"
+        self.memory(path, '---\nname: close-means-merge\ndescription: Say "merge" when told "close"\n'
+                          'type: feedback\n---\n\nMerge the PR.\n')
+        memory = digest.read_memory(path, "global")
+        self.assertEqual(memory.description, 'Say "merge" when told "close"')
+        self.assertEqual(digest.front_matter_value('"merge" means merge'), '"merge" means merge')
+        self.assertEqual(digest.front_matter_value('"merge" or "close"'), '"merge" or "close"')
+
+    def test_a_quoted_front_matter_value_loses_the_quotes_around_it(self):
+        self.assertEqual(digest.front_matter_value("'Use uv for Python'"), "Use uv for Python")
+        # Not JSON (\U is no JSON escape), but still quoted.
+        self.assertEqual(digest.front_matter_value('"C:\\Users"'), "C:\\Users")
+
     def test_header_reports_whether_claude_md_exists(self):
         self.fixture()
         self.assertIn("does not exist", self.run_digest())
