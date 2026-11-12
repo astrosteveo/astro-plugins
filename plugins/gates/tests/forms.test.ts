@@ -47,6 +47,15 @@ const FORMS: [string, string | null][] = [
   ['(cd /tmp/repo && git add docs/x.md)', null],
   ['sh -c "git add docs/x.md"', null],
   ['git commit -m"add tests"', null],
+
+  // A ; & or | inside quotes is part of the message, not the end of the command.
+  ['git commit -m "Fix parser; add tests" -a', 'git commit -a or --all'],
+  ["git commit -m 'a | b' --all", 'git commit -a or --all'],
+  ['git commit -m "a; b"', null],
+  ['git commit -m "a; b"; ls -a', null],
+  ['git commit -m "it\'s done"; ls -a', null],
+  ['git commit -m "a; b" && git log --all', null],
+  ['git commit -m "Drop the -a flag"', null],
 ]
 
 for (const [command, reason] of FORMS) {
