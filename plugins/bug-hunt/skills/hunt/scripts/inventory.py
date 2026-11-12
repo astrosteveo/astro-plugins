@@ -102,7 +102,10 @@ def list_files(root: Path, in_git: bool, scope: list[str]) -> list[str]:
                 d for d in dirs if not d.startswith(".") and d not in VENDORED_DIRS | BUILD_DIRS
             )
             for name in files:
-                found.append((Path(here) / name).relative_to(root).as_posix())
+                path = Path(here) / name
+                # Only regular files, as with git: reading a named pipe would block forever.
+                if path.is_file():
+                    found.append(path.relative_to(root).as_posix())
     return sorted(set(found))
 
 

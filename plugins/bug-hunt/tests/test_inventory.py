@@ -266,6 +266,17 @@ class InventoryTest(unittest.TestCase):
         self.assertNotIn("test file inside", text)
         self.assertEqual(self.units(self.run_report("shopgame")), ["shopgame/"])
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs named pipes")
+    def test_a_named_pipe_in_a_folder_without_git_does_not_hang_the_listing(self):
+        # Outside git the walk kept the pipe, and reading it to classify it blocked forever.
+        self.write("main.py", "x = 1\n")
+        os.mkfifo(str(self.root / "events.fifo"))
+        run = subprocess.run(
+            [sys.executable, str(SCRIPT)], cwd=self.root, capture_output=True, text=True, timeout=20
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("code: 1 file, 1 line", run.stdout)
+
     def test_the_script_parses_as_python_3_8(self):
         # The plugins' constraint is Python 3.8+ with the standard library only.
         ast.parse(SCRIPT.read_text(), feature_version=(3, 8))
