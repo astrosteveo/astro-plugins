@@ -341,6 +341,27 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("code: 1 file, 1 line", run.stdout)
 
+    def test_files_directly_in_a_partly_listed_directory_say_only_the_listed_ones(self):
+        # Listing src/listed.py and src/sub labelled src/listed.py's unit "src/* (files directly in
+        # it)", as if it held src/unlisted.py too.
+        self.write("src/listed.py", lines(5))
+        self.write("src/unlisted.py", lines(5))
+        self.write("src/sub/m.py", lines(8))
+        labels = self.units(self.run_report("src/listed.py", "src/sub", budget=10))
+        self.assertEqual(labels[0], "src/sub/")
+        self.assertIn("only the listed paths", labels[1])
+
+    def test_a_range_in_a_partly_listed_directory_says_it_holds_only_the_listed_ones(self):
+        # src/{a.py, ..., f.py} would read as taking in the unlisted src/b.py.
+        for name in "abcdefg":
+            self.write(f"src/{name}.py", lines(2))
+        listed = [f"src/{name}.py" for name in "acdefg"]
+        self.assertEqual(
+            self.units(self.run_report(*listed, budget=10)),
+            ["src/{a.py, ..., f.py} (only the listed paths in it)", "src/g.py"],
+        )
+        self.assertEqual(self.units(self.run_report("src", budget=10))[0], "src/{a.py, ..., e.py}")
+
     def test_the_script_parses_as_python_3_8(self):
         # The plugins' constraint is Python 3.8+ with the standard library only.
         ast.parse(SCRIPT.read_text(), feature_version=(3, 8))
