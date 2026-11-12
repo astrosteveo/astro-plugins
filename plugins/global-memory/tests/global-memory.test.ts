@@ -19,6 +19,10 @@ type Disk = {
   lockRenewed?: boolean
   // Another session takes the lock from this one while it changes the files.
   lockStolen?: boolean
+  // The folder takes no lock: making one fails for want of permission, and none is there.
+  lockDenied?: boolean
+  // Another session lets go of its lock between this one's failed mkdir and its look at the lock.
+  lockFreed?: boolean
   // The exit status of the `mkdir -p` that makes the folder.
   mkdirExit?: number
   // Whether the move of a temp file over the index fails.
@@ -44,8 +48,10 @@ function engine(on: On, disk: Disk = {}) {
       : undefined
   let waits = disk.lockBusy ?? 0
   let breaker = false
+  let freed = disk.lockFreed ?? false
   // Where each temp file was moved to.
   const moves: string[] = []
+  const counts = { sleeps: 0 }
   on('tool.check', () => ({ decision: disk.verdict ?? 'allow' }))
   on('env.get', (_, e) => ({ value: (disk.env ?? { HOME: '/home/u' })[e.name] }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__global-memory__${e.name}` } }))
@@ -104,6 +110,11 @@ function engine(on: On, disk: Disk = {}) {
     const [cmd] = e.argv
     const target = String(e.argv.at(-1))
     if (cmd === 'mkdir' && target === LOCK) {
+      if (disk.lockDenied) return ran(1, '', `mkdir: cannot create directory '${LOCK}': Permission denied`)
+      if (freed) {
+        freed = false
+        return ran(1, '', 'File exists')
+      }
       if (lock) return ran(1, '', 'File exists')
       lock = { mtime: NOW, ours: true }
       log.push('lock')
@@ -144,10 +155,11 @@ function engine(on: On, disk: Disk = {}) {
     return ran(exitCode, '', exitCode === 0 ? '' : 'rm: cannot remove: Permission denied')
   })
   on('clock.sleep', () => {
+    counts.sleeps += 1
     if (lock && !lock.ours && --waits <= 0) lock = undefined
     return { value: undefined }
   })
-  return Object.assign(files, { log, moves })
+  return Object.assign(files, { log, moves, counts })
 }
 
 const start = ($: any) => $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -452,6 +464,31 @@ test('a lock that is never freed refuses the change and writes nothing', async (
   const saved = await write($, 'short-answers')
   expect(saved.deny).toContain('another session holds the memory lock')
   expect(files.has(INDEX)).toBe(false)
+})
+
+// Only a lock that is there is waited for: one that cannot be made at all will not come by waiting.
+test('a lock that cannot be made, with none there, refuses the change at once with mkdir\'s reason', async ($, on) => {
+  const files = engine(on, { lockDenied: true })
+  await start($)
+  const saved = await write($, 'a')
+  expect(saved.deny).toContain('Permission denied')
+  expect(files.counts.sleeps).toBe(0)
+  expect(saved.deny).toBe(
+    `The global memory was not changed: could not make ${DIR}/.lock: mkdir: cannot create directory '${DIR}/.lock': Permission denied`,
+  )
+  expect(files.has(`${DIR}/a.md`)).toBe(false)
+
+  files.set(`${DIR}/b.md`, 'x')
+  expect((await remove($, 'b')).deny).toContain('Permission denied')
+  expect(files.counts.sleeps).toBe(0)
+  expect(files.has(`${DIR}/b.md`)).toBe(true)
+})
+
+test('a lock let go just as mkdir found it there is taken, not refused', async ($, on) => {
+  const files = engine(on, { lockFreed: true })
+  await start($)
+  expect((await write($, 'short-answers')).result).toBe('Saved global memory short-answers.')
+  expect(files.log).toEqual(['lock', 'unlock'])
 })
 
 // Claude Code loads its own index up to 200 lines and 25 KB, warns at 80% of either and asks for 70%.
