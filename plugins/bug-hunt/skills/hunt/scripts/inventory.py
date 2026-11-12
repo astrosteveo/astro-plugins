@@ -189,11 +189,12 @@ def recent_commits(root: Path, in_git: bool) -> dict[str, set[int]]:
 
 
 class Unit:
-    def __init__(self, label: str, files: list[str], directory: str, whole: bool):
+    def __init__(self, label: str, files: list[str], directory: str, whole: bool, named: bool = False):
         self.label = label
         self.files = files
         self.directory = directory  # "" for the repo root
         self.whole = whole  # the whole directory, with its subdirectories and tests
+        self.named = named  # the label names each of its files
 
 
 def parent_of(path: str) -> str:
@@ -257,7 +258,7 @@ def make_units(code: dict[str, int], budget: int) -> list[Unit]:
         if group:
             groups.append(group)
         for g in sorted(groups):
-            units.append(Unit(chunk_label(where, g), g, d, False))
+            units.append(Unit(chunk_label(where, g), g, d, False, len(g) <= LABEL_NAMES))
 
     if not code:
         return units
@@ -317,10 +318,11 @@ def report(start: Path, scope: list[str], budget: int) -> str:
     units = make_units(code, budget)
     if files_scope:
         # A unit whose directory isn't inside one of the listed directories holds only the listed
-        # paths in it, not the whole directory its label would name.
+        # paths in it, not all the files its label would name: the whole directory, the files
+        # directly in it, or a range of them.
         for unit in units:
             inside_scope = any(unit.directory == s or unit.directory.startswith(s + "/") for s in files_scope)
-            if unit.whole and not inside_scope:
+            if not unit.named and not inside_scope:
                 unit.label = f"{unit.label} (only the listed paths in it)"
                 unit.whole = False
 
