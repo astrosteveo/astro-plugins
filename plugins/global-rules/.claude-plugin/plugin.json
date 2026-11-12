@@ -1,6 +1,6 @@
 {
   "name": "global-rules",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Writes and maintains your global ~/.claude/CLAUDE.md: /global-rules:suggest turns your session history, corrections and memories into rules for it, checked against Claude Code's current CLAUDE.md guidance, and writes only the rules you approve.",
   "author": {
     "name": "astrosteveo"
