@@ -97,3 +97,13 @@ test('headings, rules, task items and quotes each come out of their own setting'
 test('a dashed line under text is a setext heading, left to the engine', async () => {
   expect(segments('Title with `code`\n---', ALL)).toBeNull()
 })
+
+test('a fence four spaces deep in a nested list item stays with the engine', async () => {
+  const text = '- Setup `x`:\n  - Install:\n    ```sh\n    npm install\n    ```'
+
+  expect(segments(text, ALL)).toBeNull()
+  expect(segments(`${text}\n\nThen run \`y\`.`, ALL)).toEqual([
+    { kind: 'markdown', text },
+    { kind: 'rich', lines: [{ kind: 'text', indent: 0, spans: [{ text: 'Then run ' }, { text: 'y', code: true }, { text: '.' }] }] },
+  ])
+})
