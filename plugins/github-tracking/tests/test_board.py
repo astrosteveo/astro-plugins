@@ -26,11 +26,27 @@ def item(status, number=None, title="t", state="OPEN", kind="Issue"):
     return {"status": {"name": status} if status else None, "content": content}
 
 
+FIELDS = {"Title": 1, "Assignees": 2, "Status": 3, "Labels": 4, "Linked pull requests": 5, "Milestone": 6,
+          "Sub-issues progress": 10}
+
+
+def view(name, layout="TABLE_LAYOUT", filter=None, grouped=0, columns=0, sorted=0):
+    return {"id": f"V-{name}", "name": name, "layout": layout, "filter": filter,
+            "groupByFields": {"totalCount": grouped}, "verticalGroupByFields": {"totalCount": columns},
+            "sortByFields": {"totalCount": sorted}}
+
+
 class FakeGh:
     """Answers gh's calls the way GitHub would for one repo, o/r, and records them."""
 
-    def __init__(self, boards=(project(),), contents=None, pages=None, workflows=(), updates=(), milestones=()):
+    def __init__(self, boards=(project(),), contents=None, pages=None, workflows=(), updates=(), milestones=(),
+                 views=None, fields=FIELDS, owner=("User", "o"), refuse=()):
         self.boards = list(boards)
+        self.views = [view(v["name"]) for v in board.VIEWS] if views is None else list(views)
+        self.fields = fields
+        self.owner = {"__typename": owner[0], "login": owner[1]}
+        self.refuse = refuse
+        self.posted = []
         self.contents = contents or {7: ("I7", "Issue"), 8: ("I8", "Issue"), 9: ("PR9", "PullRequest")}
         self.pages = pages or [[]]
         self.workflows = list(workflows)
@@ -38,10 +54,16 @@ class FakeGh:
         self.milestones = list(milestones)
         self.calls = []
 
-    def __call__(self, *args):
+    def __call__(self, *args, input=None):
         self.calls.append(args)
         if args[:2] == ("repo", "view"):
             return "o/r\n"
+        if "--input" in args:
+            body = json.loads(input)
+            if body["name"] in self.refuse:
+                raise board.Fail("gh: Field validation errors (HTTP 400)")
+            self.posted.append((args[args.index("--input") - 1], args[args.index("-H") + 1], body))
+            return json.dumps({"html_url": f"https://github.com/users/o/projects/20/views/{len(self.posted) + 1}"})
         if args[0] == "api" and args[1] != "graphql":
             return json.dumps(self.milestones)
         query = args[3].removeprefix("query=")
@@ -53,12 +75,16 @@ class FakeGh:
             data = {"repository": {"issueOrPullRequest": found and {"id": found[0], "__typename": found[1]}}}
         elif "addProjectV2ItemById" in query:
             data = {"addProjectV2ItemById": {"item": {"id": "ITEM-" + vars["c"]}}}
+        elif "databaseId" in query:
+            data = {"node": {"owner": self.owner, "views": {"nodes": self.views},
+                             "fields": {"nodes": [{"name": n, "databaseId": i} for n, i in self.fields.items()]}}}
         elif "createProjectV2StatusUpdate" in query:
             data = {"createProjectV2StatusUpdate": {"statusUpdate": {"createdAt": "2026-11-02T01:00:00Z"}}}
         elif "items(" in query:
             index = 0 if "after" not in vars else int(vars["after"])
             data = {"node": {
                 "workflows": {"nodes": self.workflows},
+                "views": {"nodes": [{"name": v["name"]} for v in self.views]},
                 "statusUpdates": {"nodes": self.updates},
                 "items": {"nodes": self.pages[index],
                           "pageInfo": {"hasNextPage": index + 1 < len(self.pages), "endCursor": str(index + 1)}}}}
@@ -278,6 +304,72 @@ class Show(BoardTest):
         # A draft has no open or closed state, so it can't be closed to match Done.
         self.use(FakeGh(pages=[[item("Done", title="an idea", kind="DraftIssue")]]))
         self.assertEqual(board.show("o/r", None).splitlines()[1:], ["Open milestones: none", "No status update yet"])
+
+
+    def test_lists_the_views_the_board_lacks(self):
+        self.use(FakeGh(views=[view("View 1"), view("Milestones")]))
+        self.assertEqual(board.show("o/r", None).splitlines()[1],
+                         "Views missing: Open work, Recently done")
+
+
+class Views(BoardTest):
+    def test_adds_the_views_a_new_board_lacks_then_drops_its_view_1(self):
+        fake = self.use(FakeGh(views=[view("View 1")]))
+        code, out, err = self.run_main("views")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines(), [
+            "Added Open work: https://github.com/users/o/projects/20/views/2",
+            "Added Milestones: https://github.com/users/o/projects/20/views/3",
+            "Added Recently done: https://github.com/users/o/projects/20/views/4",
+            "Removed View 1, the table of every item a new board starts with",
+        ])
+        self.assertEqual(fake.posted, [
+            ("users/o/projectsV2/20/views", "X-GitHub-Api-Version: 2026-03-10", body)
+            for body in (
+                {"name": "Open work", "layout": "board", "filter": "is:issue is:open",
+                 "visible_fields": [1, 4, 6, 5, 10], "vertical_group_by": [3]},
+                {"name": "Milestones", "layout": "table", "filter": "is:issue is:open",
+                 "visible_fields": [1, 3, 4, 5, 10], "group_by": [6]},
+                {"name": "Recently done", "layout": "table", "filter": "is:issue is:closed closed:>@today-14d",
+                 "visible_fields": [1, 4, 6, 5]},
+            )])
+        self.assertEqual(fake.mutations("deleteProjectV2View"), [{"v": "V-View 1"}])
+
+    def test_an_organization_s_board(self):
+        fake = self.use(FakeGh(views=[], owner=("Organization", "acme")))
+        board.views("o/r", None)
+        self.assertEqual({path for path, _, _ in fake.posted}, {"orgs/acme/projectsV2/20/views"})
+
+    def test_keeps_the_views_it_has_and_a_view_1_someone_changed(self):
+        for changed in (view("View 1", filter="is:open"), view("View 1", grouped=1), view("View 1", sorted=1),
+                        view("View 1", layout="BOARD_LAYOUT", columns=1)):
+            with self.subTest(view=changed):
+                fake = self.use(FakeGh(views=[changed, view("Open work")]))
+                self.assertEqual(board.views("o/r", None), [
+                    "Added Milestones: https://github.com/users/o/projects/20/views/2",
+                    "Added Recently done: https://github.com/users/o/projects/20/views/3",
+                ])
+                self.assertEqual(fake.mutations("deleteProjectV2View"), [])
+
+    def test_a_board_with_all_of_them_is_left_alone(self):
+        fake = self.use(FakeGh())
+        self.assertEqual(board.views("o/r", None), ["Printborn already has Open work, Milestones, Recently done"])
+        self.assertEqual((fake.posted, fake.mutations("deleteProjectV2View")), ([], []))
+
+    def test_a_field_the_board_lacks_is_left_out(self):
+        fake = self.use(FakeGh(views=[], fields={n: i for n, i in FIELDS.items() if n != "Milestone"}))
+        board.views("o/r", None)
+        milestones = fake.posted[1][2]
+        self.assertEqual(milestones["visible_fields"], [1, 3, 4, 5, 10])
+        self.assertNotIn("group_by", milestones)
+
+    def test_a_refused_view_keeps_view_1(self):
+        # Dropping View 1 before every view is added could leave the board with no view of its work.
+        fake = self.use(FakeGh(views=[view("View 1")], refuse=("Milestones",)))
+        code, out, err = self.run_main("views")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("board.py: gh: Field validation errors", err)
+        self.assertEqual(fake.mutations("deleteProjectV2View"), [])
 
 
 if __name__ == "__main__":

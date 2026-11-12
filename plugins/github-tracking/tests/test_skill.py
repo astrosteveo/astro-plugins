@@ -24,7 +24,7 @@ class SkillTest(unittest.TestCase):
 
     def test_every_command_it_names_is_one_board_py_has(self):
         named = set(re.findall(r"board\.py (?:--\S+ \S+ )*([a-z]+)", self.body))
-        self.assertEqual(named, {"show", "move", "sub", "update"})
+        self.assertEqual(named, {"show", "move", "sub", "update", "views"})
         for command in named:
             with self.assertRaises(SystemExit) as done, contextlib.redirect_stdout(io.StringIO()):
                 board.main([command, "--help"])

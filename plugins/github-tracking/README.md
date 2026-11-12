@@ -17,7 +17,7 @@ Keeps a repo's GitHub issues, milestones and Projects board true while Claude wo
 | A larger step is planned | One parent issue in its milestone: what exists today, then open questions with recommendations. Once you decide them, it splits into sub-issues |
 | Where things stand changes | A short status update on the board: what's done, what's next, what's in the way |
 | You ask where a project is | Answers from the board, the milestones and git, and fixes what's out of step |
-| A repo has no board | Offers to set one up: the board, linked to the repo, its labels and milestones |
+| A repo has no board | Offers to set one up: the board, linked to the repo, its views, labels and milestones |
 
 The skill says what to keep on GitHub, not how to do the work: branches, commits, what goes in a change and how issues are labelled follow your CLAUDE.md and the repo's own rules. Those rules can also say what the repo's milestones stand for; the skill follows them over its own.
 
@@ -30,9 +30,24 @@ board.py show                       # open milestones, items not done, workflows
 board.py move 12 "In Progress"      # an issue or PR by number or URL, added to the board if it isn't there
 board.py sub 10 11 12               # 11 and 12 become sub-issues of 10
 board.py update on-track FILE       # a status update: on-track, at-risk, off-track, complete or inactive
+board.py views                      # the board's views of its open work, milestones and recently done issues
 ```
 
 `--repo OWNER/NAME` works on another repo's board, and `--project NUMBER` picks one when a repo has several. It needs `gh` signed in with the `project` scope (`gh auth refresh -s project`) and Python 3.8 or later. Stdlib only.
+
+## Views
+
+A new board has one view, "View 1": a table of every issue and PR, done or not. `views` gives the board three views of its issues instead, each showing an issue's PRs in its row:
+
+| View | Shows |
+| --- | --- |
+| Open work | Open issues on a board, a column per status, with labels, milestone, PRs and sub-issue progress |
+| Milestones | Open issues grouped by milestone, with status, labels, PRs and sub-issue progress |
+| Recently done | Issues closed in the last two weeks, with labels, milestone and the PRs that closed them |
+
+It adds only the ones the board lacks, by name, and removes View 1 if no one has changed it, so the board opens on Open work. `show` lists the ones a board is missing. GitHub's API can't show or sort by the Created, Updated or Closed dates, so Recently done keeps to two weeks rather than putting the newest first.
+
+## Workflows
 
 The board's own workflows do part of the job: Item closed and Pull request merged move items to Done, and Auto-add sub-issues puts a step's sub-issues on the board. A new board has them on. `show` lists any that are off, and the API can't turn one on, so you switch them on in the board's Workflows settings.
 
