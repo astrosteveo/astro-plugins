@@ -15,7 +15,7 @@ A gate that fails refuses the command: a broken gate never waves one through. Cl
 
 ## Adding a gate
 
-Add an entry to `GATES` in `hooks/register.ts`: a `refuses` test on the command and the `reason` Claude reads. Write the reason as what goes wrong and what to run instead, so Claude picks a safe form rather than guessing. Add its cases to `tests/gates.test.ts`, the commands it refuses and the near misses it lets run.
+Add an entry to `GATES` in `hooks/register.ts`: a `refuses` test on the command and the `reason` Claude reads. Write the reason as what goes wrong and what to run instead, so Claude picks a safe form rather than guessing. Add its cases to `tests/gates.test.ts`, the commands it refuses and the near misses it lets run, and the other ways of writing them (quoted, continued, in a subshell) to `tests/forms.test.ts`, where each case runs as its own test.
 
 ```
 claude plugin validate plugins/gates
