@@ -15,9 +15,10 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/board.py show                    # where the
 python3 ${CLAUDE_SKILL_DIR}/scripts/board.py move 12 "In Progress"   # an issue or PR, by number or URL
 python3 ${CLAUDE_SKILL_DIR}/scripts/board.py sub 10 11 12 13         # 11, 12 and 13 become sub-issues of 10
 python3 ${CLAUDE_SKILL_DIR}/scripts/board.py update on-track FILE    # a status update, its body from FILE or - for stdin
+python3 ${CLAUDE_SKILL_DIR}/scripts/board.py views                   # give the board its views
 ```
 
-`move` adds the item to the board when it isn't there yet. A status update is `on-track`, `at-risk`, `off-track`, `complete` or `inactive`. If gh says it lacks the `project` scope, ask the user to run `! gh auth refresh -s project`.
+`move` adds the item to the board when it isn't there yet. `views` adds the board's three views of its issues, each with an issue's PRs in its row: Open work (a column per status), Milestones (open issues grouped by milestone) and Recently done (closed in the last two weeks). It removes the "View 1" a new board starts with, if no one has changed it, and leaves other views alone. A status update is `on-track`, `at-risk`, `off-track`, `complete` or `inactive`. If gh says it lacks the `project` scope, ask the user to run `! gh auth refresh -s project`.
 
 This skill says what to keep on GitHub, not how to do the work. Branches, commits, what belongs in a change and how issues are labelled and titled follow the user's CLAUDE.md and the repo's own rules. Those rules may also say what the repo's milestones stand for (such as one per slice) or which issue is a larger step's parent. Where they say something, follow them over this skill.
 
@@ -54,7 +55,7 @@ Write a few plain lines for someone reading the board, with issues and PRs as `#
 
 ## Say where things stand
 
-When the user asks where a project is, run `board.py show` with `git status`, `git branch -a` and `gh pr list`, and answer from them: the milestones' progress, what's in progress, what's next and what's open. `show` marks an item out of step with its issue (closed but not Done, or Done but open) and lists the board's workflows that are off. Fix what's out of step. If the latest status update no longer says where the project stands, post one.
+When the user asks where a project is, run `board.py show` with `git status`, `git branch -a` and `gh pr list`, and answer from them: the milestones' progress, what's in progress, what's next and what's open. `show` marks an item out of step with its issue (closed but not Done, or Done but open), lists the board's workflows that are off, and the views it's missing. Fix what's out of step. Add missing views with `board.py views`, unless the user has said they don't want them. If the latest status update no longer says where the project stands, post one.
 
 ## Set up tracking
 
@@ -65,9 +66,10 @@ In a repo with a GitHub remote and no board (`show` says so), offer to set one u
    gh project create --owner OWNER --title "NAME" --format json --jq .number
    gh project link NUMBER --owner OWNER --repo OWNER/NAME
    ```
-2. Make the labels that are missing for the repo's kinds of change, with `gh label create`.
-3. Make a milestone for each larger step that's already planned: `gh api repos/OWNER/NAME/milestones -f title=TITLE -f description=TEXT`.
-4. Run `show`. A new board has its workflows on. If it lists Item closed, Pull request merged or Auto-add sub-issues as off, ask the user to turn them on in the board's Workflows settings, as the API can't turn on a workflow.
-5. Put the open issues on the board, then post a first status update.
+2. Give it its views: `board.py views`.
+3. Make the labels that are missing for the repo's kinds of change, with `gh label create`.
+4. Make a milestone for each larger step that's already planned: `gh api repos/OWNER/NAME/milestones -f title=TITLE -f description=TEXT`.
+5. Run `show`. A new board has its workflows on. If it lists Item closed, Pull request merged or Auto-add sub-issues as off, ask the user to turn them on in the board's Workflows settings, as the API can't turn on a workflow.
+6. Put the open issues on the board, then post a first status update.
 
 If the user says no, save that in the project's memory, and don't offer again in that repo.

@@ -4,7 +4,7 @@
 It finds the board linked to the repo and the board's Status field itself, so no repo needs
 to keep a project's ids in its CLAUDE.md. Commands: show where the board stands, move an
 issue or PR to a status (adding it to the board first), make issues sub-issues of another,
-and post a status update. Stdlib only, so any python3 runs it.
+post a status update, and give the board its views. Stdlib only, so any python3 runs it.
 """
 from __future__ import annotations
 
@@ -17,15 +17,28 @@ from collections import defaultdict
 
 UPDATE_STATUSES = ("on-track", "at-risk", "off-track", "complete", "inactive")
 URL = re.compile(r"https://github\.com/([^/]+)/([^/]+)/(?:issues|pull)/(\d+)")
+# The REST version that can create a project's views.
+API_VERSION = "2026-03-10"
+# The views `views` gives a board. Each shows issues only, as an issue's PR shows in its Linked
+# pull requests. The API can neither show nor sort by Created, Updated or Closed, so the done
+# view keeps to the last two weeks instead of sorting by when each issue closed.
+VIEWS = (
+    {"name": "Open work", "layout": "board", "filter": "is:issue is:open", "vertical_group_by": "Status",
+     "fields": ("Title", "Labels", "Milestone", "Linked pull requests", "Sub-issues progress")},
+    {"name": "Milestones", "layout": "table", "filter": "is:issue is:open", "group_by": "Milestone",
+     "fields": ("Title", "Status", "Labels", "Linked pull requests", "Sub-issues progress")},
+    {"name": "Recently done", "layout": "table", "filter": "is:issue is:closed closed:>@today-14d",
+     "fields": ("Title", "Labels", "Milestone", "Linked pull requests")},
+)
 
 
 class Fail(Exception):
     """A problem the caller can fix; main prints it without a traceback."""
 
 
-def gh(*args: str) -> str:
+def gh(*args: str, input: str | None = None) -> str:
     try:
-        done = subprocess.run(["gh", *args], capture_output=True, text=True)
+        done = subprocess.run(["gh", *args], input=input, capture_output=True, text=True)
     except FileNotFoundError:
         raise Fail("the gh CLI isn't on the PATH")
     if done.returncode != 0:
@@ -135,8 +148,49 @@ def update(repo: str, project: int | None, status: str, body: str) -> str:
     return f"Posted a status update ({status}) on {b['title']} at {posted['createProjectV2StatusUpdate']['statusUpdate']['createdAt']}"
 
 
+VIEWS_QUERY = """query($id:ID!){node(id:$id){... on ProjectV2{
+  owner{__typename ... on User{login} ... on Organization{login}}
+  fields(first:50){nodes{... on ProjectV2FieldCommon{name databaseId}}}
+  views(first:50){nodes{id name layout filter groupByFields(first:1){totalCount}
+    verticalGroupByFields(first:1){totalCount} sortByFields(first:1){totalCount}}}}}}"""
+
+
+def untouched(view: dict) -> bool:
+    """Whether a view is still the one GitHub starts a board with: a table of every item, as it came."""
+    return (view["name"] == "View 1" and view["layout"] == "TABLE_LAYOUT" and not view["filter"]
+            and not any(view[k]["totalCount"] for k in ("groupByFields", "verticalGroupByFields", "sortByFields")))
+
+
+def views(repo: str, project: int | None) -> list[str]:
+    """Add the VIEWS the board lacks, then drop an untouched View 1 so the board opens on Open work."""
+    b = board(repo, project)
+    found = graphql(VIEWS_QUERY, id=b["id"])["node"]
+    ids = {f["name"]: f["databaseId"] for f in found["fields"]["nodes"] if "name" in f}
+    have = {v["name"] for v in found["views"]["nodes"]}
+    owner = found["owner"]
+    path = f"{'users' if owner['__typename'] == 'User' else 'orgs'}/{owner['login']}/projectsV2/{b['number']}/views"
+    said = []
+    for view in VIEWS:
+        if view["name"] in have:
+            continue
+        body = {"name": view["name"], "layout": view["layout"], "filter": view["filter"],
+                "visible_fields": [ids[f] for f in view["fields"] if f in ids]}
+        for key in ("group_by", "vertical_group_by"):
+            if view.get(key) in ids:
+                body[key] = [ids[view[key]]]
+        made = json.loads(gh("api", "-X", "POST", "-H", f"X-GitHub-Api-Version: {API_VERSION}", path,
+                             "--input", "-", input=json.dumps(body)))
+        said.append(f"Added {view['name']}: {made['html_url']}")
+    for view in found["views"]["nodes"]:
+        if untouched(view):
+            graphql("mutation($v:ID!){deleteProjectV2View(input:{viewId:$v}){projectV2View{id}}}", v=view["id"])
+            said.append("Removed View 1, the table of every item a new board starts with")
+    return said or [f"{b['title']} already has " + ", ".join(v["name"] for v in VIEWS)]
+
+
 ITEMS = """query($id:ID!,$after:String){node(id:$id){... on ProjectV2{
   workflows(first:20){nodes{name enabled}}
+  views(first:50){nodes{name}}
   statusUpdates(first:1,orderBy:{field:CREATED_AT,direction:DESC}){nodes{createdAt status body}}
   items(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{
     status:fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}
@@ -158,6 +212,10 @@ def show(repo: str, project: int | None) -> str:
     off = [w["name"] for w in page["workflows"]["nodes"] if not w["enabled"]]
     if off:
         lines.append("Workflows off: " + ", ".join(off))
+    have = {v["name"] for v in page["views"]["nodes"]}
+    missing = [v["name"] for v in VIEWS if v["name"] not in have]
+    if missing:
+        lines.append("Views missing: " + ", ".join(missing))
     lines.append("Open milestones: " + (", ".join(
         f"{m['title']} ({m['closed_issues']} of {m['open_issues'] + m['closed_issues']} closed)" for m in milestones)
         or "none"))
@@ -212,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     u = commands.add_parser("update", parents=[options], help="post a status update on the board")
     u.add_argument("status", choices=UPDATE_STATUSES)
     u.add_argument("file", help="a Markdown file with its body, or - for stdin")
+    commands.add_parser("views", parents=[options],
+                        help="give the board views of its open work, milestones and recently done issues")
     args = parser.parse_args(argv)
 
     try:
@@ -224,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
             print(move(repo, args.project, args.item, args.status))
         elif args.command == "sub":
             print("\n".join(sub(repo, args.parent, args.children)))
+        elif args.command == "views":
+            print("\n".join(views(repo, args.project)))
         else:
             body = sys.stdin.read() if args.file == "-" else open(args.file).read()
             print(update(repo, args.project, args.status, body))
