@@ -109,13 +109,24 @@ class InventoryTest(unittest.TestCase):
         self.assertLess(len(text.split("\nunits:\n")[1]), 2000)
 
     def test_a_long_group_is_named_by_its_first_and_last_file(self):
+        for name in "abcdefghij":
+            self.write(f"lib/a_long_module_name_{name}.py", lines(5))
+        self.write("lib/k_big.py", lines(500))
+        self.write("lib/l.py", lines(10))
+        # A file over the budget ends the group before it, so the range never takes it in.
+        self.assertEqual(
+            self.units(self.run_report(budget=100)),
+            ["lib/{a_long_module_name_a.py, ..., a_long_module_name_j.py}", "lib/k_big.py", "lib/l.py"],
+        )
+
+    def test_a_group_whose_names_fit_is_named_file_by_file(self):
+        # The names are what the skill groups units into components by, so a label keeps them all
+        # while they fit on a short line, as most directories' do.
         for name in "abcde":
             self.write(f"lib/{name}.py", lines(10))
         self.write("lib/f_big.py", lines(500))
-        self.write("lib/g.py", lines(10))
-        # A file over the budget ends the group before it, so the range never takes it in.
         self.assertEqual(
-            self.units(self.run_report(budget=100)), ["lib/{a.py, ..., e.py}", "lib/f_big.py", "lib/g.py"]
+            self.units(self.run_report(budget=100)), ["lib/{a.py, b.py, c.py, d.py, e.py}", "lib/f_big.py"]
         )
 
     def test_vendored_generated_and_binary_files_are_left_out(self):
@@ -352,15 +363,22 @@ class InventoryTest(unittest.TestCase):
         self.assertIn("only the listed paths", labels[1])
 
     def test_a_range_in_a_partly_listed_directory_says_it_holds_only_the_listed_ones(self):
-        # src/{a.py, ..., f.py} would read as taking in the unlisted src/b.py.
-        for name in "abcdefg":
-            self.write(f"src/{name}.py", lines(2))
-        listed = [f"src/{name}.py" for name in "acdefg"]
+        # A range from a to i would read as taking in the unlisted b.
+        names = [f"src/request_handler_number_{name}.py" for name in "abcdefghij"]
+        for name in names:
+            self.write(name, lines(3))
+        listed = [n for n in names if not n.endswith("_b.py")]
         self.assertEqual(
-            self.units(self.run_report(*listed, budget=10)),
-            ["src/{a.py, ..., f.py} (only the listed paths in it)", "src/g.py"],
+            self.units(self.run_report(*listed, budget=25)),
+            [
+                "src/{request_handler_number_a.py, ..., request_handler_number_i.py} (only the listed paths in it)",
+                "src/request_handler_number_j.py",
+            ],
         )
-        self.assertEqual(self.units(self.run_report("src", budget=10))[0], "src/{a.py, ..., e.py}")
+        self.assertEqual(
+            self.units(self.run_report("src", budget=25))[0],
+            "src/{request_handler_number_a.py, ..., request_handler_number_h.py}",
+        )
 
     def test_the_script_parses_as_python_3_8(self):
         # The plugins' constraint is Python 3.8+ with the standard library only.

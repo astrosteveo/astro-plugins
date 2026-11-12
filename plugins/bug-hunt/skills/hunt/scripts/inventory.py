@@ -19,7 +19,7 @@ from pathlib import Path
 
 DEFAULT_BUDGET = 3000
 MAX_UNITS = 300
-LABEL_NAMES = 3  # a group of more files is labelled by its first and last
+LABEL_CHARS = 200  # a group whose names run longer is labelled by its first and last
 RECENT_COMMITS = 300
 
 # Directories whose files someone else wrote or a tool made. Within git, ignored build output is
@@ -258,7 +258,7 @@ def make_units(code: dict[str, int], budget: int) -> list[Unit]:
         if group:
             groups.append(group)
         for g in sorted(groups):
-            units.append(Unit(chunk_label(where, g), g, d, False, len(g) <= LABEL_NAMES))
+            units.append(Unit(chunk_label(where, g), g, d, False, names_fit(g)))
 
     if not code:
         return units
@@ -271,11 +271,15 @@ def make_units(code: dict[str, int], budget: int) -> list[Unit]:
     return units
 
 
+def names_fit(group: list[str]) -> bool:
+    return len(", ".join(g.rsplit("/", 1)[-1] for g in group)) <= LABEL_CHARS
+
+
 def chunk_label(where: str, group: list[str]) -> str:
     names = [g.rsplit("/", 1)[-1] for g in group]
     if len(names) == 1:
         return where + names[0]
-    if len(names) > LABEL_NAMES:
+    if not names_fit(group):
         # Naming every file would turn a directory of many small files into a file listing.
         names = [names[0], "...", names[-1]]
     return f"{where}{{{', '.join(names)}}}"
