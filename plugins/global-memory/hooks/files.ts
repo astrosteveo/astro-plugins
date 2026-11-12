@@ -57,10 +57,21 @@ async function withLock<T>($: EngineInterface, dir: string, job: () => Promise<T
   const owner = `${lock}/owner`
   const made = await $.process.run(['mkdir', '-p', '--', dir])
   if (made.exitCode !== 0) throw new Error(`could not make ${dir}: ${made.stderr.trim() || `mkdir exited ${made.exitCode}`}`)
-  for (let tries = 1; ; tries++) {
-    if ((await $.process.run(['mkdir', '--', lock])).exitCode === 0) break
+  for (let tries = 1, missing = false; ; tries++) {
+    const took = await $.process.run(['mkdir', '--', lock])
+    if (took.exitCode === 0) break
+    // Only a lock that is there is waited for. With none, mkdir failed for a reason of its own,
+    // such as no permission or a read-only disk, that waiting will not mend; but a lock let go
+    // just now looks the same, so mkdir is tried once more first.
+    const held = await $.fs.stat(lock).catch(() => undefined)
+    if (held === undefined) {
+      if (missing) throw new Error(`could not make ${lock}: ${took.stderr.trim() || `mkdir exited ${took.exitCode}`}`)
+      missing = true
+      continue
+    }
+    missing = false
     if (tries >= LOCK_TRIES) throw new Error('another session holds the memory lock: try again shortly')
-    if (await isOld($, lock)) await breakStale($, lock)
+    if ((await $.clock.now()) - held.mtimeMs > STALE_MS) await breakStale($, lock)
     else await $.clock.sleep(LOCK_WAIT_MS)
   }
   const token = `${await $.clock.now()}-${Math.random().toString(36).slice(2)}`
