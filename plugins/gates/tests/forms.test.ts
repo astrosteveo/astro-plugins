@@ -37,6 +37,16 @@ const FORMS: [string, string | null][] = [
   ['git -C "a b" status', null],
   ['git -C "/mnt/c/My Projects/repo" add docs/x.md', null],
   ['git -c user.name="A B" commit -m x', null],
+
+  // A flag that closes a subshell or a quoted script.
+  ['(cd /tmp/repo && git add -A)', 'git add -A, --all'],
+  ['sh -c "git add ."', 'git add -A, --all'],
+  ["sh -c 'git commit -a'", 'git commit -a or --all'],
+  ['out=`git add -A`', 'git add -A, --all'],
+  ['git commit -am"msg"', 'git commit -a or --all'],
+  ['(cd /tmp/repo && git add docs/x.md)', null],
+  ['sh -c "git add docs/x.md"', null],
+  ['git commit -m"add tests"', null],
 ]
 
 for (const [command, reason] of FORMS) {

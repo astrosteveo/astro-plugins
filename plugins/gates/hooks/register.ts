@@ -25,10 +25,11 @@ const unbracketed = (line: string) =>
 const QUOTED = String.raw`"(\\.|[^"\\])*"|'[^']*'|\\.`
 
 // git, perhaps by path and with -C DIR or -c KEY=VALUE, then a subcommand; the rest of that one
-// command, up to the next ; & or |; and where an argument ends.
+// command, up to the next ; & or |; and where an argument ends, which may also close a subshell
+// or a quoted script such as sh -c "…".
 const GIT = String.raw`(^|[^A-Za-z0-9_.-])git(\s+-[Cc]\s+(${QUOTED}|[^\s"'\\])+)*\s+`
 const REST = String.raw`(\s+[^;&|]*)?`
-const END = String.raw`(\s|[;&|]|$)`
+const END = String.raw`(\s|[;&|)"'\`]|$)`
 
 const GATES: Gate[] = [
   {
