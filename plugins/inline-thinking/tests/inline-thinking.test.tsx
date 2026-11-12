@@ -256,3 +256,61 @@ test('a /config change the engine refuses leaves verbose as it was', async ($, o
   expect((await ui.findAll({ type: 'Text' })).map(text => text.text)).toEqual(['engine row'])
   await ui.unmount()
 })
+
+test('stars and underscores that are not markup draw as written', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await think($, 't1', 'Call `mcp__github__search_issues` on `src/**/*.ts`.\n\nSo 2**10 is 1024.')
+  await reply($, 'r1', 'Done.')
+
+  const ui = await $.ui.mount(REPLY('r1'))
+  const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+  expect(texts).toEqual(['∴', 'Call `mcp__github__search_issues` on `src/**/*.ts`.', 'So 2**10 is 1024.', 'engine row'])
+  await ui.unmount()
+})
+
+test("a word's own __, and ** beside or inside code, are not markup either", async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await think(
+    $,
+    't1',
+    'Then mcp__github__search_issues, unquoted.\n\n2**10 files match `src/**/*.ts`.\n\n**Reading `src/**/*.ts`**\n\nSo 2**10 is **exactly** 1024, and a__b is __not__ a_b.',
+  )
+  await reply($, 'r1', 'Done.')
+
+  const ui = await $.ui.mount(REPLY('r1'))
+  const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+  expect(texts).toEqual([
+    '∴',
+    'Then mcp__github__search_issues, unquoted.',
+    '2**10 files match `src/**/*.ts`.',
+    'Reading `src/**/*.ts`',
+    'So 2**10 is exactly 1024, and a__b is not a_b.',
+    'engine row',
+  ])
+  await ui.unmount()
+})
+
+test('bold markup is still stripped, around code and across a line break too', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await think(
+    $,
+    't1',
+    '**Checking the config**\n\nSo a **bold** word and a __strong__ one.\n\n**Reading `register.tsx`**\n\n**A heading that\nwraps**',
+  )
+  await reply($, 'r1', 'Done.')
+
+  const ui = await $.ui.mount(REPLY('r1'))
+  const texts = (await ui.findAll({ type: 'Text' })).map(text => text.text)
+  expect(texts).toEqual([
+    '∴',
+    'Checking the config',
+    'So a bold word and a strong one.',
+    'Reading `register.tsx`',
+    'A heading that wraps',
+    'engine row',
+  ])
+  await ui.unmount()
+})
