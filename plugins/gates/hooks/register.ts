@@ -46,8 +46,9 @@ const GATES: Gate[] = [
       "This kills its own shell: the Bash tool runs the command as `<shell> -c <command>`, so the pgrep -f or grep pattern matches that shell too. Bracket one letter of the pattern so it still matches the process but not the shell, e.g. pgrep -f '[g]odot' or grep '[g]odot'.",
   },
   {
+    // The whole tree may be written ., ./, "." or './'.
     refuses: command =>
-      anyLine(command, new RegExp(`${GIT}add${REST}\\s(-[A-Za-z]*[Au][A-Za-z]*|--all|--update|\\.)${END}`)),
+      anyLine(command, new RegExp(`${GIT}add${REST}\\s(-[A-Za-z]*[Au][A-Za-z]*|--all|--update|["']?\\./?)${END}`)),
     reason:
       "git add -A, --all, -u, --update or . stages every change in the tree, including files this task didn't make (captures, scratch output, another session's edits). Check git status, then stage the files this change made by name: git add path/to/file other/file.",
   },

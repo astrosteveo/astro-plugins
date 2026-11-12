@@ -56,6 +56,14 @@ const FORMS: [string, string | null][] = [
   ['git commit -m "it\'s done"; ls -a', null],
   ['git commit -m "a; b" && git log --all', null],
   ['git commit -m "Drop the -a flag"', null],
+
+  // Other ways of writing the whole tree.
+  ['git add ./', 'git add -A, --all'],
+  ['git add "."', 'git add -A, --all'],
+  ["git add './'", 'git add -A, --all'],
+  ['git add "./docs/x.md"', null],
+  ['git add ".gitignore"', null],
+  ['git add ../shared/x.md', null],
 ]
 
 for (const [command, reason] of FORMS) {
