@@ -47,13 +47,19 @@ export function segments(text: string, features: Features): Segment[] | null {
   const lines = text.split('\n')
   // Each block with the lines this plugin draws for it, or null for the engine's.
   const blocks: { start: number; end: number; drawn: Line[] | null }[] = []
+  // Kept from block to block, since a blank line inside a list doesn't end it.
+  const stack: Open[] = []
   let start = -1
   let fence: string | null = null
   let hasFence = false
 
   const close = (end: number) => {
     if (start < 0) return
-    blocks.push({ start, end, drawn: hasFence ? null : drawn(lines.slice(start, end), features) })
+    const block = lines.slice(start, end)
+    const canParse = !hasFence && canDraw(block)
+    // A block this plugin doesn't parse may end a list, so the next one starts afresh.
+    if (!canParse) stack.length = 0
+    blocks.push({ start, end, drawn: canParse ? drawn(block, features, stack) : null })
     start = -1
     hasFence = false
   }
@@ -96,9 +102,8 @@ export function segments(text: string, features: Features): Segment[] | null {
 }
 
 /** The block's lines as this plugin draws them, or null when the engine draws it. */
-function drawn(block: string[], f: Features): Line[] | null {
-  if (!canDraw(block)) return null
-  const out = richLines(block)
+function drawn(block: string[], f: Features, stack: Open[]): Line[] | null {
+  const out = richLines(block, stack)
 
   // A block that holds a part whose setting is off stays with the engine whole,
   // so that part looks just as Claude Code draws it.
@@ -136,11 +141,15 @@ type Building =
   | { kind: 'quote'; raw: string }
   | { kind: 'rule' }
 
-function richLines(block: string[]): Line[] {
+// An open list item: the column its content starts at as written, and where
+// its marker and its content are drawn.
+type Open = { written: number; drawnAt: number; contentAt: number }
+
+function richLines(block: string[], stack: Open[]): Line[] {
   const out: Building[] = []
-  // Open list items: the column their content starts at as written, and where
-  // their marker and their content are drawn.
-  const stack: { written: number; drawnAt: number; contentAt: number }[] = []
+  // After a blank line, only the items the block's first line is indented into stay open.
+  const first = block[0]!
+  while (stack.length > 0 && first.length - first.trimStart().length < stack.at(-1)!.written) stack.pop()
 
   for (const line of block) {
     const indent = line.length - line.trimStart().length
