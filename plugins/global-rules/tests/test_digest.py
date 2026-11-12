@@ -196,6 +196,19 @@ class DigestTest(unittest.TestCase):
         self.assertIn("What is 8+8", text)
         self.assertIn("Call the probe tool once", text)
 
+    def test_skipped_count_leaves_out_messages_before_since(self):
+        self.session("-tmp-probe", "s1", [human("What is 8+8? Answer in one word.", cwd="/tmp/probe",
+                                                ts="2026-01-01T10:00:00Z")])
+        # --include-tests does not bring it back: it is before the cutoff.
+        self.assertNotIn("What is 8+8", self.run_digest("--since", "2026-06-01", "--include-tests"))
+        self.assertNotIn("Skipped 1 messages", self.run_digest("--since", "2026-06-01"))
+
+    def test_skipped_count_counts_a_resumed_sessions_copied_messages_once(self):
+        probe = {**human("What is 8+8? Answer in one word.", cwd="/tmp/probe"), "uuid": "u1"}
+        self.session("-tmp-probe", "s1", [probe])
+        self.session("-tmp-probe", "s2", [probe, human("And 9+9?", cwd="/tmp/probe")])
+        self.assertIn("Skipped 2 messages", self.run_digest())
+
     def test_since_drops_older_messages(self):
         self.fixture()
         self.assertIn("A message from before the cutoff", self.run_digest())
