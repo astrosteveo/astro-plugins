@@ -112,6 +112,22 @@ class FindsTheBoard(BoardTest):
             board.board("o/r", None)
         self.assertEqual(board.board("o/r", 21)["title"], "B")
 
+    def test_following_the_several_boards_hint(self):
+        self.use(FakeGh(boards=[project(20, "A"), project(21, "B")]))
+        _, _, err = self.run_main("show")
+        self.assertIn("Say which with --project NUMBER", err)
+        code, out, err = self.run_main("show", "--project", "21")
+        self.assertEqual(code, 0, err)
+        self.assertTrue(out.startswith("B (board 21"))
+
+    def test_repo_and_project_go_before_or_after_the_command(self):
+        for argv in (["--repo", "x/y", "--project", "21", "show"], ["show", "--repo", "x/y", "--project", "21"]):
+            with self.subTest(argv=argv):
+                self.use(FakeGh(boards=[project(20, "A"), project(21, "B")]))
+                code, out, err = self.run_main(*argv)
+                self.assertEqual(code, 0, err)
+                self.assertTrue(out.startswith("B (board 21, linked to x/y)"), out)
+
     def test_a_board_without_a_status_field_says_so(self):
         self.use(FakeGh(boards=[project(field={})]))
         with self.assertRaisesRegex(board.Fail, "no Status field"):

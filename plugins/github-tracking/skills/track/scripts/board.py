@@ -194,17 +194,22 @@ def show(repo: str, project: int | None) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--repo", help="OWNER/NAME; the current folder's repo by default")
-    parser.add_argument("--project", type=int, help="the board's number, when the repo has several")
+    # --repo and --project go before or after the command. After it, SUPPRESS keeps the
+    # command from setting one given before it back to None.
+    options = argparse.ArgumentParser(add_help=False)
+    for p, default in ((parser, None), (options, argparse.SUPPRESS)):
+        p.add_argument("--repo", default=default, help="OWNER/NAME; the current folder's repo by default")
+        p.add_argument("--project", type=int, default=default, help="the board's number, when the repo has several")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("show", help="the board's open milestones, items not done and latest status update")
-    m = commands.add_parser("move", help="put an issue or PR on the board, at a status")
+    commands.add_parser("show", parents=[options],
+                        help="the board's open milestones, items not done and latest status update")
+    m = commands.add_parser("move", parents=[options], help="put an issue or PR on the board, at a status")
     m.add_argument("item", help="its number or URL")
     m.add_argument("status", help="one of the board's statuses, such as Todo, 'In Progress' or Done")
-    s = commands.add_parser("sub", help="make issues sub-issues of a parent issue")
+    s = commands.add_parser("sub", parents=[options], help="make issues sub-issues of a parent issue")
     s.add_argument("parent", help="the parent's number or URL")
     s.add_argument("children", nargs="+", help="each sub-issue's number or URL")
-    u = commands.add_parser("update", help="post a status update on the board")
+    u = commands.add_parser("update", parents=[options], help="post a status update on the board")
     u.add_argument("status", choices=UPDATE_STATUSES)
     u.add_argument("file", help="a Markdown file with its body, or - for stdin")
     args = parser.parse_args(argv)
