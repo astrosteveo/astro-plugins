@@ -54,6 +54,9 @@ The author: a solo developer on Linux who uses Claude Code for hobby projects. T
 
 - 2026-11-10: github-tracking says what to keep on GitHub and leaves how the work is done (branches, commits, what goes in a change, labels) to the user's CLAUDE.md and the repo's rules. Why: its own workflow rules contradicted the author's global CLAUDE.md.
 - 2026-11-10: Plugins aim to support both Linux, on any distro, and Windows, replacing the Linux-only constraint and the Windows non-goal. Why: the author works on WSL now and wants the plugins not to depend on one setup; Windows support may lag behind Linux.
+- 2026-11-11: Plugins are tested on Linux only, replacing the aim to support Windows. They may work on Windows, but that isn't tested or guaranteed. Why: the author uses Linux again.
+- 2026-11-12: project-md loads PROJECT.md with a hook instead of an @PROJECT.md line in CLAUDE.md. Why: no repo needs the line, and the hook adds PROJECT.md only when the repo has one and nothing already imports it.
+- 2026-11-12: Whether a plugin gets an init skill depends on the plugin. One that scaffolds something, such as PROJECT.md (/project-md:init) or a board (/github-tracking:init), gets one; one that reviews code, such as bug-hunt, doesn't. Why: an init skill gets what a plugin scaffolds set up properly, and reviewing code has nothing to set up.
 
 ## Open questions
 
@@ -67,4 +70,4 @@ None yet.
 
 ## Status
 
-Eight plugins are published. bug-hunt (#67) hunts bugs across a whole codebase, component by component, and reproduces each finding; it leaves reviewing changes to Claude Code's /code-review. global-rules took /global-memory:suggest out of global-memory as /global-rules:suggest (#55), global-memory gained /global-memory, a menu to browse, read and delete global memories (#56), and github-tracking now follows the user's own workflow rules instead of setting its own (#63). Parked: #44, letting memory recall pick global memories, until recall can be turned on in local sessions.
+Eight plugins are published. project-md loads PROJECT.md with a hook (#88), with /project-md:init to draft it and /project-md:review to keep it current (#92). github-tracking sets up a board, views included, with /github-tracking:init (#93). bug-hunt (#67) hunts bugs across a whole codebase and reproduces each finding, leaving reviewing changes to Claude Code's /code-review. Parked: #44, letting memory recall pick global memories, until recall can be turned on in local sessions.
