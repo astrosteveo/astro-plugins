@@ -108,6 +108,10 @@ test('a fence four spaces deep in a nested list item stays with the engine', asy
   ])
 })
 
+test('a fence line indented 4 or more spaces past its opener is code, not the closer', async () => {
+  expect(segments('```md\n- a\n    ```\n\nrun `x`\n\n```', ALL)).toBeNull()
+})
+
 test('a fenced code block inside a quote is not joined into one line', async () => {
   expect(segments('> Output:\n> ```\n> error: boom\n> exit 1\n> ```', ALL)).toBeNull()
 })

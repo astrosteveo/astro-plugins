@@ -32,7 +32,7 @@ export type Features = {
 type Style = Omit<Span, 'text'>
 
 // At any indent, since a fence inside a list item sits at the item's content column.
-const FENCE = /^\s*(`{3,}|~{3,})/
+const FENCE = /^(\s*)(`{3,}|~{3,})/
 const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])(\s+)(.*)$/
 const TASK = /^\[([ xX])\]\s+(.*)$/
 const HEADING = /^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/
@@ -51,6 +51,8 @@ export function segments(text: string, features: Features): Segment[] | null {
   const stack: Open[] = []
   let start = -1
   let fence: string | null = null
+  // The opener's indent: its closer sits at most 3 spaces further in, and a line deeper than that is code.
+  let fenceAt = 0
   let hasFence = false
 
   const close = (end: number) => {
@@ -66,14 +68,15 @@ export function segments(text: string, features: Features): Segment[] | null {
 
   lines.forEach((line, i) => {
     if (fence !== null) {
-      const closer = new RegExp(`^\\s*${fence[0] === '`' ? '`' : '~'}{${fence.length},}\\s*$`)
+      const closer = new RegExp(`^\\s{0,${fenceAt + 3}}${fence[0] === '`' ? '`' : '~'}{${fence.length},}\\s*$`)
       if (closer.test(line)) fence = null
       return
     }
     const open = FENCE.exec(line)
     if (open) {
       if (start < 0) start = i
-      fence = open[1]!
+      fence = open[2]!
+      fenceAt = open[1]!.length
       hasFence = true
       return
     }
