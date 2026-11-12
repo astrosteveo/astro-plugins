@@ -248,6 +248,11 @@ class Show(BoardTest):
         self.use(FakeGh())
         self.assertEqual(board.show("o/r", None).splitlines()[1:], ["Open milestones: none", "No status update yet"])
 
+    def test_a_draft_at_done_is_done(self):
+        # A draft has no open or closed state, so it can't be closed to match Done.
+        self.use(FakeGh(pages=[[item("Done", title="an idea", kind="DraftIssue")]]))
+        self.assertEqual(board.show("o/r", None).splitlines()[1:], ["Open milestones: none", "No status update yet"])
+
 
 if __name__ == "__main__":
     unittest.main()

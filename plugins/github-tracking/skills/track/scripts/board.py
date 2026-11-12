@@ -167,7 +167,8 @@ def show(repo: str, project: int | None) -> str:
         status = (item["status"] or {}).get("name") or "No status"
         c = item["content"] or {}
         closed = c.get("state") in ("CLOSED", "MERGED")
-        if status == "Done" and closed:
+        # A draft can't be closed, so at Done it's done.
+        if status == "Done" and (closed or c.get("__typename") == "DraftIssue"):
             continue
         label = f"#{c['number']} {c['title']}" if "number" in c else f"(draft) {c.get('title', '?')}"
         # A closed item that isn't Done, or an open one that is, is the board out of step.
