@@ -117,3 +117,27 @@ test('a list inside a quote keeps its items apart', async () => {
     { kind: 'rich', lines: [{ kind: 'quote', spans: [{ text: 'Steps: - one - two' }] }] },
   ])
 })
+
+test('a nested item after a blank line stays nested', async () => {
+  const parts = segments('- a `x`\n\n  - b `y`', ALL)
+  const last = parts?.at(-1)
+
+  expect(last?.kind === 'rich' ? last.lines[0] : undefined).toMatchObject({ kind: 'item', indent: 2 })
+})
+
+// The first line of the reply's last part, which the tests below draw.
+function lastFirst(text: string) {
+  const last = segments(text, ALL)?.at(-1)
+  return last?.kind === 'rich' ? last.lines[0] : undefined
+}
+
+test('after a blank line, an item sits as deep as its indent puts it', async () => {
+  expect(lastFirst('- a `x`\n  - b `y`\n\n    - c `z`')).toMatchObject({ kind: 'item', indent: 4 })
+  expect(lastFirst('- a `x`\n  - b `y`\n\n  - c `z`')).toMatchObject({ kind: 'item', indent: 2 })
+})
+
+test('after a blank line, an unindented item or one after a paragraph starts at the left again', async () => {
+  expect(lastFirst('- a `x`\n\n- b `y`')).toMatchObject({ kind: 'item', indent: 0 })
+  expect(lastFirst('- a `x`\n\nAbout `a`.\n\n  - b `y`')).toMatchObject({ kind: 'item', indent: 0 })
+  expect(lastFirst('- a `x`\n\n```\ncode\n```\n\n  - b `y`')).toMatchObject({ kind: 'item', indent: 0 })
+})
