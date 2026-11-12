@@ -263,6 +263,23 @@ class DigestTest(unittest.TestCase):
         self.assertIn("- 3 · by 2026-10-03 12:00 · - Never squash.", text)
         self.assertIn("last changed 2026-10-03 12:00 UTC", text)
 
+    def test_a_line_added_by_hand_between_two_edits_is_timed_by_not_since(self):
+        path = self.config / "CLAUDE.md"
+        first = "# Git\n- Rebase-merge.\n"
+        self.session("-home-u-Projects-alpha", "s1", [
+            edited(path, "2026-09-20T08:00:00Z", {"type": "update", "originalFile": first,
+                                                   "content": first + "- Stage by name.\n"}),
+            # The user added "- Never squash." by hand; this edit found it already there.
+            edited(path, "2026-10-01T09:30:00Z", {"originalFile": first + "- Stage by name.\n- Never squash.\n",
+                                                   "oldString": "- Rebase-merge.", "newString": "- Fast-forward.",
+                                                   "replaceAll": False}),
+        ])
+        path.write_text("# Git\n- Fast-forward.\n- Stage by name.\n- Never squash.\n")
+        lines = self.claude_md_lines()
+        self.assertIn("- 4 · by 2026-10-01 09:30 · - Never squash.", lines)
+        # The line that edit did write keeps its since.
+        self.assertIn("- 2 · since 2026-10-01 09:30 · - Fast-forward.", lines)
+
     def test_since_does_not_hide_the_edits_that_wrote_a_line(self):
         self.claude_md_history("# Git\n- Fast-forward.\n- Stage by name.\n")
         self.assertIn("since 2026-10-01 09:30 · - Fast-forward.", self.claude_md_lines("--since", "2026-10-02"))
