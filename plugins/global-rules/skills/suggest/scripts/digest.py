@@ -215,14 +215,16 @@ def scan_session(path: Path, since: str | None, include_tests: bool, digest: Dig
             # Before the --since and test filters: an old edit still says when a line was written.
             take_snapshot(record, digest)
             human = (record.get("origin") or {}).get("kind") == "human" and not record.get("isMeta")
+            when = minute(record.get("timestamp"))
+            day = when[:10]
+            too_old = since and day and day < since
             if not include_tests and is_test(record):
-                digest.skipped += human
+                # Counted only from --since on, and once per id, as the messages themselves are.
+                digest.skipped += human and not too_old and digest.first_time(record.get("uuid"))
                 continue
             if project is None and record.get("cwd"):
                 project = project_name(record["cwd"])
-            when = minute(record.get("timestamp"))
-            day = when[:10]
-            if since and day and day < since:
+            if too_old:
                 continue
 
             for block in content if isinstance(content, list) else []:
