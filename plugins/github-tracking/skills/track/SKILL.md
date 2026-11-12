@@ -1,7 +1,7 @@
 ---
 name: track
-description: Use before you open, start, file, plan or finish any issue, PR or change in a repo with a GitHub remote, before you say where a project stands, and when such a repo has no Projects board. Keeps the repo's issues, milestones and board true, so the user can see on GitHub where the project stands: each change starts from an issue on the board, PRs close their issues, a larger step is a parent issue split into sub-issues, and status updates say what's done and next. Its script makes the board's API calls, so no project ids are needed.
-allowed-tools: Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/board.py *)
+description: Use before you open, start, file, plan or finish any issue, PR or change in a repo with a GitHub remote, and before you say where a project stands. Keeps the repo's issues, milestones and board true, so the user can see on GitHub where the project stands: each change starts from an issue on the board, PRs close their issues, a larger step is a parent issue split into sub-issues, and status updates say what's done and next. Its script makes the board's API calls, so no project ids are needed. When the repo has no board, it offers /github-tracking:init.
+allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/board.py *)
 ---
 
 # Track work on GitHub
@@ -11,14 +11,13 @@ The user follows each project on GitHub instead of asking: its issues, its miles
 `board.py` makes the board's API calls. It finds the board linked to the repo you're in and that board's Status field, so no CLAUDE.md needs to keep a project's ids. Pass `--repo OWNER/NAME` to work on another repo's board, and `--project NUMBER` when a repo has more than one.
 
 ```
-python3 ${CLAUDE_SKILL_DIR}/scripts/board.py show                    # where the board stands
-python3 ${CLAUDE_SKILL_DIR}/scripts/board.py move 12 "In Progress"   # an issue or PR, by number or URL
-python3 ${CLAUDE_SKILL_DIR}/scripts/board.py sub 10 11 12 13         # 11, 12 and 13 become sub-issues of 10
-python3 ${CLAUDE_SKILL_DIR}/scripts/board.py update on-track FILE    # a status update, its body from FILE or - for stdin
-python3 ${CLAUDE_SKILL_DIR}/scripts/board.py views                   # give the board its views
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/board.py show                    # where the board stands
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/board.py move 12 "In Progress"   # an issue or PR, by number or URL
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/board.py sub 10 11 12 13         # 11, 12 and 13 become sub-issues of 10
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/board.py update on-track FILE    # a status update, its body from FILE or - for stdin
 ```
 
-`move` adds the item to the board when it isn't there yet. `views` adds the board's three views of its issues, each with an issue's PRs in its row: Open work (a column per status), Milestones (open issues grouped by milestone) and Recently done (closed in the last two weeks). It removes the "View 1" a new board starts with, if no one has changed it, and leaves other views alone. A status update is `on-track`, `at-risk`, `off-track`, `complete` or `inactive`. If gh says it lacks the `project` scope, ask the user to run `! gh auth refresh -s project`.
+`move` adds the item to the board when it isn't there yet. A status update is `on-track`, `at-risk`, `off-track`, `complete` or `inactive`. If gh says it lacks the `project` scope, ask the user to run `! gh auth refresh -s project`.
 
 This skill says what to keep on GitHub, not how to do the work. Branches, commits, what belongs in a change and how issues are labelled and titled follow the user's CLAUDE.md and the repo's own rules. Those rules may also say what the repo's milestones stand for (such as one per slice) or which issue is a larger step's parent. Where they say something, follow them over this skill.
 
@@ -55,21 +54,8 @@ Write a few plain lines for someone reading the board, with issues and PRs as `#
 
 ## Say where things stand
 
-When the user asks where a project is, run `board.py show` with `git status`, `git branch -a` and `gh pr list`, and answer from them: the milestones' progress, what's in progress, what's next and what's open. `show` marks an item out of step with its issue (closed but not Done, or Done but open), lists the board's workflows that are off, and the views it's missing. Fix what's out of step. Add missing views with `board.py views`, unless the user has said they don't want them. If the latest status update no longer says where the project stands, post one.
+When the user asks where a project is, run `board.py show` with `git status`, `git branch -a` and `gh pr list`, and answer from them: the milestones' progress, what's in progress, what's next and what's open. `show` marks an item out of step with its issue (closed but not Done, or Done but open), lists the board's workflows that are off, and the views it's missing. Fix what's out of step. If it lists views missing, add them with `/github-tracking:init`, which adds only what the board lacks, unless the user has said they don't want them. If the latest status update no longer says where the project stands, post one.
 
-## Set up tracking
+## A repo with no board
 
-In a repo with a GitHub remote and no board (`show` says so), offer to set one up. If the user says yes:
-
-1. Make the board and link it to the repo. A new board has a Status field with Todo, In Progress and Done:
-   ```
-   gh project create --owner OWNER --title "NAME" --format json --jq .number
-   gh project link NUMBER --owner OWNER --repo OWNER/NAME
-   ```
-2. Give it its views: `board.py views`.
-3. Make the labels that are missing for the repo's kinds of change, with `gh label create`.
-4. Make a milestone for each larger step that's already planned: `gh api repos/OWNER/NAME/milestones -f title=TITLE -f description=TEXT`.
-5. Run `show`. A new board has its workflows on. If it lists Item closed, Pull request merged or Auto-add sub-issues as off, ask the user to turn them on in the board's Workflows settings, as the API can't turn on a workflow.
-6. Put the open issues on the board, then post a first status update.
-
-If the user says no, save that in the project's memory, and don't offer again in that repo.
+When `board.py` says no board is linked to the repo, offer to set one up. If the user says yes, set it up with the init skill (`/github-tracking:init`). If they say no, save that in the project's memory, and don't offer again in that repo.
