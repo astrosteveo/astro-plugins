@@ -71,7 +71,7 @@ def board(repo: str, number: int | None) -> dict:
         if not boards:
             raise Fail(f"no open board numbered {number} is linked to {repo}")
     if not boards:
-        raise Fail(f"no board is linked to {repo}: set one up (the track skill's Set up section), "
+        raise Fail(f"no board is linked to {repo}: set one up with /github-tracking:init, "
                    f"or link it with gh project link NUMBER --owner {owner} --repo {repo}")
     if len(boards) > 1:
         listed = ", ".join(f"{b['number']} ({b['title']})" for b in boards)

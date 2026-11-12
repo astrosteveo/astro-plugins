@@ -30,7 +30,7 @@
     {
       "name": "github-tracking",
       "source": "./plugins/github-tracking",
-      "description": "Keeps a repo's GitHub issues, milestones and Projects board true while Claude works: each change starts from an issue on the board, larger steps split into sub-issues, and status updates say where the project stands."
+      "description": "Keeps a repo's GitHub issues, milestones and Projects board true while Claude works: each change starts from an issue on the board, larger steps split into sub-issues, and status updates say where the project stands. /github-tracking:init sets up the board and its views."
     },
     {
       "name": "screen-polish",

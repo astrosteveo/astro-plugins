@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "track" / "scripts" / "board.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "board.py"
 sys.path.insert(0, str(SCRIPT.parent))
 import board  # noqa: E402
 
@@ -131,6 +131,7 @@ class FindsTheBoard(BoardTest):
         self.assertEqual(code, 1)
         self.assertIn("no board is linked to o/r", err)
         self.assertIn("gh project link", err)
+        self.assertIn("/github-tracking:init", err)
 
     def test_several_boards_need_a_number(self):
         self.use(FakeGh(boards=[project(20, "A"), project(21, "B")]))
