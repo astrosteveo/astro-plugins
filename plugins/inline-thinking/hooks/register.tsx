@@ -29,11 +29,23 @@ async function file($: EngineInterface, e: SessionAppendInput) {
   await update($, pending, () => [])
 }
 
-// The summary's own markup, bold headings mostly, would show as stars.
+// The summary's own markup, bold headings mostly, would show as stars. Only a
+// **pair** or __pair__ is markup: a lone ** (2**10), __ inside a word
+// (mcp__github) and anything in a `code span` are text. A code span is matched
+// whole, so it is kept as written, and a pair may wrap one but not end in one.
+// A closer pairs with the nearest opener, as in CommonMark.
+const bold =
+  /(`[^`]*`)|\*\*(?=\S)((?:`[^`]*`|(?!\*\*)[^`])+?)(?<=\S)\*\*|(?<![\p{L}\p{N}_])__(?=\S)((?:`[^`]*`|(?!__)[^`])+?)(?<=\S)__(?![\p{L}\p{N}_])/gu
+
 function paragraphs(thought: string) {
   return thought
     .split(/\n\s*\n/)
-    .map(part => part.replace(/\*\*|__/g, '').replace(/\s+/g, ' ').trim())
+    .map(part =>
+      part
+        .replace(bold, (_, code, stars, unders) => code ?? stars ?? unders)
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
     .filter(part => part !== '')
 }
 
