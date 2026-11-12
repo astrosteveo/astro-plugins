@@ -135,6 +135,32 @@ test("an edit's result is its diff, cut at 30 lines with headers that still add 
   await ui.unmount()
 })
 
+test('a new 30-line file ending in a newline shows whole, with no more-lines note', ALL, async ($, on) => {
+  engine(on)
+  await start($)
+  const thirty = `${Array.from({ length: 30 }, (_, n) => `line ${n + 1}`).join('\n')}\n`
+  const ui = await $.ui.mount(
+    site('ToolResult', {
+      tool_use_id: 'toolu_1',
+      tool: 'Write',
+      isErrored: false,
+      output: { type: 'create', filePath: '/proj/a.txt', content: thirty, structuredPatch: [] },
+    }) as never,
+  )
+
+  expect(String((await ui.find({ type: 'Code' }))?.props.source).split('\n')).toHaveLength(30)
+  expect(await ui.find({ type: 'Text' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test("a new file's row counts its lines, not the empty one after the last newline", ALL, async ($, on) => {
+  engine(on)
+  await start($)
+  const write = { ...CALL, tool: 'Write', input: { file_path: '/proj/a.txt' } }
+
+  expect((await texts($, site('ToolUse', { ...write, output: { type: 'create', content: 'a\nb\n' } }))).at(-1)).toBe('new · 2 lines')
+})
+
 test("a shell result draws nothing under its row; a failure draws the detail its row left out", ALL, async ($, on) => {
   engine(on)
   await start($)

@@ -77,6 +77,11 @@ function lines(value: string): string[] {
     .filter(line => line !== '')
 }
 
+// A file's lines as written: the newline that ends the last one starts no line of its own.
+function fileLines(content: string): string[] {
+  return content.replace(/\n$/, '').split('\n')
+}
+
 function relative(path: string): string {
   return cwd !== '' && path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path
 }
@@ -156,7 +161,7 @@ function target({ tool, input }: Call): string {
 function changed(output: unknown): string {
   const patch = field(output, 'structuredPatch')
   if (text(output, 'type') === 'create') {
-    return `new · ${(text(output, 'content') ?? '').split('\n').length} lines`
+    return `new · ${fileLines(text(output, 'content') ?? '').length} lines`
   }
   if (!Array.isArray(patch)) {
     return 'done'
@@ -394,7 +399,7 @@ function result($: EngineInterface, e: RenderInput<'ToolResult'>): RenderElement
   const path = text(output, 'filePath')
   if ((tool === 'Edit' || tool === 'Write') && path !== undefined) {
     const created = text(output, 'type') === 'create'
-    const all = (text(output, 'content') ?? '').split('\n')
+    const all = fileLines(text(output, 'content') ?? '')
     const patch = field(output, 'structuredPatch')
     const { source, more } = created
       ? { source: all.slice(0, BODY_LINES).join('\n'), more: Math.max(0, all.length - BODY_LINES) }
