@@ -62,6 +62,14 @@ class SkillTest(unittest.TestCase):
         for command in runs:
             self.assertIn(f"Bash(git {command} *)", self.allowed)
 
+    def test_git_finds_the_root_project_md_from_any_folder(self):
+        # A pathspec after -- is read from the current folder, so in a subfolder
+        # `git log -1 -- PROJECT.md` prints nothing for a committed PROJECT.md. :/ starts at the root.
+        specs = re.findall(r"git (?:log|diff)[^`\n]* -- ([^\s`]+)", self.body)
+        self.assertTrue(specs)
+        self.assertEqual(set(specs), {":/PROJECT.md"})
+        self.assertIn("git log -1 --format='%h %cs' -- :/PROJECT.md", self.body)
+
     def test_answered_findings_are_recorded_so_they_are_not_raised_again(self):
         self.assertIn("Otherwise the next review raises it again", self.body)
         self.assertIn("Drop any finding the file already answers", self.body)
@@ -85,7 +93,14 @@ class SkillTest(unittest.TestCase):
         self.assertIn("don't add it twice", write)
         # An import put in AGENTS.md never loads where Claude Code's AGENTS.md reader is off, and a
         # new CLAUDE.md without @AGENTS.md stops it reading AGENTS.md where the reader is on.
-        self.assertIn("If the repo has an AGENTS.md and you create ./CLAUDE.md, make `@AGENTS.md` its first line", write)
+        self.assertIn("If the repo has an AGENTS.md and you create CLAUDE.md, make `@AGENTS.md` its first line", write)
+
+    def test_the_instruction_files_are_checked_at_the_repo_root(self):
+        # In a subfolder, ./CLAUDE.md is the subfolder's: the check would miss the root's import and
+        # create a CLAUDE.md there whose @PROJECT.md names a PROJECT.md that isn't there.
+        write = self.body[self.body.index("## 6. Write"):]
+        self.assertEqual(re.findall(r"(?<!\.)\./\S*", self.body), [])
+        self.assertIn("at the repo root, not in the current folder", write)
 
     def test_the_argument_hint_names_both_uses(self):
         hint = next(line for line in self.front.splitlines() if line.startswith("argument-hint:"))

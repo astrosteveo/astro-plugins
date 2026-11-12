@@ -24,12 +24,12 @@ Run these in one turn:
 ```
 git rev-parse --show-toplevel
 git status --short
-git log -1 --format='%h %cs' -- PROJECT.md
+git log -1 --format='%h %cs' -- :/PROJECT.md
 ```
 
-If the folder is not a git repo, work in the current folder, skip the history in step 3, and say the review can't see what changed. If the repo has no commits yet, or PROJECT.md was never committed, there is no baseline: step 3 says what to do.
+If the folder is not a git repo, work in the current folder as the repo root, skip the history in step 3, and say the review can't see what changed. If the repo has no commits yet, or PROJECT.md was never committed, there is no baseline: step 3 says what to do.
 
-Read PROJECT.md at the repo root if it exists, and the README, CLAUDE.md, .claude/CLAUDE.md and AGENTS.md that exist.
+At the repo root, read PROJECT.md if it exists, and the README, CLAUDE.md, .claude/CLAUDE.md and AGENTS.md that exist.
 
 Then pick what to do:
 
@@ -115,7 +115,7 @@ git log --oneline HASH..HEAD
 git diff --stat HASH..HEAD
 ```
 
-Read a commit's changes (`git log -p -1 COMMIT`) when its subject doesn't say enough. If PROJECT.md has uncommitted changes, read `git diff -- PROJECT.md`: the user may have edited it by hand, and those edits are theirs. If it was never committed, or the repo has no commits, review it against `git log --oneline -30` and the files, and say it has no committed baseline yet.
+Read a commit's changes (`git log -p -1 COMMIT`) when its subject doesn't say enough. If PROJECT.md has uncommitted changes, read `git diff -- :/PROJECT.md`: the user may have edited it by hand, and those edits are theirs. If it was never committed, or the repo has no commits, review it against `git log --oneline -30` and the files, and say it has no committed baseline yet.
 
 Look for:
 
@@ -152,8 +152,8 @@ Compare the idea with Goals, Non-goals, Priorities, Constraints and Decisions. S
 ## 6. Write
 
 1. Write nothing until the user approves the draft or the edits. Then write a new file with Write, or change an existing one with Edit, keeping its wording and its own sections.
-2. Show what changed: `git diff -- PROJECT.md`, or the new file in full.
-3. If no instruction file imports PROJECT.md yet, offer to add the import, so Claude reads it in every session. Look for `@PROJECT.md` in ./CLAUDE.md, ./.claude/CLAUDE.md and ./AGENTS.md, and don't add it twice. Add it to whichever of ./CLAUDE.md or ./.claude/CLAUDE.md exists. If there is neither, create ./CLAUDE.md. If the repo has an AGENTS.md and you create ./CLAUDE.md, make `@AGENTS.md` its first line: once a CLAUDE.md exists, Claude Code stops reading AGENTS.md unless CLAUDE.md imports it, and some setups never read AGENTS.md on its own. Add this line, as plain text outside backticks and code blocks, because Claude Code doesn't import a path inside them:
+2. Show what changed: `git diff -- :/PROJECT.md`, or the new file in full.
+3. If no instruction file imports PROJECT.md yet, offer to add the import, so Claude reads it in every session. Look for `@PROJECT.md` in CLAUDE.md, .claude/CLAUDE.md and AGENTS.md at the repo root, not in the current folder, and don't add it twice. Add it to whichever of CLAUDE.md or .claude/CLAUDE.md exists there. If there is neither, create CLAUDE.md at the repo root. If the repo has an AGENTS.md and you create CLAUDE.md, make `@AGENTS.md` its first line: once a CLAUDE.md exists, Claude Code stops reading AGENTS.md unless CLAUDE.md imports it, and some setups never read AGENTS.md on its own. Add this line, as plain text outside backticks and code blocks, because Claude Code doesn't import a path inside them:
 
    ```
    See @PROJECT.md for what this project is for. If a request conflicts with its non-goals or constraints, say so before starting.
