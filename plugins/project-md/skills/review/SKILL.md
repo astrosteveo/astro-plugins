@@ -7,7 +7,7 @@ allowed-tools: Bash(git rev-parse *), Bash(git status *), Bash(git log *), Bash(
 
 # Draft and review PROJECT.md
 
-PROJECT.md, at the repo root, says what the project is for: the problem it solves, who it's for, what it will and won't do, and how to tell whether it worked. CLAUDE.md says how to work in the repo; PROJECT.md says what the work is for. CLAUDE.md imports it, so Claude has it in every session. It grows with the project.
+PROJECT.md, at the repo root, says what the project is for: the problem it solves, who it's for, what it will and won't do, and how to tell whether it worked. CLAUDE.md says how to work in the repo; PROJECT.md says what the work is for. This plugin loads it into every session, so Claude has it without a CLAUDE.md importing it. It grows with the project.
 
 This skill was invoked with: `$ARGUMENTS`
 
@@ -104,7 +104,7 @@ Fill in what the repo shows: what it is, and constraints such as the stack, plat
 
 The problem, who it's for, goals, non-goals, success, failure and priorities are the user's to say. Ask for them in plain text, not with AskUserQuestion, so the user can answer several in one reply. Ask at most four at a time. Give each a suggestion from what the repo shows, so the user can answer with a yes or reword it.
 
-Then show the whole draft. It holds only what the user said or confirmed and facts from the repo. A section with no answer yet says `Not decided yet.`, and its question goes under Open questions. Keep the file under 150 lines: CLAUDE.md loads it into every session, and Claude Code's docs aim to keep that under 200 lines. Write it once the user approves (step 6).
+Then show the whole draft. It holds only what the user said or confirmed and facts from the repo. A section with no answer yet says `Not decided yet.`, and its question goes under Open questions. Keep the file under 150 lines: it loads into every session, like CLAUDE.md, and Claude Code's docs aim to keep that under 200 lines. Write it once the user approves (step 6).
 
 ## 3. Review PROJECT.md
 
@@ -153,22 +153,4 @@ Compare the idea with Goals, Non-goals, Priorities, Constraints and Decisions. S
 
 1. Write nothing until the user approves the draft or the edits. Then write a new file with Write, or change an existing one with Edit, keeping its wording and its own sections.
 2. Show what changed: `git diff -- :/PROJECT.md`, or the new file in full.
-3. If no instruction file imports PROJECT.md yet, offer to add the import, so Claude reads it in every session. Check CLAUDE.md, .claude/CLAUDE.md and AGENTS.md at the repo root, not in the current folder, and don't add it twice. Claude Code reads an `@path` from the folder of the file that holds it, so:
-   - CLAUDE.md imports it with `@PROJECT.md`.
-   - .claude/CLAUDE.md imports it with `@../PROJECT.md`. A `@PROJECT.md` there names .claude/PROJECT.md, so it doesn't count: offer to change it to `@../PROJECT.md` instead of adding the line again.
-   - AGENTS.md imports it with `@PROJECT.md`, but only when Claude Code reads AGENTS.md: when a CLAUDE.md imports AGENTS.md, or when there is no CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md.
-
-   Add the import to CLAUDE.md if it exists, or else to .claude/CLAUDE.md. If there is neither, create CLAUDE.md at the repo root. If the repo has an AGENTS.md and you create CLAUDE.md, make `@AGENTS.md` its first line: once a CLAUDE.md exists, Claude Code stops reading AGENTS.md unless CLAUDE.md imports it, and some setups never read AGENTS.md on its own. Add the line as plain text outside backticks and code blocks, because Claude Code doesn't import a path inside them. In CLAUDE.md, add this line:
-
-   ```
-   See @PROJECT.md for what this project is for. If a request conflicts with its non-goals or constraints, say so before starting.
-   ```
-
-   In .claude/CLAUDE.md, add this line:
-
-   ```
-   See @../PROJECT.md for what this project is for. If a request conflicts with its non-goals or constraints, say so before starting.
-   ```
-
-   If the user says no, save that in the project's memory and don't offer again in this repo.
-4. Offer to commit PROJECT.md, and the import line if you added or changed it, following the repo's git rules. The next review starts from that commit.
+3. Offer to commit PROJECT.md, following the repo's git rules. The next review starts from that commit. Don't add an import of PROJECT.md to CLAUDE.md: this plugin loads it into every session.
