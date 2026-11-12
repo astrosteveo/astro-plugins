@@ -125,6 +125,18 @@ class SkillTest(unittest.TestCase):
         self.assertEqual(counted.get("CLAUDE.md"), "@PROJECT.md")
         self.assertEqual(counted.get(".claude/CLAUDE.md"), "@../PROJECT.md")
 
+    def test_an_import_in_agents_md_counts_only_when_agents_md_loads(self):
+        # Once a CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md exists, Claude Code reads AGENTS.md
+        # only through an import. In Claude Code 2.1.322, @PROJECT.md in an AGENTS.md that the
+        # CLAUDE.md beside it didn't import never loaded PROJECT.md.
+        write = self.body[self.body.index("## 6. Write"):]
+        agents = re.search(r"^\s+- AGENTS\.md imports it with `@PROJECT\.md`(.*)$", write, re.M).group(1)
+        self.assertEqual(
+            agents,
+            ", but only when Claude Code reads AGENTS.md: when a CLAUDE.md imports AGENTS.md, "
+            "or when there is no CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md.",
+        )
+
     def test_the_argument_hint_names_both_uses(self):
         hint = next(line for line in self.front.splitlines() if line.startswith("argument-hint:"))
         self.assertIn("section", hint)

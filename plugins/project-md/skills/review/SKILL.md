@@ -156,7 +156,7 @@ Compare the idea with Goals, Non-goals, Priorities, Constraints and Decisions. S
 3. If no instruction file imports PROJECT.md yet, offer to add the import, so Claude reads it in every session. Check CLAUDE.md, .claude/CLAUDE.md and AGENTS.md at the repo root, not in the current folder, and don't add it twice. Claude Code reads an `@path` from the folder of the file that holds it, so:
    - CLAUDE.md imports it with `@PROJECT.md`.
    - .claude/CLAUDE.md imports it with `@../PROJECT.md`. A `@PROJECT.md` there names .claude/PROJECT.md, so it doesn't count: offer to change it to `@../PROJECT.md` instead of adding the line again.
-   - AGENTS.md imports it with `@PROJECT.md`.
+   - AGENTS.md imports it with `@PROJECT.md`, but only when Claude Code reads AGENTS.md: when a CLAUDE.md imports AGENTS.md, or when there is no CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md.
 
    Add the import to CLAUDE.md if it exists, or else to .claude/CLAUDE.md. If there is neither, create CLAUDE.md at the repo root. If the repo has an AGENTS.md and you create CLAUDE.md, make `@AGENTS.md` its first line: once a CLAUDE.md exists, Claude Code stops reading AGENTS.md unless CLAUDE.md imports it, and some setups never read AGENTS.md on its own. Add the line as plain text outside backticks and code blocks, because Claude Code doesn't import a path inside them. In CLAUDE.md, add this line:
 
