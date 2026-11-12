@@ -82,7 +82,7 @@ One sentence: what this is and who it's for.
 
 ## Status
 
-<!-- Where the project stands against its goals: what works, what's next. A few lines, not a task list, and nothing that changes with every commit, such as a commit count. -->
+<!-- Where the project stands against its goals: what works, what's next. A few lines, not a task list or a log of changes, and nothing that changes with every commit, such as a commit count. -->
 ````
 
 Fill in what the repo shows: what it is, and constraints such as the stack, platforms and license, from the files you read and the commits.

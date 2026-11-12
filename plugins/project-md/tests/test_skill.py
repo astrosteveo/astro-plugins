@@ -139,7 +139,14 @@ class ReviewTest(unittest.TestCase):
         self.assertIn("Drop any finding the file already answers", self.body)
 
     def test_status_is_kept_free_of_what_goes_stale_with_each_commit(self):
-        self.assertIn("Status that holds something that changes with every commit", self.body)
+        self.assertIn("holds something that changes with every commit", self.body)
+
+    def test_a_new_status_is_rewritten_not_appended(self):
+        # A review once added a sentence per change, and Status grew into a log of past work.
+        record = step(self.body, "## 3. Record", "## 4.")
+        self.assertIn("A new status rewrites Status as where the project stands now", record)
+        self.assertIn("Don't add a line per change", record)
+        self.assertIn("Status that reads as a log of past changes", step(self.body, "## 2. Review", "## 3. Record"))
 
     def test_the_argument_hint_names_both_uses(self):
         hint = field(self.front, "argument-hint")
