@@ -210,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.repo and not re.fullmatch(r"[^/\s]+/[^/\s]+", args.repo):
+            raise Fail(f"--repo is OWNER/NAME, not {args.repo}")
         repo = args.repo or this_repo()
         if args.command == "show":
             print(show(repo, args.project))

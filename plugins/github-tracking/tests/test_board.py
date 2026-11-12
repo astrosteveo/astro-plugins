@@ -117,6 +117,16 @@ class FindsTheBoard(BoardTest):
         with self.assertRaisesRegex(board.Fail, "no Status field"):
             board.board("o/r", None)
 
+    def test_a_repo_that_isn_t_owner_slash_name_is_an_error_not_a_traceback(self):
+        for repo in ("r", "https://github.com/o/r"):
+            for command in (["show"], ["sub", "7", "8"]):
+                with self.subTest(repo=repo, command=command[0]):
+                    fake = self.use(FakeGh())
+                    code, _, err = self.run_main("--repo", repo, *command)
+                    self.assertEqual(code, 1)
+                    self.assertIn(f"board.py: --repo is OWNER/NAME, not {repo}", err)
+                    self.assertEqual(fake.calls, [])
+
     def test_strings_go_as_strings_and_numbers_as_numbers(self):
         # -F would send the owner "123" as a number and the query would fail.
         fake = self.use(FakeGh())
