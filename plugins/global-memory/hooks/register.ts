@@ -147,7 +147,11 @@ async function save($: EngineInterface, dir: string, e: Args): Promise<Answer> {
     try {
       await put($, `${dir}/MEMORY.md`, next)
     } catch (error) {
-      return { deny: `Wrote ${name}.md but could not update the index (${why(error)}), so it is not listed. Save it again to list it.` }
+      // A line the index had for the memory is still there, as it was.
+      const left = hasEntry(index, name)
+        ? 'so its index line still has the old title and description. Save it again to update the line.'
+        : 'so it is not listed. Save it again to list it.'
+      return { deny: `Wrote ${name}.md but could not update the index (${why(error)}), ${left}` }
     }
     return {
       result: `${existed ? 'Replaced' : 'Saved'} global memory ${name}.${cutNote(index, name, title, description)}${fileNote(text)}${indexNote(next)}`,
