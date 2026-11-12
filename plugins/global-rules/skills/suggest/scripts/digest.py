@@ -256,7 +256,8 @@ def scan_session(path: Path, since: str | None, include_tests: bool, digest: Dig
 
 
 # The global-memory plugin's tools (its hooks/memory.ts) write the description with JSON.stringify, so a
-# double-quoted value is decoded as JSON; one that won't decode, and any other, just loses its quote marks.
+# double-quoted value is decoded as JSON. One that won't decode, or a single-quoted one, loses the quotes
+# around it. Any other value, such as the plain `Say "merge" when told "close"`, is kept as written.
 def front_matter_value(raw: str) -> str:
     value = raw.strip()
     if value.startswith('"'):
@@ -266,7 +267,9 @@ def front_matter_value(raw: str) -> str:
                 return decoded
         except ValueError:
             pass
-    return value.strip("\"'")
+    if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0] and value[0] not in value[1:-1]:
+        return value[1:-1]
+    return value
 
 
 def read_memory(path: Path, scope: str) -> Memory:
