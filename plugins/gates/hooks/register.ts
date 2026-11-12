@@ -15,8 +15,8 @@ const word = (name: string) => new RegExp(`(^|[^A-Za-z0-9_-])${name}([^A-Za-z0-9
 // What a kill finds its targets by: each pgrep -f, and the first grep that ps feeds, with its
 // arguments up to where that command ends.
 const LOOKUPS = [
-  /(^|[^A-Za-z0-9_-])(?<lookup>pgrep[^|;&)]*\s(-[A-Za-z0-9]*f|--full)[^|;&)]*)/g,
-  /(^|[^A-Za-z0-9_-])ps(\s[^|]*)?\|.*?(?<lookup>grep[^|;&)]*)/g,
+  /(^|[^A-Za-z0-9_-])(?<lookup>pgrep[^|;&)`]*\s(-[A-Za-z0-9]*f|--full)[^|;&)`]*)/g,
+  /(^|[^A-Za-z0-9_-])ps(\s[^|]*)?\|.*?(?<lookup>grep[^|;&)`]*)/g,
 ]
 const unbracketed = (line: string) =>
   LOOKUPS.some(lookup => [...line.matchAll(lookup)].some(match => !/\[[^\]]+\]/.test(match.groups!.lookup)))

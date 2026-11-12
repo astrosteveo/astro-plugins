@@ -17,7 +17,9 @@ const FORMS: [string, string | null][] = [
   ['echo "[done]" && kill $(pgrep -f godot)', 'This kills its own shell'],
   ["echo \"[done]\"; ps aux | grep godot | awk '{print $2}' | xargs kill", 'This kills its own shell'],
   ["[ -n \"$(pgrep -f '[g]odot')\" ] && kill $(pgrep -f godot)", 'This kills its own shell'],
+  ['kill `pgrep -f godot` "${pids[0]}"', 'This kills its own shell'],
   ["echo \"[done]\" && kill $(pgrep -f '[g]odot')", null],
+  ["kill `pgrep -f '[g]odot'` \"${pids[0]}\"", null],
   ["[ -n \"$(pgrep -f '[g]odot')\" ] && kill $(pgrep -f '[g]odot')", null],
   ["ps aux | grep '[g]odot' | awk '{print $2}' | xargs kill", null],
 
