@@ -50,8 +50,8 @@
     {
       "name": "corkboard",
       "source": {
-        "source": "github",
-        "repo": "astrosteveo/corkboard"
+        "source": "url",
+        "url": "https://github.com/astrosteveo/corkboard.git"
       },
       "description": "A local issue tracker and wiki kept as Markdown in the repo's .project/ folder. Claude tracks its work with the corkboard command, each session starts with what's in progress, what's next and what's waiting on you, and /corkboard:plan, /corkboard:next and /corkboard:done run the workflow."
     }
