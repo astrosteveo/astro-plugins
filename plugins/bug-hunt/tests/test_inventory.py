@@ -8,14 +8,20 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "skills" / "hunt" / "scripts" / "inventory.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[1] / "skills" / "hunt" / "scripts" / "inventory.py"
+)
 sys.path.insert(0, str(SCRIPT.parent))
-import inventory  # noqa: E402
+import inventory
 
 GIT_ENV = {
     **os.environ,
-    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-    "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@t",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@t",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
 }
 
 
@@ -53,7 +59,9 @@ class InventoryTest(unittest.TestCase):
         path.write_bytes(text.encode() if isinstance(text, str) else text)
 
     def git(self, *args):
-        subprocess.run(["git", *args], cwd=self.root, env=GIT_ENV, check=True, capture_output=True)
+        subprocess.run(
+            ["git", *args], cwd=self.root, env=GIT_ENV, check=True, capture_output=True
+        )
 
     def commit(self, message="c"):
         self.git("add", ".")
@@ -72,10 +80,14 @@ class InventoryTest(unittest.TestCase):
         self.write("src/auth/session.py", lines(30))
         self.write("src/shop/cart.py", lines(50))
         self.commit()
-        self.assertEqual(self.units(self.run_report(budget=100)), ["src/auth/", "src/shop/"])
+        self.assertEqual(
+            self.units(self.run_report(budget=100)), ["src/auth/", "src/shop/"]
+        )
         self.assertEqual(self.units(self.run_report(budget=1000)), ["src/"])
 
-    def test_a_directory_over_the_budget_splits_into_its_subdirectories_and_own_files(self):
+    def test_a_directory_over_the_budget_splits_into_its_subdirectories_and_own_files(
+        self,
+    ):
         self.git("init", "-q")
         self.write("game/main.py", lines(20))
         self.write("game/save/files.py", lines(60))
@@ -86,7 +98,9 @@ class InventoryTest(unittest.TestCase):
             ["game/save/", "game/ui/", "game/* (files directly in it)"],
         )
 
-    def test_own_files_over_the_budget_pack_in_name_order_and_a_big_file_stands_alone(self):
+    def test_own_files_over_the_budget_pack_in_name_order_and_a_big_file_stands_alone(
+        self,
+    ):
         self.git("init", "-q")
         self.write("lib/a.py", lines(40))
         self.write("lib/b.py", lines(40))
@@ -94,8 +108,12 @@ class InventoryTest(unittest.TestCase):
         self.write("lib/c.py", lines(40))
         self.commit()
         text = self.run_report(budget=100)
-        self.assertEqual(self.units(text), ["lib/{a.py, b.py}", "lib/big.py", "lib/c.py"])
-        self.assertIn("lib/big.py  1 file, 500 lines, 1 commit (one file over the budget)", text)
+        self.assertEqual(
+            self.units(text), ["lib/{a.py, b.py}", "lib/big.py", "lib/c.py"]
+        )
+        self.assertIn(
+            "lib/big.py  1 file, 500 lines, 1 commit (one file over the budget)", text
+        )
 
     def test_a_flat_directory_of_many_small_files_is_not_listed_file_by_file(self):
         # 1,500 Rails-style migrations of 15 lines named every file in their units' labels, in a
@@ -105,7 +123,11 @@ class InventoryTest(unittest.TestCase):
             self.write(f"db/migrate/{name}", lines(15))
         text = self.run_report()
         named = sum(1 for name in names if name in text)
-        self.assertLess(named, 30, f"the report names {named} files and runs to {len(text):,} characters")
+        self.assertLess(
+            named,
+            30,
+            f"the report names {named} files and runs to {len(text):,} characters",
+        )
         self.assertLess(len(text.split("\nunits:\n")[1]), 2000)
 
     def test_a_long_group_is_named_by_its_first_and_last_file(self):
@@ -116,7 +138,11 @@ class InventoryTest(unittest.TestCase):
         # A file over the budget ends the group before it, so the range never takes it in.
         self.assertEqual(
             self.units(self.run_report(budget=100)),
-            ["lib/{a_long_module_name_a.py, ..., a_long_module_name_j.py}", "lib/k_big.py", "lib/l.py"],
+            [
+                "lib/{a_long_module_name_a.py, ..., a_long_module_name_j.py}",
+                "lib/k_big.py",
+                "lib/l.py",
+            ],
         )
 
     def test_a_group_whose_names_fit_is_named_file_by_file(self):
@@ -126,7 +152,8 @@ class InventoryTest(unittest.TestCase):
             self.write(f"lib/{name}.py", lines(10))
         self.write("lib/f_big.py", lines(500))
         self.assertEqual(
-            self.units(self.run_report(budget=100)), ["lib/{a.py, b.py, c.py, d.py, e.py}", "lib/f_big.py"]
+            self.units(self.run_report(budget=100)),
+            ["lib/{a.py, b.py, c.py, d.py, e.py}", "lib/f_big.py"],
         )
 
     def test_vendored_generated_and_binary_files_are_left_out(self):
@@ -143,7 +170,9 @@ class InventoryTest(unittest.TestCase):
         self.commit()
         text = self.run_report()
         self.assertIn("code: 1 file, 10 lines, in 1 unit", text)
-        self.assertIn("not code: 2 vendored, 4 generated, 1 binary, 1 other text file", text)
+        self.assertIn(
+            "not code: 2 vendored, 4 generated, 1 binary, 1 other text file", text
+        )
 
     def test_tests_are_counted_apart_from_code(self):
         self.git("init", "-q")
@@ -217,17 +246,29 @@ class InventoryTest(unittest.TestCase):
         with mock.patch.object(inventory, "MAX_UNITS", 3):
             text = self.run_report(budget=10)
         self.assertEqual(len(self.units(text)), 4)
-        self.assertIn("and 2 more units not shown: run again with a path to list them", text)
+        self.assertIn(
+            "and 2 more units not shown: run again with a path to list them", text
+        )
 
     def test_the_cli_prints_the_report_and_refuses_a_zero_budget(self):
         self.git("init", "-q")
         self.write("app.py", lines(3))
         self.commit()
-        run = subprocess.run([sys.executable, str(SCRIPT)], cwd=self.root, capture_output=True, text=True)
+        run = subprocess.run(
+            [sys.executable, str(SCRIPT)],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("code: 1 file, 3 lines", run.stdout)
         run = subprocess.run(
-            [sys.executable, str(SCRIPT), "--budget", "0"], cwd=self.root, capture_output=True, text=True
+            [sys.executable, str(SCRIPT), "--budget", "0"],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         self.assertEqual(run.returncode, 2)
         self.assertIn("--budget must be at least 1", run.stderr)
@@ -281,8 +322,14 @@ class InventoryTest(unittest.TestCase):
     def test_code_that_only_mentions_generation_is_still_code(self):
         self.git("init", "-q")
         self.write("a.py", "# this file is not auto-generated\nx = 1\n")
-        self.write("b.cs", "// <auto-generated>\n//   This code was generated by a tool.\n// </auto-generated>\nclass B {}\n")
-        self.write("c.py", "# Generated by the protocol buffer compiler.  DO NOT EDIT!\n# source: c.proto\nx = 1\n")
+        self.write(
+            "b.cs",
+            "// <auto-generated>\n//   This code was generated by a tool.\n// </auto-generated>\nclass B {}\n",
+        )
+        self.write(
+            "c.py",
+            "# Generated by the protocol buffer compiler.  DO NOT EDIT!\n# source: c.proto\nx = 1\n",
+        )
         self.commit()
         self.assertIn("code: 1 file, 2 lines", self.run_report())
         self.assertIn("2 generated", self.run_report())
@@ -290,12 +337,20 @@ class InventoryTest(unittest.TestCase):
     def test_a_generator_that_holds_the_header_in_a_string_is_still_code(self):
         # gen.go was left out as generated because the header it writes was in its first 1,000 bytes.
         self.write("gen.go", GENERATOR)
-        self.write("colors.go", "// Code generated by gen.go; DO NOT EDIT.\n\npackage colors\n")
+        self.write(
+            "colors.go", "// Code generated by gen.go; DO NOT EDIT.\n\npackage colors\n"
+        )
         self.assertEqual(inventory.classify(self.root, "colors.go"), ("generated", 0))
         self.assertEqual(inventory.classify(self.root, "gen.go"), ("code", 12))
         # The header on a line of its own in a template, and the other markers in strings.
-        self.write("tmpl.go", "package main\n\nconst tmpl = `// Code generated by tmpl.go; DO NOT EDIT.\n\npackage x\n`\n")
-        self.write("Gen.cs", 'class Gen {\n    const string Header = "// <auto-generated/>";\n}\n')
+        self.write(
+            "tmpl.go",
+            "package main\n\nconst tmpl = `// Code generated by tmpl.go; DO NOT EDIT.\n\npackage x\n`\n",
+        )
+        self.write(
+            "Gen.cs",
+            'class Gen {\n    const string Header = "// <auto-generated/>";\n}\n',
+        )
         self.write("tag.js", 'const tag = "@generated";\n')
         for name, n in (("tmpl.go", 6), ("Gen.cs", 3), ("tag.js", 1)):
             self.assertEqual(inventory.classify(self.root, name), ("code", n), name)
@@ -312,7 +367,9 @@ class InventoryTest(unittest.TestCase):
         }
         for name, text in headers.items():
             self.write(name, text)
-            self.assertEqual(inventory.classify(self.root, name), ("generated", 0), name)
+            self.assertEqual(
+                inventory.classify(self.root, name), ("generated", 0), name
+            )
 
     def test_files_that_are_not_code_are_not_read_to_the_end(self):
         # Their line counts were never used, and a large data file took the whole read.
@@ -347,7 +404,12 @@ class InventoryTest(unittest.TestCase):
         self.write("main.py", "x = 1\n")
         os.mkfifo(str(self.root / "events.fifo"))
         run = subprocess.run(
-            [sys.executable, str(SCRIPT)], cwd=self.root, capture_output=True, text=True, timeout=20
+            [sys.executable, str(SCRIPT)],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
         )
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("code: 1 file, 1 line", run.stdout)
@@ -362,7 +424,9 @@ class InventoryTest(unittest.TestCase):
         self.assertEqual(labels[0], "src/sub/")
         self.assertIn("only the listed paths", labels[1])
 
-    def test_a_range_in_a_partly_listed_directory_says_it_holds_only_the_listed_ones(self):
+    def test_a_range_in_a_partly_listed_directory_says_it_holds_only_the_listed_ones(
+        self,
+    ):
         # A range from a to i would read as taking in the unlisted b.
         names = [f"src/request_handler_number_{name}.py" for name in "abcdefghij"]
         for name in names:

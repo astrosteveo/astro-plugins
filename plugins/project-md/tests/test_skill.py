@@ -6,7 +6,15 @@ SKILLS = Path(__file__).resolve().parents[1] / "skills"
 
 # The sections the skills' steps name. Renaming one in the template without the skills would send
 # a review looking for a section the file doesn't have.
-NAMED_SECTIONS = ["Goals", "Non-goals", "Priorities", "Constraints", "Decisions", "Open questions", "Status"]
+NAMED_SECTIONS = [
+    "Goals",
+    "Non-goals",
+    "Priorities",
+    "Constraints",
+    "Decisions",
+    "Open questions",
+    "Status",
+]
 
 
 def skill(name):
@@ -19,24 +27,29 @@ def field(front, key):
 
 
 def step(body, start, end=None):
-    return body[body.index(start):body.index(end) if end else None]
+    return body[body.index(start) : body.index(end) if end else None]
 
 
 def write_step(body):
-    return body[re.search(r"^## \d\. Write$", body, re.M).start():]
+    return body[re.search(r"^## \d\. Write$", body, re.MULTILINE).start() :]
 
 
 class BothSkillsTest(unittest.TestCase):
     def test_every_git_command_each_runs_is_pre_approved(self):
         # An unapproved run stops the skill for a permission prompt, or fails outright under -p.
-        for name, expected in [("init", {"rev-parse", "log"}), ("review", {"rev-parse", "status", "log", "diff"})]:
+        for name, expected in [
+            ("init", {"rev-parse", "log"}),
+            ("review", {"rev-parse", "status", "log", "diff"}),
+        ]:
             with self.subTest(name):
                 front, body = skill(name)
-                runs = set(re.findall(r"^git ([a-z-]+)", body, re.M))
+                runs = set(re.findall(r"^git ([a-z-]+)", body, re.MULTILINE))
                 runs |= set(re.findall(r"`git ([a-z-]+)", body))
                 self.assertEqual(runs, expected)
                 for command in runs:
-                    self.assertIn(f"Bash(git {command} *)", field(front, "allowed-tools"))
+                    self.assertIn(
+                        f"Bash(git {command} *)", field(front, "allowed-tools")
+                    )
 
     def test_nothing_is_written_without_approval(self):
         for name in ["init", "review"]:
@@ -57,11 +70,16 @@ class BothSkillsTest(unittest.TestCase):
                 body = skill(name)[1]
                 self.assertNotIn("@PROJECT.md", body)
                 self.assertNotIn("@../PROJECT.md", body)
-                self.assertIn("Don't add an import of PROJECT.md to CLAUDE.md", write_step(body))
+                self.assertIn(
+                    "Don't add an import of PROJECT.md to CLAUDE.md", write_step(body)
+                )
 
     def test_each_hands_the_other_case_to_the_other_skill(self):
         # Init on a repo with PROJECT.md would overwrite it; review on one without has nothing to read.
-        for name, other in [("init", "/project-md:review"), ("review", "/project-md:init")]:
+        for name, other in [
+            ("init", "/project-md:review"),
+            ("review", "/project-md:init"),
+        ]:
             with self.subTest(name):
                 front, body = skill(name)
                 self.assertIn(other, field(front, "description"))
@@ -73,9 +91,11 @@ class InitTest(unittest.TestCase):
         _, self.body = skill("init")
         # The template sits in the skill, not a file beside it: Claude Code asks before the Read tool
         # or cat opens a file outside the project, which an installed plugin always is.
-        self.template = re.search(r"^````markdown\n(.*?)^````$", self.body, re.M | re.S).group(1)
+        self.template = re.search(
+            r"^````markdown\n(.*?)^````$", self.body, re.MULTILINE | re.DOTALL
+        ).group(1)
         self.steps = self.body.replace(self.template, "")
-        self.headings = re.findall(r"^## (.+)$", self.template, re.M)
+        self.headings = re.findall(r"^## (.+)$", self.template, re.MULTILINE)
 
     def test_the_template_is_in_the_draft_step(self):
         self.assertIn(self.template, step(self.body, "## 2. Draft", "## 3. Write"))
@@ -90,11 +110,13 @@ class InitTest(unittest.TestCase):
     def test_review_checks_for_the_template_sections_in_order(self):
         # Review can't read the template from init's SKILL.md without a permission prompt, so it
         # keeps the list of sections itself.
-        listed = re.search(r"one copy of each section, in this order: (.+?)\. ", skill("review")[1]).group(1)
+        listed = re.search(
+            r"one copy of each section, in this order: (.+?)\. ", skill("review")[1]
+        ).group(1)
         self.assertEqual(listed.split(", "), self.headings)
 
     def test_every_template_section_says_what_goes_there(self):
-        sections = re.split(r"^## .+$", self.template, flags=re.M)[1:]
+        sections = re.split(r"^## .+$", self.template, flags=re.MULTILINE)[1:]
         self.assertEqual(len(sections), len(self.headings))
         for heading, text in zip(self.headings, sections):
             self.assertRegex(text, r"<!-- \S.+ -->", heading)
@@ -105,7 +127,7 @@ class InitTest(unittest.TestCase):
 
     def test_status_holds_nothing_that_goes_stale_with_each_commit(self):
         # A first run once wrote "one commit" into Status, and every later review flagged it.
-        status = self.template[self.template.index("## Status"):]
+        status = self.template[self.template.index("## Status") :]
         self.assertIn("nothing that changes with every commit", status)
 
     def test_the_decisions_format_is_the_same_in_the_template_and_review(self):
@@ -115,7 +137,9 @@ class InitTest(unittest.TestCase):
 
     def test_it_does_not_overwrite_a_project_md_that_exists(self):
         look = step(self.body, "## 1. Look", "## 2.")
-        self.assertIn("If PROJECT.md already exists at the repo root, don't draft another", look)
+        self.assertIn(
+            "If PROJECT.md already exists at the repo root, don't draft another", look
+        )
 
 
 class ReviewTest(unittest.TestCase):
@@ -124,7 +148,10 @@ class ReviewTest(unittest.TestCase):
 
     def test_a_review_stays_off_the_code(self):
         # A run once tried to write test files to check the code mid-review.
-        self.assertIn("don't run, test or change the code", step(self.body, "## 2. Review", "## 3. Record"))
+        self.assertIn(
+            "don't run, test or change the code",
+            step(self.body, "## 2. Review", "## 3. Record"),
+        )
 
     def test_git_finds_the_root_project_md_from_any_folder(self):
         # A pathspec after -- is read from the current folder, so in a subfolder
@@ -144,9 +171,14 @@ class ReviewTest(unittest.TestCase):
     def test_a_new_status_is_rewritten_not_appended(self):
         # A review once added a sentence per change, and Status grew into a log of past work.
         record = step(self.body, "## 3. Record", "## 4.")
-        self.assertIn("A new status rewrites Status as where the project stands now", record)
+        self.assertIn(
+            "A new status rewrites Status as where the project stands now", record
+        )
         self.assertIn("Don't add a line per change", record)
-        self.assertIn("Status that reads as a log of past changes", step(self.body, "## 2. Review", "## 3. Record"))
+        self.assertIn(
+            "Status that reads as a log of past changes",
+            step(self.body, "## 2. Review", "## 3. Record"),
+        )
 
     def test_the_argument_hint_names_both_uses(self):
         hint = field(self.front, "argument-hint")
