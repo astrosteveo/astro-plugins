@@ -43,6 +43,11 @@
       "description": "/project-md:init drafts PROJECT.md, a committed document that says what a project is for and what it won't do, and loads it into every session, with no line in CLAUDE.md. Run /project-md:review any time to check the work against it; it changes only what you approve."
     },
     {
+      "name": "plain-english",
+      "source": "./plugins/plain-english",
+      "description": "Makes Claude write in plain English, like good technical docs: the answer first, short sentences, no hedging, filler or em dashes. An output style for the main conversation and forks, and the same instructions handed to every subagent."
+    },
+    {
       "name": "corkboard",
       "source": {
         "source": "url",

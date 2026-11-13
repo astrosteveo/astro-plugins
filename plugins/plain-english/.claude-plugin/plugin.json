@@ -1,0 +1,9 @@
+{
+  "name": "plain-english",
+  "version": "0.1.0",
+  "description": "Makes Claude write in plain English, like good technical docs: the answer first, short sentences, no hedging, filler or em dashes. An output style for the main conversation and forks, and the same instructions handed to every subagent.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT"
+}
