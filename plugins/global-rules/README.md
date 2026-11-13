@@ -37,6 +37,7 @@ Run it at the end of a session where you had to correct Claude. It looks back ov
 
 - a line your global CLAUDE.md already has, which Claude broke, so the line isn't working;
 - a correction a memory already records, which makes this the second time;
+- an instruction or correction you had to give twice in the session;
 - something you said should hold everywhere.
 
 A correction given once stays in memory: Claude Code's memory and the global-memory plugin keep those between sessions. What it finds goes to `/global-rules:claude-md` to word, propose and write. If nothing qualifies, it says so.

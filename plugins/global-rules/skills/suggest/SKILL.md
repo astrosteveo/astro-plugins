@@ -1,6 +1,6 @@
 ---
 name: suggest
-description: Look back over this session for rules the user's global ~/.claude/CLAUDE.md should gain or change - a line Claude broke, a correction a memory already records, something the user said should hold everywhere - and hand them to /global-rules:claude-md to word, propose and write. Use when the user asks what this session should add to their global CLAUDE.md, or to turn their corrections into rules for every project.
+description: Look back over this session for rules the user's global ~/.claude/CLAUDE.md should gain or change - a line Claude broke, a correction a memory already records or that came up twice, something the user said should hold everywhere - and hand them to /global-rules:claude-md to word, propose and write. Use when the user asks what this session should add to their global CLAUDE.md, or to turn their corrections into rules for every project.
 allowed-tools: Skill(skill:global-rules:claude-md)
 ---
 
@@ -16,6 +16,7 @@ Propose a rule when something in this session:
 
 - **Broke a line the global CLAUDE.md already has**: the user corrected Claude for what the line already says. The line isn't working. Quote it and the correction.
 - **Repeats a correction a memory already records**: this is the second time. Name the memory.
+- **Came up twice in this session**: the user gave the same instruction or correction again. Quote both times.
 - **Was said to hold everywhere**, such as "always", "never", "from now on" or "in every project".
 
 Each must be about how the user works in any repo. Leave out:
