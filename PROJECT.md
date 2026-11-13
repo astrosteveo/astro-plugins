@@ -4,11 +4,11 @@ Personal Claude Code plugins that remove the frictions a solo developer runs int
 
 ## What it is
 
-A public Claude Code plugin marketplace with eight plugins, each installed on its own: inline-thinking, gates, global-memory, github-tracking, screen-polish, project-md, bug-hunt and corkboard. Install one with `/plugin install NAME --marketplace astrosteveo/astro-plugins`.
+A public Claude Code plugin marketplace with nine plugins, each installed on its own: inline-thinking, gates, global-memory, github-tracking, screen-polish, project-md, bug-hunt, plain-english and corkboard. Install one with `/plugin install NAME --marketplace astrosteveo/astro-plugins`.
 
 ## The problem
 
-Claude Code's defaults don't fit how the author works. It folds its thinking into "Thought for 4s", runs risky commands like `git add -A` or `pkill`, forgets preferences between projects, doesn't keep GitHub in step with the work, and drifts from a project's scope. Without the plugins, the author corrects the same things session after session.
+Claude Code's defaults don't fit how the author works. It folds its thinking into "Thought for 4s", runs risky commands like `git add -A` or `pkill`, forgets preferences between projects, doesn't keep GitHub in step with the work, drifts from a project's scope, and pads its writing with hedges and filler. Without the plugins, the author corrects the same things session after session.
 
 ## Who it's for
 
@@ -59,6 +59,7 @@ The author: a solo developer on Linux who uses Claude Code for hobby projects. T
 - 2026-11-12: Whether a plugin gets an init skill depends on the plugin. One that scaffolds something, such as PROJECT.md (/project-md:init) or a board (/github-tracking:init), gets one; one that reviews code, such as bug-hunt, doesn't. Why: an init skill gets what a plugin scaffolds set up properly, and reviewing code has nothing to set up.
 - 2026-11-12: corkboard is listed from its own repo, astrosteveo/corkboard, instead of living in `plugins/`, and follows that repo's rules: its CLI and session-start hook are Python 3.11+ with only the standard library. Why: it's a larger project with its own tests, CI and PROJECT.md, and the author chose to list it here as an exception.
 - 2026-11-13: Dropped global-rules. Claude Code's new `/init` (`CLAUDE_CODE_NEW_INIT=1`) sets up a project's CLAUDE.md, CLAUDE.local.md, skills and hooks, `/doctor prompt-audit` checks instruction files, and memory carries corrections between sessions. Why: what was left, guidance for the rare edit to a short global CLAUDE.md, wasn't worth the upkeep of a hook, two skills and a docs fetcher.
+- 2026-11-13: plain-english sets its rules with an output style that turns itself on (`force-for-plugin`), and hands the same text to subagents as SubagentStart context. Why: an output style is Claude Code's own way to set how Claude writes and reaches the main conversation and forks, but a subagent with its own system prompt doesn't get it, and `prompt.compose` doesn't run for one either.
 
 ## Open questions
 
@@ -72,4 +73,4 @@ None yet.
 
 ## Status
 
-Eight plugins are published. project-md loads PROJECT.md with a hook (#88), with /project-md:init to draft it and /project-md:review to keep it current (#92). github-tracking sets up a board, views included, with /github-tracking:init (#93). bug-hunt (#67) hunts bugs across a whole codebase and reproduces each finding, leaving reviewing changes to Claude Code's /code-review. Parked: #44, letting memory recall pick global memories, until recall can be turned on in local sessions.
+Nine plugins are in the marketplace. plain-english makes Claude write plain English in the main conversation and in every subagent. project-md loads PROJECT.md with a hook (#88), with /project-md:init to draft it and /project-md:review to keep it current (#92). github-tracking sets up a board, views included, with /github-tracking:init (#93). bug-hunt (#67) hunts bugs across a whole codebase and reproduces each finding, leaving reviewing changes to Claude Code's /code-review. Parked: #44, letting memory recall pick global memories, until recall can be turned on in local sessions.
