@@ -1,6 +1,6 @@
 {
   "name": "global-rules",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Keeps your CLAUDE.md files short, current and worded the way Claude Code's docs recommend: /global-rules:claude-md reads the current guidance before any change to one, a hook holds edits (and /init) until it has, and /global-rules:suggest turns a session's repeated corrections into rules for your global CLAUDE.md.",
   "types": "./types/index.d.ts",
   "author": {
