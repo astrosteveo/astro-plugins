@@ -58,7 +58,9 @@ When checking a file, go through each line. Reword a vague or emphasized one. Re
 
 ## 4. Propose
 
-Show a numbered list of at most 12 items. For each, give:
+If the user asked for an exact change, saying what to write and where, and placing and wording it as the guidance says changes nothing about it, their request is their approval: say so in one line, and go to step 5. Anything you'd reword, move or leave out, propose first.
+
+Otherwise, show a numbered list of at most 12 items. For each, give:
 
 - **Add**, **Change** or **Remove**, with the file and the section.
 - The exact text.

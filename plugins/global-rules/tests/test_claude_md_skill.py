@@ -80,6 +80,13 @@ class ClaudeMdSkillTest(unittest.TestCase):
         self.assertIn("invoke this skill yourself", propose)
         self.assertIn("Write nothing until the user answers", propose)
 
+    def test_an_exact_request_the_guidance_leaves_as_it_is_needs_no_second_yes(self):
+        # A user who said "add this line under Commands, just make the edit" was asked to type
+        # /global-rules:claude-md apply 1 for a line the skill didn't change.
+        propose = self.step("## 4. Propose", "## 5. Write")
+        self.assertIn("their request is their approval", propose)
+        self.assertIn("Anything you'd reword, move or leave out, propose first", propose)
+
     def test_the_backup_and_the_diff_run_through_the_pre_approved_script(self):
         write = self.step("## 5. Write")
         self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claude_md.py backup", write)
