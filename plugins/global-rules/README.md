@@ -5,7 +5,7 @@ Writes and maintains Claude Code's instruction files, so they stay short, curren
 - `/global-rules:claude-md` makes any change to a CLAUDE.md, global or a project's, and to rules files and AGENTS.md. It reads Claude Code's current guidance before it proposes anything, and Claude loads it whenever one of these files comes up, so "add this to my CLAUDE.md" goes through it too.
 - `/global-rules:suggest` does for your global `~/.claude/CLAUDE.md` what `/init` does for a project's. It reads your Claude Code session history and proposes rules for the file, each with the evidence behind it. If you have no global CLAUDE.md, it drafts a first one.
 
-Neither writes anything until you pick what to apply.
+Neither writes anything you haven't asked for or picked. A hook makes sure the guidance is read first: Claude can't edit an instruction file until `/global-rules:claude-md` has been loaded in that conversation.
 
 This plugin started as `global-rules`, was folded into global-memory, where its skill was `/global-memory:suggest`, and is its own plugin again. global-memory now keeps only the global memories. Install this one to keep the skill. With both installed, the skill reads your global memories as evidence and offers to delete one once its rule is in CLAUDE.md.
 
@@ -28,11 +28,20 @@ Or ask in plain words, such as "add to my CLAUDE.md that I use zsh": the skill's
 1. It runs `scripts/guidance.py`, which prints the sections of [How Claude remembers your project](https://code.claude.com/docs/en/memory.md) and [Best practices for Claude Code](https://code.claude.com/docs/en/best-practices.md) about writing these files, about a quarter of the two pages. It fetches them at most once a day and keeps them in `~/.claude/global-rules/guidance.md`. Offline, it uses the kept copy and says how old it is. A section the pages no longer have is named, so Claude reads the page instead. Then it lists the instruction files that exist, globally and in the repo you're in.
 2. It puts each line where the guidance says it belongs: the global file for how you work anywhere, a project's file for one project, a rules file with `paths:` for some files only, a skill for a procedure, a hook or deny rule for what must hold every time, or nowhere for what Claude does anyway. It writes only instruction files. Skills, hooks and deny rules come back as notes.
 3. It words each line as the docs say (specific enough to check, plain words, no IMPORTANT) in the file's own style, and checks it against the lines already there.
-4. It proposes a numbered list and writes what you pick, `/global-rules:claude-md apply 1, 3`, with a backup and a diff.
+4. It proposes a numbered list and writes what you pick, `/global-rules:claude-md apply 1, 3`, with a backup and a diff. An exact line you asked for that the guidance leaves as it is, it writes straight away.
 
 It never edits `settings.json`. A commit rule that competes with Claude Code's own (`includeGitInstructions`, `attribution`), or a hook that enforces only a preference, comes back as a note. When a line it writes repeats a global memory, it offers to delete that memory with global-memory's `global_memory_delete` tool, so it isn't loaded twice. Backups go to `~/.claude/global-rules/backups/`, named for the file's path and the date, through a small script, `scripts/claude_md.py`, because Claude Code asks before `cp` or `diff` touches a file outside the session's working folders.
 
 For a project with no CLAUDE.md, it offers `/init`. It leaves conflicts across files to `/doctor prompt-audit`, and suggests running it after a change.
+
+## Edits wait for the guidance
+
+Claude Code's [memory page](https://code.claude.com/docs/en/memory.md) says Claude treats CLAUDE.md and skills as context, not enforced configuration, and that "to block an action regardless of what Claude decides, use a PreToolUse hook". So the skill's description is what has Claude load it before it proposes a change, and a hook makes sure of it before an edit:
+
+- It refuses Edit and Write on an instruction file (CLAUDE.md, CLAUDE.local.md and AGENTS.md wherever they are, and the Markdown files in a `.claude/rules/` folder, global or a project's) until `/global-rules:claude-md` has been loaded in that conversation. The refusal tells Claude to load it. After a `/clear`, the new conversation loads it again.
+- It adds one line to Claude Code's `/init`, telling it to load the skill before it writes, so `/init` reads the guidance first instead of being refused at its first write.
+
+When you ask for an exact line and the guidance leaves it as it is, the skill writes it without asking again. If the hook's check itself fails, the edit goes ahead: it's a guide, not a safety rule. Writes through the shell, such as `echo >> CLAUDE.md`, aren't checked.
 
 ## Suggest rules from your history
 
@@ -75,6 +84,7 @@ At the prompt of a terminal session:
 ```
 claude plugin validate plugins/global-rules
 python3 -m unittest discover -s plugins/global-rules/tests
+claude plugin test plugins/global-rules
 ```
 
 `tests/test_digest.py` reads its sample memory file from `plugins/global-memory/tests/memory-file.fixture.ts`, the sample global-memory's own test checks its writer against, so a change to the memory file format breaks one of the two.
