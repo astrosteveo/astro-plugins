@@ -4,7 +4,7 @@ Personal Claude Code plugins that remove the frictions a solo developer runs int
 
 ## What it is
 
-A public Claude Code plugin marketplace with eight plugins, each installed on its own: inline-thinking, gates, global-memory, global-rules, github-tracking, screen-polish, project-md and bug-hunt. Install one with `/plugin install NAME --marketplace astrosteveo/astro-plugins`.
+A public Claude Code plugin marketplace with nine plugins, each installed on its own: inline-thinking, gates, global-memory, global-rules, github-tracking, screen-polish, project-md, bug-hunt and corkboard. Install one with `/plugin install NAME --marketplace astrosteveo/astro-plugins`.
 
 ## The problem
 
@@ -46,7 +46,7 @@ The author: a solo developer on Linux who uses Claude Code for hobby projects. T
 ## Constraints
 
 - Every plugin is listed in `.claude-plugin/marketplace.json` and passes `claude plugin validate`.
-- Hook plugins are written in TypeScript. Skill scripts use only Python 3.8+'s standard library.
+- In `plugins/`, hook plugins are written in TypeScript, and skill scripts use only Python 3.8+'s standard library. corkboard, listed from its own repo, follows its own rules (see Decisions).
 - Plugins are all tested on Linux.
 - MIT license, public on GitHub.
 
@@ -57,6 +57,7 @@ The author: a solo developer on Linux who uses Claude Code for hobby projects. T
 - 2026-11-11: Plugins are tested on Linux only, replacing the aim to support Windows. They may work on Windows, but that isn't tested or guaranteed. Why: the author uses Linux again.
 - 2026-11-12: project-md loads PROJECT.md with a hook instead of an @PROJECT.md line in CLAUDE.md. Why: no repo needs the line, and the hook adds PROJECT.md only when the repo has one and nothing already imports it.
 - 2026-11-12: Whether a plugin gets an init skill depends on the plugin. One that scaffolds something, such as PROJECT.md (/project-md:init) or a board (/github-tracking:init), gets one; one that reviews code, such as bug-hunt, doesn't. Why: an init skill gets what a plugin scaffolds set up properly, and reviewing code has nothing to set up.
+- 2026-11-12: corkboard is listed from its own repo, astrosteveo/corkboard, instead of living in `plugins/`, and follows that repo's rules: its CLI and session-start hook are Python 3.11+ with only the standard library. Why: it's a larger project with its own tests, CI and PROJECT.md, and the author chose to list it here as an exception.
 
 ## Open questions
 
