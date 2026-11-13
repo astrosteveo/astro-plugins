@@ -25,7 +25,7 @@
     {
       "name": "global-rules",
       "source": "./plugins/global-rules",
-      "description": "Writes and maintains your global ~/.claude/CLAUDE.md: /global-rules:suggest turns your session history, corrections and memories into rules for it, and writes only the rules you approve."
+      "description": "Keeps your CLAUDE.md files short, current and worded the way Claude Code's docs recommend: /global-rules:claude-md reads the current guidance before any change to one, and /global-rules:suggest turns your session history into rules for your global CLAUDE.md. Both write only what you approve."
     },
     {
       "name": "github-tracking",

@@ -2,7 +2,7 @@
 name: suggest
 description: Propose additions and changes to the user's global ~/.claude/CLAUDE.md from their Claude Code session history (what they typed, their corrections, the tool calls they refused, their global and project memories), checked against Claude Code's current CLAUDE.md guidance, and write only what they approve. Drafts a first CLAUDE.md when there is none. Use when the user asks to improve, update, tune, audit or start their global CLAUDE.md from their history, habits or past corrections.
 argument-hint: "[--since 30d | --since YYYY-MM-DD] [--include-tests] | apply <the items you picked>"
-allowed-tools: Read, Edit, Write, WebFetch(domain:code.claude.com), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py *), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/claude_md.py *)
+allowed-tools: Read, Edit, Write, WebFetch(domain:code.claude.com), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py), Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py *), Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claude_md.py *)
 ---
 
 # Suggest global CLAUDE.md content from session history
@@ -101,8 +101,8 @@ This skill's allowed tools hold only for the turn that invokes it, and the user'
 
 ## 5. Write
 
-1. Back up the file: `python3 ${CLAUDE_SKILL_DIR}/scripts/claude_md.py backup <path>`. It prints the backup's path, or says there is no file yet. Use the script, not `cp`: Claude Code asks before `cp` or `diff` touches a path outside the session's working folders, which the global CLAUDE.md always is. If the backup fails, stop and write nothing. Never make a backup any other way, such as with Write from an earlier read.
+1. Back up the file: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claude_md.py backup <path>`. It prints the backup's path, or says there is no file yet. Use the script, not `cp`: Claude Code asks before `cp` or `diff` touches a path outside the session's working folders, which the global CLAUDE.md always is. If the backup fails, stop and write nothing. Never make a backup any other way, such as with Write from an earlier read.
 2. Apply each approved item with Edit, keeping the file's order and style. For a first CLAUDE.md, use Write.
-3. Show what changed: `python3 ${CLAUDE_SKILL_DIR}/scripts/claude_md.py diff <backup> <path>`, or the new file in full. Give the backup's path.
+3. Show what changed: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claude_md.py diff <backup> <path>`, or the new file in full. Give the backup's path.
 4. If an approved rule came from a global memory, say so. When the global-memory plugin's `global_memory_delete` tool is available, offer to delete that memory, so the rule is not loaded twice. Delete it with that tool, never with `rm`: the tool also clears its line from the `MEMORY.md` index, which every session loads. Without the tool, the global-memory plugin is not installed: name the memory's file and its line in `MEMORY.md`, so the user can remove both.
 5. Suggest the user run `/doctor prompt-audit`. It checks the file against their rules, skills, commands, subagents and output styles for instructions that are outdated or contradict each other, which this skill does not read.

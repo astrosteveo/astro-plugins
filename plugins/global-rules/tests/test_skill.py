@@ -56,9 +56,9 @@ class SkillTest(unittest.TestCase):
     # global CLAUDE.md always is, even when allowed-tools lists them.
     def test_the_backup_and_the_diff_run_through_the_pre_approved_script(self):
         write = self.body[self.body.index("## 5. Write"):]
-        self.assertIn("python3 ${CLAUDE_SKILL_DIR}/scripts/claude_md.py backup", write)
-        self.assertIn("python3 ${CLAUDE_SKILL_DIR}/scripts/claude_md.py diff", write)
-        self.assertIn("Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/claude_md.py *)", self.allowed)
+        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claude_md.py backup", write)
+        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claude_md.py diff", write)
+        self.assertIn("Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claude_md.py *)", self.allowed)
         self.assertNotIn("Bash(cp", self.allowed)
         self.assertNotIn("Bash(diff", self.allowed)
 
