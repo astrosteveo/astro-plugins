@@ -30,32 +30,35 @@ Or ask in plain words, such as "add to my CLAUDE.md that I use zsh": the skill's
 3. It words each line as the docs say (specific enough to check, plain words, no IMPORTANT) in the file's own style, and checks it against the lines already there.
 4. It proposes a numbered list and writes what you pick, `/global-rules:claude-md apply 1, 3`, with a backup and a diff.
 
-For a project with no CLAUDE.md, it offers `/init`. It leaves conflicts across files to `/doctor prompt-audit`.
+It never edits `settings.json`. A commit rule that competes with Claude Code's own (`includeGitInstructions`, `attribution`), or a hook that enforces only a preference, comes back as a note. When a line it writes repeats a global memory, it offers to delete that memory with global-memory's `global_memory_delete` tool, so it isn't loaded twice. Backups go to `~/.claude/global-rules/backups/`, named for the file's path and the date, through a small script, `scripts/claude_md.py`, because Claude Code asks before `cp` or `diff` touches a file outside the session's working folders.
+
+For a project with no CLAUDE.md, it offers `/init`. It leaves conflicts across files to `/doctor prompt-audit`, and suggests running it after a change.
 
 ## Suggest rules from your history
 
-### What it reads
+```
+/global-rules:suggest                    # what happened since the last run
+/global-rules:suggest --since 90d        # look further back, from 90 days ago
+/global-rules:suggest --since 2026-10-01
+```
 
-First, Claude Code's own guidance on CLAUDE.md files: [How Claude remembers your project](https://code.claude.com/docs/en/memory.md) and [Best practices for Claude Code](https://code.claude.com/docs/en/best-practices.md), fetched on each run. It words every rule the way those pages recommend. It also checks the lines already in your file against them, so it can propose rewording or removing a line even when your history says nothing about it. A line that belongs in a skill, a `~/.claude/rules/` file, a hook or a deny rule gets a note saying so. It stays in your CLAUDE.md until that replacement exists. If the pages can't be fetched, it says so and carries on without them.
+Each run reads only your sessions since the last run, so a rule you've already seen and turned down isn't proposed again from the same evidence. A first run reads the last 30 days. `--since` reads from an earlier point, and the run after it starts from there. The last run's time is kept in `~/.claude/global-rules/last-run`.
 
-It also reads your `settings.json`. If your CLAUDE.md sets commit or pull request rules, it checks `includeGitInstructions` and `attribution`, as Claude Code's own git instructions compete with those rules. It looks for hooks that enforce only a preference, which the pages say to delete.
+It proposes a rule only on the evidence Claude Code's [memory page](https://code.claude.com/docs/en/memory.md#when-to-add-to-claude-md) gives for adding one: the same correction, refusal or instruction at least twice, or once when a line in your CLAUDE.md already covered it, which means that line isn't working. Global memories written since the last run count too. Something said once, a one-off task, or a fact about one project doesn't. If nothing new meets that test, it says so and stops.
 
-Then a script, `skills/suggest/scripts/digest.py`, goes through `~/.claude/projects/*/*.jsonl` and writes a Markdown digest to `~/.claude/global-rules/digest.md`. Claude reads that digest, not the raw transcripts. The digest holds:
+It hands what it finds to `/global-rules:claude-md`, which reads the guidance, words each rule, proposes the list and writes what you pick. So the guidance, the wording and the write live in one place. With no global CLAUDE.md, the candidates become the start of a first one.
 
-- What you typed: tool output, skill text and reminders the harness injected are left out. A paste is replaced by its size.
+### The digest
+
+A script, `skills/suggest/scripts/digest.py`, goes through `~/.claude/projects/*/*.jsonl` and writes a Markdown digest to `~/.claude/global-rules/digest.md`. Claude reads that digest, not the raw transcripts. The digest holds, for the window it read:
+
+- When each line of your global CLAUDE.md was put in place, worked out from the file's text before and after each of Claude's edits to it. Refusals and corrections carry a time of day too, so Claude can tell whether you corrected it after a line was already there. Times are UTC.
+- Your global memories (from `~/.claude/memory`, which the global-memory plugin keeps) and project memories, written or changed in the window, or every memory on a first run.
 - The tool calls you refused, with the reason you gave.
 - Likely corrections: messages that read like one, or came right after an interrupt or refusal, each with Claude's last words before it.
-- Messages you sent in more than one project, and tallies of short replies and commands.
-- Your global memories (from `~/.claude/memory`, which the global-memory plugin keeps) and project memories.
-- When each line of your global CLAUDE.md was put in place, worked out from the file's text before and after each of Claude's edits to it. Refusals and corrections carry a time of day too, so Claude can tell whether you corrected it after a line was already there without searching your transcripts. Times are UTC.
+- Messages you sent more than once, in one project or several.
 
-It leaves out subagent transcripts, scripted (SDK) sessions and sessions run under `/tmp`. Pass `--include-tests` to keep the last two. A resumed session repeats the records it was resumed from, so messages are counted once, by id.
-
-### What it writes
-
-Only the rules you approve, in your CLAUDE.md's own style. You pick items by answering with `/global-rules:suggest apply 1, 3`, which runs the skill again so its pre-approved tools hold for the turn that writes. It backs the file up first to `~/.claude/global-rules/backups/`, named for the file's path and the date (with a `-2` suffix if that exists), and shows you the diff. The backup and the diff come from a small script, `scripts/claude_md.py`, because Claude Code asks before `cp` or `diff` touches a file outside the session's working folders. It never edits project CLAUDE.md files or project memories. It names project-specific findings so you can add them yourself. When an approved rule came from a global memory, it offers to delete that memory with global-memory's `global_memory_delete` tool, so the rule isn't loaded twice. Without that plugin, it names the memory's file and index line for you to remove.
-
-It never edits `settings.json`: the git setting to change and the hooks that could go come back as notes. It ends by suggesting `/doctor prompt-audit`, which checks your rules, skills, commands, subagents and output styles against the file for conflicts.
+Only what you typed counts: tool output, skill text and reminders the harness injected are left out, and a paste is replaced by its size. One-off messages, short replies and bare commands are left out, as none is evidence of a rule. It leaves out subagent transcripts, scripted (SDK) sessions and sessions run under `/tmp`. Pass `--include-tests` to keep the last two. A resumed session repeats the records it was resumed from, so messages are counted once, by id.
 
 It needs `python3` (3.8 or later) on the PATH. It uses no packages beyond the standard library. It honours `CLAUDE_CONFIG_DIR`.
 

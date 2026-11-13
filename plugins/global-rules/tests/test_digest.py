@@ -77,10 +77,13 @@ class DigestTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
 
-    def run_digest(self, *argv):
+    def run_digest(self, *argv, now=None):
+        # The fixtures are dated, so a test reads all of them unless it sets a window of its own.
+        if "--since" not in argv and now is None:
+            argv = ("--since", "2000-01-01", *argv)
         out = self.config / "digest.md"
         with contextlib.redirect_stdout(io.StringIO()):
-            digest.main(["--config-dir", str(self.config), "--out", str(out), *argv])
+            digest.main(["--config-dir", str(self.config), "--out", str(out), *argv], now=now)
         return out.read_text()
 
     def fixture(self):
@@ -100,9 +103,9 @@ class DigestTest(unittest.TestCase):
             human("<command-message>code-review</command-message>\n<command-name>/code-review</command-name>"),
             human("<command-message>plugin-authoring</command-message>\n<command-name>/plugin-authoring</command-name>"
                   "\n<command-args>Is there skill guidance?</command-args>"),
-            human('Fix this crash <pasted_content id="p1">Traceback line one\nline two</pasted_content>'),
+            human('No, fix this crash <pasted_content id="p1">Traceback line one\nline two</pasted_content>'),
             human("Skill instructions the harness expanded", isMeta=True),
-            human("A message from before the cutoff", ts="2026-01-01T10:00:00Z"),
+            human("Don't forget a message from before the cutoff", ts="2026-01-01T10:00:00Z"),
         ])
         self.session("-home-u-Projects-beta--claude-worktrees-x", "s2", [
             human("Use uv for Python, never pip", cwd=BETA + "/.claude/worktrees/x", ts="2026-10-05T10:00:00Z"),
@@ -118,10 +121,12 @@ class DigestTest(unittest.TestCase):
         self.memory(self.config / "projects" / "-home-u-Projects-alpha" / "memory" / "renderer.md",
                     "---\nname: renderer\ndescription: Alpha draws with Vulkan\ntype: project\n---\n\nVulkan only.")
 
-    def test_keeps_typed_messages_and_drops_tool_output_and_meta(self):
+    def test_keeps_corrections_and_drops_one_offs_tool_output_and_meta(self):
         self.fixture()
         text = self.run_digest()
-        self.assertIn("Add a settings screen with a volume slider", text)
+        self.assertIn("never use pkill, it kills the shell", text)
+        # A one-off task isn't evidence of a rule.
+        self.assertNotIn("Add a settings screen with a volume slider", text)
         self.assertNotIn("Skill instructions the harness expanded", text)
         self.assertNotIn("Request interrupted", text)
 
@@ -143,48 +148,55 @@ class DigestTest(unittest.TestCase):
     def test_message_repeated_in_two_projects_is_grouped(self):
         self.fixture()
         text = self.run_digest()
-        repeated = text.split("## Said in more than one project")[1].split("\n## ")[0]
+        repeated = text.split("## Said more than once")[1].split("\n## ")[0]
         self.assertIn("Use uv for Python, never pip", repeated)
         self.assertIn("×2 in 2 projects", repeated)
         self.assertIn("/home/u/Projects/beta", repeated)
         self.assertNotIn("worktrees", repeated)
 
-    def test_short_replies_and_bare_commands_are_tallied(self):
+    def test_short_replies_and_bare_commands_are_not_rules(self):
         self.fixture()
         text = self.run_digest()
-        tallies = text.split("## Short replies and commands")[1]
-        self.assertIn("merge it ×2", tallies)
-        self.assertIn("/code-review ×1", tallies)
-        self.assertIn("/plugin-authoring Is there skill guidance?", text)
+        self.assertNotIn("merge it", text.lower())
+        self.assertNotIn("/code-review", text)
+        self.assertNotIn("Short replies", text)
+
+    def test_the_same_thing_said_twice_in_one_project_is_grouped(self):
+        self.session("-home-u-Projects-alpha", "s1", [human("Keep the changelog in plain English", ts="2026-10-01T10:00:00Z")])
+        self.session("-home-u-Projects-alpha", "s2", [human("keep the changelog in plain English.", ts="2026-10-03T10:00:00Z")])
+        repeated = self.run_digest().split("## Said more than once (1)")[1]
+        self.assertIn("×2 in 1 project (/home/u/Projects/alpha), last 2026-10-03", repeated)
 
     def test_pasted_text_is_replaced_by_its_size(self):
         self.fixture()
         text = self.run_digest()
-        self.assertIn("Fix this crash [pasted 27 chars]", text)
+        self.assertIn("No, fix this crash [pasted 27 chars]", text)
         self.assertNotIn("Traceback", text)
 
     def test_paste_whose_closing_tag_carries_its_id_is_replaced(self):
         self.session("-home-u-Projects-alpha", "s1", [
-            human('See <pasted_content id="f17d">secret log\n</pasted_content id="f17d">\n')])
+            human('No, see <pasted_content id="f17d">secret log\n</pasted_content id="f17d">\n')])
         text = self.run_digest()
-        self.assertIn("See [pasted 10 chars]", text)
+        self.assertIn("No, see [pasted 10 chars]", text)
         self.assertNotIn("secret log", text)
 
     def test_a_resumed_session_does_not_count_its_copied_messages_again(self):
-        first = {**human("Keep replies short and lead with the outcome"), "uuid": "u1"}
+        first = {**human("No, keep replies short and lead with the outcome"), "uuid": "u1"}
         refused = claude({"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "rm -rf build"}})
         records = [first, refused, denial("t1", "keep the build folder")]
         self.session("-home-u-Projects-alpha", "s1", records)
         self.session("-home-u-Projects-alpha", "s2", records + [human("Now add the export button")])
         text = self.run_digest()
-        self.assertEqual(text.count("Keep replies short and lead with the outcome"), 1)
+        self.assertEqual(text.count("keep replies short and lead with the outcome"), 1)
         self.assertEqual(text.count("keep the build folder"), 1)
-        self.assertIn("Now add the export button", text)
+        # The copy isn't the user saying it twice.
+        self.assertIn("## Said more than once (0)", text)
 
     def test_punctuation_only_replies_are_dropped(self):
-        self.session("-home-u-Projects-alpha", "s1", [human("."), human("!!"), human("ok")])
-        tallies = self.run_digest().split("## Short replies and commands")[1]
-        self.assertIn("Short replies: ok ×1\n", tallies)
+        self.session("-home-u-Projects-alpha", "s1", [human("."), human("."), human("!!"), human("!!")])
+        text = self.run_digest()
+        self.assertIn("0 typed messages", text)
+        self.assertIn("## Said more than once (0)", text)
 
     def test_scripted_and_tmp_sessions_are_skipped_unless_asked(self):
         self.fixture()
@@ -192,9 +204,10 @@ class DigestTest(unittest.TestCase):
         self.assertNotIn("What is 8+8", text)
         self.assertNotIn("Call the probe tool once", text)
         self.assertIn("Skipped 2 messages from scripted or /tmp sessions", text)
-        text = self.run_digest("--include-tests")
-        self.assertIn("What is 8+8", text)
-        self.assertIn("Call the probe tool once", text)
+        kept = self.run_digest("--include-tests")
+        self.assertNotIn("Skipped", kept)
+        typed = lambda t: int(t.split(" typed messages")[0].rsplit(" ", 1)[1])  # noqa: E731
+        self.assertEqual(typed(kept), typed(text) + 2)
 
     def test_skipped_count_leaves_out_messages_before_since(self):
         self.session("-tmp-probe", "s1", [human("What is 8+8? Answer in one word.", cwd="/tmp/probe",
@@ -211,8 +224,8 @@ class DigestTest(unittest.TestCase):
 
     def test_since_drops_older_messages(self):
         self.fixture()
-        self.assertIn("A message from before the cutoff", self.run_digest())
-        self.assertNotIn("A message from before the cutoff", self.run_digest("--since", "2026-06-01"))
+        self.assertIn("forget a message from before the cutoff", self.run_digest())
+        self.assertNotIn("forget a message from before the cutoff", self.run_digest("--since", "2026-06-01"))
 
     def test_memories_are_listed_with_their_type(self):
         self.fixture()
@@ -325,7 +338,7 @@ class DigestTest(unittest.TestCase):
         self.assertIn("- 2026-10-01 10:00 · /home/u/Projects/alpha · Bash `git push --force`", text)
 
     def test_long_messages_are_cut(self):
-        self.session("-home-u-Projects-alpha", "s1", [human("word " * 400)])
+        self.session("-home-u-Projects-alpha", "s1", [human("No, " + "word " * 400)])
         text = self.run_digest("--max-chars", "100")
         self.assertIn("…[+", text)
         self.assertNotIn("word " * 30, text)
@@ -352,6 +365,83 @@ class DigestTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             digest.parse_since("last week")
 
+
+
+NOW = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+
+
+class WindowTest(unittest.TestCase):
+    """Each run reads only what came after the last one, so a declined item isn't proposed again
+    from the same evidence."""
+
+    setUp, tearDown = DigestTest.setUp, DigestTest.tearDown
+    session, memory, run_digest = DigestTest.session, DigestTest.memory, DigestTest.run_digest
+
+    def correction(self, text, ts):
+        return human(text, ts=ts, uuid=text)
+
+    def old_memory(self, name, when):
+        path = self.config / "memory" / f"{name}.md"
+        self.memory(path, f"---\nname: {name}\ndescription: {name}\ntype: feedback\n---\n\nBody.")
+        stamp = when.timestamp()
+        os.utime(path, (stamp, stamp))
+
+    def test_a_first_run_reads_the_last_30_days_and_every_memory(self):
+        self.session("-home-u-Projects-alpha", "s1", [
+            self.correction("No, the old one from September", "2026-09-01T10:00:00Z"),
+            self.correction("No, the new one from November", "2026-11-01T10:00:00Z"),
+        ])
+        self.old_memory("ancient", datetime(2026, 1, 1, tzinfo=timezone.utc))
+        text = self.run_digest(now=NOW)
+        self.assertIn("First run: history from the last 30 days, since 2026-10-13 12:00 UTC", text)
+        self.assertIn("the new one from November", text)
+        self.assertNotIn("the old one from September", text)
+        self.assertIn("### ancient (feedback)", text)
+        self.assertEqual((self.config / "global-rules" / "last-run").read_text(), "2026-11-12 12:00:00\n")
+
+    def test_a_later_run_reads_only_what_came_after_the_last_one(self):
+        (self.config / "global-rules").mkdir(parents=True)
+        (self.config / "global-rules" / "last-run").write_text("2026-11-05 09:30\n")
+        self.session("-home-u-Projects-alpha", "s1", [
+            self.correction("No, seen in the last run", "2026-11-05T09:29:00Z"),
+            self.correction("No, new since the last run", "2026-11-05T09:30:00Z"),
+        ])
+        self.old_memory("seen-before", datetime(2026, 11, 1, tzinfo=timezone.utc))
+        self.old_memory("written-since", datetime(2026, 11, 6, tzinfo=timezone.utc))
+        text = self.run_digest(now=NOW)
+        self.assertIn("History and memories since the last run, 2026-11-05 09:30 UTC.", text)
+        self.assertIn("new since the last run", text)
+        self.assertNotIn("seen in the last run", text)
+        self.assertIn("### written-since (feedback)", text)
+        self.assertNotIn("seen-before", text)
+
+    def test_since_reads_further_back_and_still_moves_the_last_run(self):
+        (self.config / "global-rules").mkdir(parents=True)
+        (self.config / "global-rules" / "last-run").write_text("2026-11-05 09:30\n")
+        self.session("-home-u-Projects-alpha", "s1", [self.correction("No, from October", "2026-10-20T10:00:00Z")])
+        text = self.run_digest("--since", "2026-10-01", now=NOW)
+        self.assertIn("History and memories from 2026-10-01 on (--since).", text)
+        self.assertIn("from October", text)
+        self.assertEqual((self.config / "global-rules" / "last-run").read_text(), "2026-11-12 12:00:00\n")
+
+    def test_what_came_in_the_same_minute_as_the_last_run_is_read_once(self):
+        # A correction typed just before running suggest was in that run, not the next.
+        (self.config / "global-rules").mkdir(parents=True)
+        (self.config / "global-rules" / "last-run").write_text("2026-11-05 09:30:40\n")
+        self.session("-home-u-Projects-alpha", "s1", [
+            self.correction("No, typed just before the run", "2026-11-05T09:30:10Z"),
+            self.correction("No, typed just after the run", "2026-11-05T09:30:50Z"),
+        ])
+        self.old_memory("saved-just-before", datetime(2026, 11, 5, 9, 30, 20, tzinfo=timezone.utc))
+        text = self.run_digest(now=NOW)
+        self.assertNotIn("typed just before the run", text)
+        self.assertIn("typed just after the run", text)
+        self.assertNotIn("saved-just-before", text)
+
+    def test_an_unreadable_last_run_counts_as_a_first_run(self):
+        (self.config / "global-rules").mkdir(parents=True)
+        (self.config / "global-rules" / "last-run").write_text("yesterday\n")
+        self.assertIn("First run:", self.run_digest(now=NOW))
 
 if __name__ == "__main__":
     unittest.main()

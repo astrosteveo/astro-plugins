@@ -1,98 +1,63 @@
 import re
 import unittest
 from pathlib import Path
-from urllib.parse import urlparse
 
-SKILL = Path(__file__).resolve().parents[1] / "skills" / "suggest" / "SKILL.md"
-GUIDANCE = (
-    "https://code.claude.com/docs/en/memory.md",
-    "https://code.claude.com/docs/en/best-practices.md",
-)
+PLUGIN = Path(__file__).resolve().parents[1]
+SKILL = PLUGIN / "skills" / "suggest" / "SKILL.md"
+CLAUDE_MD = PLUGIN / "skills" / "claude-md" / "SKILL.md"
 
 
 class SkillTest(unittest.TestCase):
     def setUp(self):
         _, self.front, self.body = SKILL.read_text().split("---\n", 2)
-        self.allowed = next(line for line in self.front.splitlines() if line.startswith("allowed-tools:"))
+        self.allowed = self.field("allowed-tools")
 
-    def test_reads_the_claude_md_guidance_before_finding_candidates(self):
-        candidates = self.body.index("Find candidates")
-        for url in GUIDANCE:
-            self.assertIn(url, self.body)
-            self.assertLess(self.body.index(url), candidates, url)
+    def field(self, key):
+        return next(line for line in self.front.splitlines() if line.startswith(f"{key}:"))
 
-    def test_every_docs_page_it_fetches_is_pre_approved(self):
-        # An unapproved fetch stops the skill for a permission prompt, or fails outright under -p.
-        domains = set(re.findall(r"WebFetch\(domain:([^)]+)\)", self.allowed))
-        urls = re.findall(r"https://[^\s)]+", self.body)
-        self.assertTrue(urls)
-        for url in urls:
-            self.assertIn(urlparse(url).hostname, domains, url)
+    def step(self, start, end=None):
+        return self.body[self.body.index(start):self.body.index(end) if end else None]
 
-    # The memory and best-practices pages name these; each run reads the pages, but the checks are
-    # spelled out so a run doesn't skip them.
-    def test_git_rules_are_checked_against_the_settings_that_compete_with_them(self):
-        candidates = self.body[self.body.index("## 3. Find candidates"):]
-        self.assertIn("includeGitInstructions", candidates)
-        self.assertIn("attribution", candidates)
+    def test_every_script_it_runs_is_pre_approved(self):
+        # An unapproved run stops the skill for a permission prompt, or fails outright under -p.
+        scripts = set(re.findall(r"python3 (\S+\.py)", self.body))
+        self.assertEqual(scripts, {"${CLAUDE_SKILL_DIR}/scripts/digest.py"})
+        self.assertIn("Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py)", self.allowed)
+        self.assertIn("Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/digest.py *)", self.allowed)
 
-    def test_a_hook_that_enforces_only_a_preference_is_noted(self):
-        candidates = self.body[self.body.index("## 3. Find candidates"):]
-        self.assertIn("enforces only a preference", candidates)
+    def test_it_hands_its_candidates_to_claude_md_with_no_prompt(self):
+        # The guidance, the wording and the write live in one skill, so the two can't drift apart.
+        self.assertIn("Skill(skill:global-rules:claude-md)", self.allowed)
+        self.assertIn("Invoke the Skill tool with `global-rules:claude-md`", self.step("## 3."))
+        self.assertIn("/global-rules:suggest", CLAUDE_MD.read_text())
 
-    def test_the_written_file_is_handed_to_the_prompt_audit(self):
-        write = self.body[self.body.index("## 5. Write"):]
-        self.assertIn("/doctor prompt-audit", write)
+    def test_it_writes_nothing_itself(self):
+        for tool in ["Edit", "Write", "WebFetch", "claude_md.py"]:
+            self.assertNotIn(tool, self.allowed)
 
-    # allowed-tools holds only for the turn that invokes the skill, and the writes come a turn
-    # later, after the user picks. A command the user types grants them again with no prompt;
-    # Claude invoking the skill itself asks first in default mode.
-    def test_the_user_is_asked_to_reply_with_the_apply_command(self):
-        propose = self.body[self.body.index("## 4. Propose"):self.body.index("## 5. Write")]
-        self.assertIn("`/global-rules:suggest apply 1, 3`", propose)
-        self.assertIn("invoke this skill again", propose)
+    def test_a_candidate_needs_the_docs_test(self):
+        # A rule from one message came back on every run, however often the user turned it down.
+        candidates = self.step("## 2.", "## 3.")
+        self.assertIn("at least twice", candidates)
+        self.assertIn("when a global CLAUDE.md line already covered it", candidates)
+        self.assertIn("Anything said or corrected once, unless a line already covered it", candidates)
 
-    # Claude Code asks before cp or diff touches a path outside the working folders, which the
-    # global CLAUDE.md always is, even when allowed-tools lists them.
-    def test_the_backup_and_the_diff_run_through_the_pre_approved_script(self):
-        write = self.body[self.body.index("## 5. Write"):]
-        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claude_md.py backup", write)
-        self.assertIn("python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claude_md.py diff", write)
-        self.assertIn("Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claude_md.py *)", self.allowed)
-        self.assertNotIn("Bash(cp", self.allowed)
-        self.assertNotIn("Bash(diff", self.allowed)
+    def test_a_run_with_nothing_new_stops(self):
+        self.assertIn("If nothing meets the test", self.step("## 2.", "## 3."))
 
-    def test_a_failed_backup_stops_the_write(self):
-        write = self.body[self.body.index("## 5. Write"):]
-        self.assertIn("stop and write nothing", write)
+    def test_it_reads_only_since_the_last_run(self):
+        self.assertIn("since the last run", self.field("description"))
+        self.assertIn("since the last run", self.step("## 1.", "## 2."))
 
-    def test_settings_json_is_read_with_the_read_tool(self):
-        self.assertIn("settings.json in the same folder, with the Read tool", self.body)
+    def test_the_digest_is_all_it_reads(self):
+        self.assertIn("Don't search the transcripts", self.step("## 2.", "## 3."))
 
-    def test_apply_skips_the_guidance_and_the_digest(self):
-        front = self.body[:self.body.index("## 1. Read")]
-        self.assertIn("$ARGUMENTS", front)
-        self.assertIn("start with `apply`", front)
-        self.assertIn("go to step 5", front)
-
-    def test_the_argument_hint_shows_apply(self):
-        hint = next(line for line in self.front.splitlines() if line.startswith("argument-hint:"))
-        self.assertIn("apply", hint)
-
-    def test_a_promoted_memory_is_deleted_with_the_tool_that_clears_its_index_line(self):
-        # A plain rm leaves its MEMORY.md line in every later session's system prompt.
-        write = self.body[self.body.index("## 5. Write"):]
-        self.assertIn("global_memory_delete", write)
-
-    # The memory tools come from the global-memory plugin, which installs on its own.
-    def test_the_delete_is_offered_only_where_the_memory_tool_is_available(self):
-        write = self.body[self.body.index("## 5. Write"):]
-        self.assertIn("`global_memory_delete` tool is available", write)
-        self.assertIn("global-memory plugin is not installed", write)
+    def test_the_argument_hint_shows_since(self):
+        self.assertIn("--since", self.field("argument-hint"))
+        self.assertNotIn("apply", self.field("argument-hint"))
 
     def test_it_names_its_own_plugin_in_every_command(self):
         self.assertNotIn("global-memory:suggest", self.body)
-        self.assertIn("global-rules:suggest", self.body)
 
 
 if __name__ == "__main__":

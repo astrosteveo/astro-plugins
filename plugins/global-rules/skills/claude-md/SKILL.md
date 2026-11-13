@@ -26,6 +26,7 @@ Then read, with the Read tool, the files the request touches, the settings.json 
 ## 2. Pick what to do
 
 - **The arguments or the conversation name a change**, such as "always use uv" or "drop the line about tabs": place and word it (step 3).
+- **Candidates from `/global-rules:suggest`**, each with its evidence: place and word each one (step 3), and keep its evidence as its why. With no global CLAUDE.md, draft a first one from them.
 - **No global CLAUDE.md yet, and the user wants one**: draft it. Ask what Claude can't see on its own, such as how they work, their tools, and their rules for replies, code, checks and git. Ask in plain text, not with AskUserQuestion, at most four questions at a time, each with a suggestion from their global memories and settings so they can answer with a yes. Hold the draft to what they said or confirmed, and keep it short: it loads into every session.
 - **A project with no CLAUDE.md**: offer `/init`, which starts one from the codebase, instead of drafting one here.
 - **No request**: check a file against the guidance (step 3): the global CLAUDE.md, or the project file the user names.
@@ -61,7 +62,7 @@ Show a numbered list of at most 12 items. For each, give:
 
 - **Add**, **Change** or **Remove**, with the file and the section.
 - The exact text.
-- One line of why: what the user said, or, for an item that comes from the guidance alone, the guidance's own words.
+- One line of why: what the user said, a candidate's evidence from `/global-rules:suggest`, or, for an item that comes from the guidance alone, the guidance's own words.
 
 For a first file, show the whole draft instead. End with notes, one line each, for what this skill doesn't write: a skill, a hook, a deny rule or a settings change.
 
