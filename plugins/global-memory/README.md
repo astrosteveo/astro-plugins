@@ -2,7 +2,7 @@
 
 Claude keeps project memories on its own, but never a memory that holds in every project. This plugin adds one.
 
-Global memories are the quick path: Claude saves one the moment you correct it. The [global-rules](../global-rules) plugin is the considered one: run its `/global-rules:suggest` now and then to promote the memories that held up, with the rest of your history, into your global `~/.claude/CLAUDE.md`, and drop them from memory.
+Global memories are the quick path: Claude saves one the moment you correct it. The [global-rules](../global-rules) plugin is the considered one: run its `/global-rules:suggest` at the end of a session, and a correction that a memory already records becomes a rule in your global `~/.claude/CLAUDE.md`, and the memory can go.
 
 That skill was `/global-memory:suggest`, part of this plugin, and moved to global-rules in 0.4.0. Install it to keep the skill: `/plugin install global-rules --marketplace astrosteveo/astro-plugins`.
 

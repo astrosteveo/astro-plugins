@@ -1,7 +1,5 @@
-// One memory file as hooks/memory.ts writes it, shared with the global-rules plugin's tests,
-// so a change to the format breaks one of them. global-memory.test.ts checks memoryFile() writes
-// `file` from `entry`; global-rules's test_digest.py checks digest.py reads `entry` back from
-// `file`. test_digest.py parses what follows "export default" as JSON, so keep it JSON.
+// One memory file as hooks/memory.ts writes it: global-memory.test.ts checks memoryFile() writes
+// `file` from `entry`.
 export default {
   "entry": {
     "name": "say-merge-not-close",
