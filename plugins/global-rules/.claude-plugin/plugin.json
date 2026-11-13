@@ -1,6 +1,6 @@
 {
   "name": "global-rules",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Writes and maintains Claude Code's instruction files: /global-rules:claude-md reads Claude Code's current guidance before any change to a CLAUDE.md, global or a project's, and a hook holds edits until it has. /global-rules:suggest turns your recent sessions into rules for your global CLAUDE.md. Both write only what you approve.",
   "types": "./types/index.d.ts",
   "author": {
