@@ -4,7 +4,7 @@ Personal Claude Code plugins that remove the frictions a solo developer runs int
 
 ## What it is
 
-A public Claude Code plugin marketplace with nine plugins, each installed on its own: inline-thinking, gates, global-memory, global-rules, github-tracking, screen-polish, project-md, bug-hunt and corkboard. Install one with `/plugin install NAME --marketplace astrosteveo/astro-plugins`.
+A public Claude Code plugin marketplace with eight plugins, each installed on its own: inline-thinking, gates, global-memory, github-tracking, screen-polish, project-md, bug-hunt and corkboard. Install one with `/plugin install NAME --marketplace astrosteveo/astro-plugins`.
 
 ## The problem
 
@@ -58,6 +58,7 @@ The author: a solo developer on Linux who uses Claude Code for hobby projects. T
 - 2026-11-12: project-md loads PROJECT.md with a hook instead of an @PROJECT.md line in CLAUDE.md. Why: no repo needs the line, and the hook adds PROJECT.md only when the repo has one and nothing already imports it.
 - 2026-11-12: Whether a plugin gets an init skill depends on the plugin. One that scaffolds something, such as PROJECT.md (/project-md:init) or a board (/github-tracking:init), gets one; one that reviews code, such as bug-hunt, doesn't. Why: an init skill gets what a plugin scaffolds set up properly, and reviewing code has nothing to set up.
 - 2026-11-12: corkboard is listed from its own repo, astrosteveo/corkboard, instead of living in `plugins/`, and follows that repo's rules: its CLI and session-start hook are Python 3.11+ with only the standard library. Why: it's a larger project with its own tests, CI and PROJECT.md, and the author chose to list it here as an exception.
+- 2026-11-13: Dropped global-rules. Claude Code's new `/init` (`CLAUDE_CODE_NEW_INIT=1`) sets up a project's CLAUDE.md, CLAUDE.local.md, skills and hooks, `/doctor prompt-audit` checks instruction files, and memory carries corrections between sessions. Why: what was left, guidance for the rare edit to a short global CLAUDE.md, wasn't worth the upkeep of a hook, two skills and a docs fetcher.
 
 ## Open questions
 
