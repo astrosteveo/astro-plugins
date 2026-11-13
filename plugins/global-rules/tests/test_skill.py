@@ -30,6 +30,8 @@ class SuggestTest(unittest.TestCase):
     def test_a_candidate_needs_a_second_time_or_a_rule_for_everywhere(self):
         for kind in ["Broke a line the global CLAUDE.md already has",
                      "Repeats a correction a memory already records",
+                     # The user answered "merge" four times in one session, and no other test caught it.
+                     "Came up twice in this session",
                      "Was said to hold everywhere"]:
             self.assertIn(kind, self.body)
         self.assertIn("A correction given once, with no memory of it before", self.body)
