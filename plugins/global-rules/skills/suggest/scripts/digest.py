@@ -5,7 +5,11 @@ The digest holds the user's own typed messages (not tool output or text the harn
 injected), the reasons they gave for refusing a tool call, likely corrections with
 Claude's last words before each, their global and project memories, and when each line
 of the global CLAUDE.md was put in place, from Claude's edits to it. The suggest
-skill reads it to propose global CLAUDE.md content. Stdlib only, so any python3 runs it.
+skill reads it to propose global CLAUDE.md content.
+
+Each run reads only what happened since the last one, which it records in
+<config>/global-rules/last-run, so what a user has already seen and turned down isn't proposed
+again from the same evidence. A first run reads the last 30 days. Stdlib only.
 """
 from __future__ import annotations
 
@@ -35,6 +39,7 @@ CORRECTION = re.compile(
 )
 SHORT_REPLY_WORDS = 2
 CONTEXT_CHARS = 240
+FIRST_RUN_DAYS = 30
 
 
 @dataclass
@@ -216,8 +221,10 @@ def scan_session(path: Path, since: str | None, include_tests: bool, digest: Dig
             take_snapshot(record, digest)
             human = (record.get("origin") or {}).get("kind") == "human" and not record.get("isMeta")
             when = minute(record.get("timestamp"))
-            day = when[:10]
-            too_old = since and day and day < since
+            # To the second, as the last run is kept. A date sorts before every time on that day, so a
+            # --since date keeps the whole day.
+            stamp = (record.get("timestamp") or "")[:19].replace("T", " ")
+            too_old = since and stamp and stamp < since
             if not include_tests and is_test(record):
                 # Counted only from --since on, and once per id, as the messages themselves are.
                 digest.skipped += human and not too_old and digest.first_time(record.get("uuid"))
@@ -290,11 +297,19 @@ def read_memory(path: Path, scope: str) -> Memory:
                   meta.get("description", ""), body.strip())
 
 
-def memory_files(folder: Path) -> list[Path]:
-    return sorted(p for p in folder.glob("*.md") if p.name != "MEMORY.md") if folder.is_dir() else []
+def memory_files(folder: Path, since: str | None = None) -> list[Path]:
+    """The memories in folder, or only those written or changed from since on."""
+    if not folder.is_dir():
+        return []
+    files = (p for p in folder.glob("*.md") if p.name != "MEMORY.md")
+    return sorted(p for p in files if not since or utc_second(p.stat().st_mtime) >= since)
 
 
-def scan(config: Path, since: str | None, include_tests: bool) -> Digest:
+def utc_second(seconds: float) -> str:
+    return datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def scan(config: Path, since: str | None, include_tests: bool, memories_since: str | None = None) -> Digest:
     digest = Digest(claude_md=config / "CLAUDE.md")
     projects = config / "projects"
     slugs: dict[str, str] = {}
@@ -304,13 +319,13 @@ def scan(config: Path, since: str | None, include_tests: bool) -> Digest:
     digest.messages.sort(key=lambda m: m.when)
     digest.refusals.sort(key=lambda r: r.when)
     digest.snapshots.sort()
-    for path in memory_files(config / "memory"):
+    for path in memory_files(config / "memory", memories_since):
         digest.memories.append(read_memory(path, "global"))
     for folder in sorted(projects.glob("*/memory")):
         scope = slugs.get(folder.parent.name, folder.parent.name)
         if not include_tests and (scope.startswith("/tmp/") or folder.parent.name.startswith("-tmp")):
             continue
-        for path in memory_files(folder):
+        for path in memory_files(folder, memories_since):
             digest.memories.append(read_memory(path, scope))
     return digest
 
@@ -348,8 +363,8 @@ def line_times(text: str, snapshots: list[tuple[str, int, bool, str]], changed: 
     return out
 
 
-def render(digest: Digest, claude_md: Path, max_chars: int) -> str:
-    out: list[str] = ["# Session history digest", ""]
+def render(digest: Digest, claude_md: Path, max_chars: int, window: str = "All history.") -> str:
+    out: list[str] = ["# Session history digest", "", window]
     messages = digest.messages
     projects = {m.project for m in messages}
     dates = [m.when[:10] for m in messages if m.when]
@@ -395,44 +410,44 @@ def render(digest: Digest, claude_md: Path, max_chars: int) -> str:
             out.append(f"  Claude before: {quote(m.context, CONTEXT_CHARS + 1)}")
         out.append(f"  User: {quote(m.text, max_chars)}")
 
+    # The docs' test for a CLAUDE.md line: the same thing said again. A one-off message isn't
+    # evidence of a rule, and a short reply or a bare command isn't an instruction.
     groups: dict[str, list[Message]] = defaultdict(list)
     for m in messages:
-        if not m.flags:
-            groups[norm(m.text)].append(m)
-    short: Counter[str] = Counter()
-    commands: Counter[str] = Counter()
-    repeated, by_project = [], defaultdict(list)
-    for key, group in groups.items():
-        if re.fullmatch(r"/\S+", key):
-            commands[group[0].text] += len(group)
-        elif len(key.split()) <= SHORT_REPLY_WORDS:
-            short[key] += len(group)
-        elif len({m.project for m in group}) > 1:
-            repeated.append(group)
-        else:
-            by_project[group[0].project].append(group)
-
-    def count(group: list[Message]) -> str:
-        return f" (×{len(group)})" if len(group) > 1 else ""
-
-    out += ["", f"## Said in more than one project ({len(repeated)})", ""]
+        key = norm(m.text)
+        if not m.flags and not re.fullmatch(r"/\S+", key) and len(key.split()) > SHORT_REPLY_WORDS:
+            groups[key].append(m)
+    repeated = [group for group in groups.values() if len(group) > 1]
+    out += ["", f"## Said more than once ({len(repeated)})", ""]
     for group in sorted(repeated, key=len, reverse=True):
         names = sorted({m.project for m in group})
-        out.append(f"- ×{len(group)} in {len(names)} projects ({', '.join(names)}): {quote(group[0].text, max_chars)}")
-    out += ["", "## Other messages, by project"]
-    for project in sorted(by_project, key=lambda p: -len(by_project[p])):
-        out += ["", f"### {project} ({len(by_project[project])})", ""]
-        out += [f"- {g[0].when[:10]}: {quote(g[0].text, max_chars)}{count(g)}" for g in by_project[project]]
-    out += ["", "## Short replies and commands", ""]
-    out.append("- Short replies: " + (", ".join(f"{k} ×{n}" for k, n in short.most_common(40)) or "none"))
-    out.append("- Commands without arguments: " + (", ".join(f"{k} ×{n}" for k, n in commands.most_common(40)) or "none"))
+        where = f"in {len(names)} projects" if len(names) > 1 else "in 1 project"
+        out.append(f"- ×{len(group)} {where} ({', '.join(names)}), last {group[-1].when[:10]}: "
+                   f"{quote(group[0].text, max_chars)}")
     return "\n".join(out) + "\n"
 
 
-def main(argv: list[str] | None = None) -> int:
+def window(config: Path, since: str | None, now: datetime) -> tuple[str, str | None, str]:
+    """Where this run's history starts, where its memories start, and a line saying so."""
+    if since:
+        return since, since, f"History and memories from {since} on (--since)."
+    last = config / "global-rules" / "last-run"
+    try:
+        previous = last.read_text().strip()
+    except OSError:
+        previous = ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?", previous):
+        return previous, previous, (f"History and memories since the last run, {previous[:16]} UTC. "
+                                    "Anything before it was in an earlier run's digest.")
+    start = (now - timedelta(days=FIRST_RUN_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    return start, None, (f"First run: history from the last {FIRST_RUN_DAYS} days, since {start[:16]} UTC, "
+                         "and every memory.")
+
+
+def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--since", type=parse_since, metavar="WHEN",
-                        help="only messages from this day on: YYYY-MM-DD, or Nd for the last N days")
+                        help="read from this day on instead of since the last run: YYYY-MM-DD, or Nd for the last N days")
     parser.add_argument("--include-tests", action="store_true",
                         help="keep scripted (SDK) sessions and sessions run under /tmp")
     parser.add_argument("--max-chars", type=int, default=500, help="cut each message after this many characters")
@@ -442,11 +457,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = Path(args.config_dir).expanduser()
-    digest = scan(config, args.since, args.include_tests)
-    text = render(digest, config / "CLAUDE.md", args.max_chars)
+    now = now or datetime.now(timezone.utc)
+    since, memories_since, says = window(config, args.since, now)
+    digest = scan(config, since, args.include_tests, memories_since)
+    text = render(digest, config / "CLAUDE.md", args.max_chars, says)
     out = Path(args.out).expanduser() if args.out else config / "global-rules" / "digest.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text)
+    # The next run starts here: what this one read, the user has seen.
+    last = config / "global-rules" / "last-run"
+    last.parent.mkdir(parents=True, exist_ok=True)
+    last.write_text(now.strftime("%Y-%m-%d %H:%M:%S") + "\n")
     print(f"Wrote {out} ({len(text):,} chars, {text.count(chr(10)):,} lines).")
     print(text.split("\n\n## ")[0].split("\n", 2)[2])
     return 0
