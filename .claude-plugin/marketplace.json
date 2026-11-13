@@ -23,11 +23,6 @@
       "description": "Memories Claude writes for every project, kept in ~/.claude/memory and loaded into each session, and /global-memory, a menu to browse, read and delete them."
     },
     {
-      "name": "global-rules",
-      "source": "./plugins/global-rules",
-      "description": "Keeps your CLAUDE.md files short, current and worded the way Claude Code's docs recommend: /global-rules:claude-md reads the current guidance before any change to one, a hook holds edits (and /init) until it has, and /global-rules:suggest turns a session's repeated corrections into rules for your global CLAUDE.md."
-    },
-    {
       "name": "github-tracking",
       "source": "./plugins/github-tracking",
       "description": "Keeps a repo's GitHub issues, milestones and Projects board true while Claude works: each change starts from an issue on the board, larger steps split into sub-issues, and status updates say where the project stands. /github-tracking:init sets up the board and its views."
