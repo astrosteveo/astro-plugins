@@ -10,13 +10,20 @@ The `claude` binary runs each hooks module (`plugins/<name>/hooks/register.ts` o
 
 ```
 claude plugin validate plugins/<name>
-claude plugin test plugins/<name>                      # TypeScript tests (*.test.ts, *.test.tsx)
-python3 -m unittest discover -s plugins/<name>/tests   # Python tests: stdlib unittest, not pytest
+claude plugin test plugins/<name>                      # TypeScript tests, for a plugin with hooks/hooks.json
+python3 -m unittest discover -s plugins/<name>/tests   # Python tests (test_*.py): stdlib unittest, not pytest
 claude plugin validate .                               # after editing .claude-plugin/marketplace.json
-uvx ruff check plugins && uvx ruff format plugins      # after changing Python
+uvx ruff check plugins && uvx ruff format --check plugins   # after changing Python
 ```
 
-The Python tests check the exact wording of SKILL.md and README files, and that a skill's `allowed-tools` lists every command its body names. Rerun them after rewording either.
+Run only the tests a plugin has: `claude plugin test` fails with "no hooks module to load" on a plugin without hooks, and unittest exits 5 with "NO TESTS RAN" on one without `test_*.py`.
+
+The Python tests check the exact wording of SKILL.md files, plain-english's output style and bug-hunt's README, and that a skill's `allowed-tools` lists every command its body names. Rerun them after rewording any of these.
+
+## Writing a plugin
+
+- `claude plugin validate` refuses a plugin name that starts with `claude-`, `anthropic-`, `anthropics-` or `cc-plugin-`.
+- Claude Code replaces `$ARGUMENTS` in a SKILL.md body with the skill's arguments when it loads, even inside backticks. Don't write it where you mean the word itself.
 
 ## See it working
 
@@ -42,4 +49,5 @@ tmux kill-session -t mod         # always clean up
 - The commit scope is the plugin's name, such as `fix(gates): …`. A change across the repo takes no scope.
 - A user-visible change to a plugin also updates its README, and its description in both `plugin.json` and `.claude-plugin/marketplace.json` when those no longer fit.
 - After each user-visible feat or fix, bump `version` in the plugin's `plugin.json` in a commit of its own: `chore(<name>): release X.Y.Z so installs get …`. Installs from GitHub stay on the old version until it changes.
+- A new plugin starts at version 0.1.0 in its feat commit, with no release commit.
 - Adding or dropping a plugin also updates PROJECT.md: the plugin count and list, Decisions and Status.
