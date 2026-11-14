@@ -14,7 +14,7 @@ This skill was invoked with: `$ARGUMENTS`
 These hold for the whole run, across turns:
 
 - **The working tree ends as it started.** Hunters only read. Confirming adds one repro at a time and removes exactly what it added. Never run `git checkout`, `git restore`, `git reset`, `git stash` or `git clean`: they would destroy the user's uncommitted work.
-- **The run file holds the state.** Write each finding to it as it arrives and build the report from it, so a long run loses nothing to compaction. After a compaction, read it to see what's done.
+- **The run file holds the state, however short the run.** Write each finding to it as it arrives and build the report from it. Once you remove a repro from the tree, the run file is the only place its code survives, and the user takes it from there as the failing test when they fix the bug. It also means a long run loses nothing to compaction: after a compaction, read it to see what's done.
 - **Report, don't fix.** Fix nothing unless the user asks after the report.
 
 ## 1. Pick the target
