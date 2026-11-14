@@ -444,9 +444,9 @@ class InventoryTest(unittest.TestCase):
             "src/{request_handler_number_a.py, ..., request_handler_number_h.py}",
         )
 
-    def test_the_script_parses_as_python_3_8(self):
-        # The plugins' constraint is Python 3.8+ with the standard library only.
-        ast.parse(SCRIPT.read_text(), feature_version=(3, 8))
+    def test_the_script_parses_as_python_3_11(self):
+        # The plugins' constraint is Python 3.11+ with the standard library only.
+        ast.parse(SCRIPT.read_text(), feature_version=(3, 11))
 
 
 if __name__ == "__main__":
