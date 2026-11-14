@@ -82,11 +82,12 @@ Run the slash-command cases with the plugin only, since without it `/bug-hunt:hu
 
 ```
 mkdir -p "$HOME/.cache/claude-plugin-eval"
-TMPDIR="$HOME/.cache/claude-plugin-eval" claude plugin eval plugins/bug-hunt --scaffold --allow-tools Bash Write Edit --runs 1 --tag slash --ablation none
-TMPDIR="$HOME/.cache/claude-plugin-eval" claude plugin eval plugins/bug-hunt --scaffold --allow-tools Bash Write Edit --runs 1 --tag plain-words
+TMPDIR="$HOME/.cache/claude-plugin-eval" claude plugin eval plugins/bug-hunt --scaffold --allow-tools Bash Write Edit --judge-model claude-sonnet-5-5 --runs 1 --tag slash --ablation none
+TMPDIR="$HOME/.cache/claude-plugin-eval" claude plugin eval plugins/bug-hunt --scaffold --allow-tools Bash Write Edit --judge-model claude-sonnet-5-5 --runs 1 --tag plain-words
 ```
 
 - `--scaffold` lets each case copy the fixture into its folder.
+- `--judge-model claude-sonnet-5-5` grades the replies with Sonnet. The default judge, Haiku, failed correct replies in 7 of the 21 runs it graded, three of them replies that called finding 3 "not a bug" in so many words. Sonnet passed all 3 reruns of that case unanimously and adds about $0.04 a run.
 - `TMPDIR` moves the run folders out of `/tmp`. The eval sandbox denies Bash writes under `/tmp`, and with the default `TMPDIR` that includes each run's own folder, so the skill couldn't remove a repro it added.
 - The sandbox denies git, so the fixture isn't a git repo. The evals cover the skill outside git. `diff`, PR and branch targets aren't covered.
 - On Claude Opus 5.5 with Claude Code 2.1.325, one run of every case costs about $2.50: about $0.60 for each slash-command case, $0.55 and $0.30 for the plain-words cases with the plugin, and $0.25 and $0.20 without it.

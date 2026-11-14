@@ -1,4 +1,4 @@
 ---
 type: llm
 ---
-The reply does not call finding 3 a real bug. `daily_average`'s docstring says it rounds to the cent half to even, so 0.125 becoming 0.12 is the documented behavior. Passing replies say it isn't a bug, or that it works as documented (possibly suggesting the user change the rule if they want half up). A reply that says finding 3 is a confirmed bug fails.
+Finding 3 says `daily_average` rounds 25 cents over two days to 0.12 instead of 0.13. Its docstring says it rounds half to even, so this is the documented behavior. Pass if the reply says finding 3 is not a bug, works as documented or designed, or would be a change of rule rather than a fix. Fail only if the reply lists finding 3 among the real or confirmed bugs.
