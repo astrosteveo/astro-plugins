@@ -56,9 +56,8 @@ class BothSkillsTest(unittest.TestCase):
         self.assertEqual(named["track"], {"show", "move", "sub", "update"})
         self.assertEqual(named["init"], {"show", "views", "move", "update"})
         for command in named["track"] | named["init"]:
-            with (
-                self.assertRaises(SystemExit) as done,
-                contextlib.redirect_stdout(io.StringIO()),
+            with self.assertRaises(SystemExit) as done, contextlib.redirect_stdout(
+                io.StringIO()
             ):
                 board.main([command, "--help"])
             self.assertEqual(done.exception.code, 0, command)
