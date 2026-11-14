@@ -14,14 +14,16 @@ claude plugin test plugins/<name>                      # TypeScript tests, for a
 python3 -m unittest discover -s plugins/<name>/tests   # Python tests (test_*.py): stdlib unittest, not pytest
 claude plugin validate .                               # after editing .claude-plugin/marketplace.json
 uvx ruff check plugins && uvx ruff format --check plugins   # after changing Python
+uv run --python 3.11 --no-project python -m unittest discover -s plugins/<name>/tests   # after changing a skill script
 ```
 
 Run only the tests a plugin has: `claude plugin test` fails with "no hooks module to load" on a plugin without hooks, and unittest exits 5 with "NO TESTS RAN" on one without `test_*.py`.
 
-The Python tests check the exact wording of SKILL.md files, plain-english's output style and bug-hunt's README, and that a skill's `allowed-tools` lists every command its body names. Rerun them after rewording any of these.
+The Python tests check the exact wording of SKILL.md files, plain-english's output style, and bug-hunt's README and `agents/hunter.md`, and that a skill's `allowed-tools` lists every command its body names. Rerun them after rewording any of these.
 
 ## Writing a plugin
 
+- Skill scripts run as `python3` on the installer's machine and, like their tests, must work on Python 3.11 (PROJECT.md, Constraints). ruff's py311 target catches only syntax, not newer standard-library calls such as `itertools.batched`, so run the plugin's tests on 3.11 too.
 - `claude plugin validate` refuses a plugin name that starts with `claude-`, `anthropic-`, `anthropics-` or `cc-plugin-`.
 - Claude Code replaces `$ARGUMENTS` in a SKILL.md body with the skill's arguments when it loads, even inside backticks. Don't write it where you mean the word itself.
 
@@ -31,8 +33,8 @@ Check each change in a second Claude Code session in tmux, with the `try-plugin`
 
 ## Commits and releases
 
-- The commit scope is the plugin's name, such as `fix(gates): …`. A change across the repo takes no scope.
+- The commit scope is the plugin's name, such as `fix(gates): …`. A change across the repo takes no scope, and so do dropping a plugin, a marketplace-only change and listing a plugin in PROJECT.md.
 - A user-visible change to a plugin also updates its README, and its description in both `plugin.json` and `.claude-plugin/marketplace.json` when those no longer fit.
-- After each user-visible feat or fix, bump `version` in the plugin's `plugin.json` in a commit of its own: `chore(<name>): release X.Y.Z so installs get …`. Installs from GitHub stay on the old version until it changes.
+- In a PR with a user-visible feat or fix, bump `version` in the plugin's `plugin.json` once, in a commit of its own: `chore(<name>): release X.Y.Z so …`. Installs from GitHub stay on the old version until it changes.
 - A new plugin starts at version 0.1.0 in its feat commit, with no release commit.
 - Adding or dropping a plugin also updates PROJECT.md: the plugin count and list, Decisions and Status.
