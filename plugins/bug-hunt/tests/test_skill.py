@@ -157,6 +157,12 @@ class SkillTest(unittest.TestCase):
             self.front["description"],
         )
 
+    def test_the_run_file_is_kept_on_a_short_run_too(self):
+        # With compaction as its only reason, runs that confirmed a few findings skipped the run
+        # file, and their repros were lost when the temp folder was deleted.
+        self.assertIn("The run file holds the state, however short the run.", self.body)
+        self.assertIn("the only place its code survives", self.body)
+
     def test_the_run_folder_ignores_itself(self):
         self.assertIn(
             "If `.bug-hunt/.gitignore` doesn't exist, create it holding the single line `*`",

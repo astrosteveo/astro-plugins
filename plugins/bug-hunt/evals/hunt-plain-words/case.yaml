@@ -1,0 +1,19 @@
+schema_version: "1.1"
+name: hunt-plain-words
+description: >
+  The whole-codebase hunt asked for in plain words, so it runs with and without the plugin: does the
+  skill trigger, and what does the hunt add over Claude on its own? Same fixture, bugs and decoy as
+  whole-codebase.
+expected_outcome: >
+  The three planted bugs are reported as confirmed, each with a repro that ran; the guarded division
+  isn't; the source is left as it was.
+tags: [plain-words, hunters]
+context:
+  scaffold_script: setup.sh
+execution:
+  max_turns: 150
+  timeout_seconds: 1800
+  allowed_tools: [Read, Grep, Glob, Bash, Write, Edit, Agent, Skill]
+  append_system_prompt: This folder is not a git repository, and git can't run in this environment.
+  prompt: |
+    Nobody has reviewed this codebase yet. Go through all of it and find the real bugs. I don't want guesses: prove each one before you tell me about it.

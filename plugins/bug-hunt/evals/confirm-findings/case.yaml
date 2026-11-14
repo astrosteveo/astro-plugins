@@ -1,0 +1,27 @@
+schema_version: "1.1"
+name: confirm-findings
+description: >
+  A user pastes four review findings on the ledger fixture and asks, in plain words, which are real.
+  One is real (a float loses a cent). One is wrong (the division is guarded). Two only look real: a
+  rounding complaint the docstring answers (half to even), and a crash on month 13, an input the CLI
+  refuses. Checks the skill triggers from plain words and holds a confirmation to a real input and a
+  written expectation.
+expected_outcome: >
+  The first finding is confirmed with a repro that ran; the division and the rounding are not bugs;
+  the month-13 crash isn't confirmed as stated, since 13 isn't a month the program accepts; nothing
+  is fixed.
+tags: [plain-words]
+context:
+  scaffold_script: setup.sh
+execution:
+  max_turns: 80
+  timeout_seconds: 1200
+  allowed_tools: [Read, Grep, Glob, Bash, Write, Edit, Agent, Skill]
+  append_system_prompt: This folder is not a git repository, and git can't run in this environment.
+  prompt: |
+    A reviewer left these findings on my ledger code. Before I fix anything, check each one by reproducing it and tell me which are real bugs:
+
+    1. parse_amount loses a cent on amounts like 19.99, because it goes through a float.
+    2. daily_average divides by zero for a month with no entries.
+    3. daily_average rounds half a cent down: 25 cents spent over two days averages 0.12, not 0.13.
+    4. month_range crashes on month 13 with a ValueError.

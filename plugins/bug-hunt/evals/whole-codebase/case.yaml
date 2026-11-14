@@ -1,0 +1,18 @@
+schema_version: "1.1"
+name: whole-codebase
+description: >
+  /bug-hunt:hunt with no arguments on the ledger fixture, a 250-line Python package with three
+  planted bugs (a December crash, a lost cent from float arithmetic, untagged entries that load back
+  with a blank tag) and one decoy (a division the code guards).
+expected_outcome: >
+  The three planted bugs are reported as confirmed, each with a repro that ran and the output that
+  shows the failure; the guarded division isn't; the source is left as it was.
+tags: [slash, hunters]
+context:
+  scaffold_script: setup.sh
+execution:
+  max_turns: 150
+  timeout_seconds: 1800
+  allowed_tools: [Read, Grep, Glob, Bash, Write, Edit, Agent, Skill]
+  append_system_prompt: This folder is not a git repository, and git can't run in this environment.
+  prompt: /bug-hunt:hunt
