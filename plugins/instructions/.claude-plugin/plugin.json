@@ -1,0 +1,9 @@
+{
+  "name": "instructions",
+  "version": "0.1.0",
+  "description": "/instructions:init sets up a project's CLAUDE.md and CLAUDE.local.md and your global ~/.claude/CLAUDE.md, with optional skills and hooks. A fork of Claude Code's new /init that shows every draft in full and waits for your reply before writing, so it never asks you to approve a proposal it didn't show.",
+  "author": {
+    "name": "astrosteveo"
+  },
+  "license": "MIT"
+}
