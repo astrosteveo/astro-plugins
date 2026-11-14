@@ -54,7 +54,7 @@ The second run labelled 44 findings confirmed. 4 of those carried notes that the
 
 ## Requirements
 
-- `python3` 3.8 or later for the map. Without it, the skill is told to map from `git ls-files` and say the map is rougher; that hasn't been tried in a session yet.
+- `python3` 3.11 or later for the map. Without it, the skill is told to map from `git ls-files` and say the map is rougher; that hasn't been tried in a session yet.
 - git for change targets and recent-commit counts. A folder that isn't a git repo can still be hunted by path or whole.
 - `gh` only for a PR target.
 
