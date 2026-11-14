@@ -1,2 +1,2 @@
-# Skill scripts must run on Python 3.8+ (PROJECT.md, Constraints).
-target-version = "py38"
+# Skill scripts and their tests must run on Python 3.11+ (PROJECT.md, Constraints).
+target-version = "py311"
