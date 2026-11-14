@@ -18,7 +18,7 @@ Or ask Claude to set up or redo a CLAUDE.md. For a one-line change to one of the
 | --- | --- |
 | Start | Prints a short primer, checks which of the three files exist, and asks which to set up. Pick any of Project, Personal and Global, or "Let Claude decide" |
 | Choose | For each picked file that exists, asks whether to review and improve it or start fresh, and whether to set up skills and hooks too |
-| Explore | A subagent surveys the repo. For the global file, another surveys your Claude Code settings, output style and memories, the projects your recent sessions ran in, your machine's tools and shell, and the corrections you gave in your last 40 sessions |
+| Explore | A subagent surveys the repo. For the global file, another surveys your Claude Code settings, output style and memories, the projects your recent sessions ran in, your machine's tools and shell, and the corrections you gave in your last 40 sessions. That survey reads a lot: it took 13 minutes in testing |
 | Fill gaps | Asks only what the files can't answer, each question with the evidence it rests on |
 | Draft | Shows each new file in full and each edit to an existing file as a diff, lists the skills and hooks, then stops and waits for your reply |
 | You reply | Answer "write it", pick edits by number ("1, 3"), or say what to change. Nothing is written before that |
