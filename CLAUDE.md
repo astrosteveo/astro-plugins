@@ -27,22 +27,7 @@ The Python tests check the exact wording of SKILL.md files, plain-english's outp
 
 ## See it working
 
-Run a second Claude Code session with the plugin loaded in a detached tmux session, drive it with keys and read the screen back. Never drive the user's own session.
-
-```
-tmux new-session -d -s mod -x 220 -y 60 -c "$PWD" 'claude --plugin-dir plugins/<name>'
-# Wait for the prompt box (its placeholder starts with: Try ") before typing.
-# Keys sent while Claude is still starting are lost.
-tmux send-keys -t mod 'Read README.md and summarise it'
-tmux send-keys -t mod C-m        # submit with its own C-m; Enter sent with the text doesn't submit
-tmux capture-pane -t mod -p      # read the screen
-tmux kill-session -t mod         # always clean up
-```
-
-- Wait on the screen, not the clock: poll `tmux capture-pane -t mod -p | grep -q '<text>'` in an until-loop.
-- A first launch may stop at a trust or login prompt. Read the capture and answer it with `send-keys`.
-- After editing the plugin, send `/reload-plugins` to the tmux session to pick up the change.
-- End a change with a capture of the screen that shows it working, alongside the passing tests.
+Check each change in a second Claude Code session in tmux, with the `try-plugin` skill. Never drive the user's own session. End a change with a capture of the screen that shows it working, alongside the passing tests.
 
 ## Commits and releases
 
