@@ -1,0 +1,17 @@
+schema_version: "1.1"
+name: symptom
+description: >
+  /bug-hunt:hunt with a symptom in words on the ledger fixture. The symptom's cause is a seam: the
+  store saves tags as one string and loads `[]` back as `[""]`, and the report shows it.
+expected_outcome: >
+  The hunt traces the symptom to Ledger.save and Ledger.load and confirms it with a repro that ran;
+  the source is left as it was.
+tags: [slash, hunters]
+context:
+  scaffold_script: setup.sh
+execution:
+  max_turns: 120
+  timeout_seconds: 1500
+  allowed_tools: [Read, Grep, Glob, Bash, Write, Edit, Agent, Skill]
+  append_system_prompt: This folder is not a git repository, and git can't run in this environment.
+  prompt: /bug-hunt:hunt the --by-tag report lists a tag with no name, holding the total of entries I never tagged
