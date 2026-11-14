@@ -109,6 +109,12 @@ class InitTest(unittest.TestCase):
         self.assertIn("run `/instructions:init` again", self.body)
         self.assertNotRegex(self.body, r"`/init`")
 
+    def test_the_body_has_no_placeholder_claude_code_would_fill_in(self):
+        # Claude Code replaces $ARGUMENTS, $ARGUMENTS[N] and $N in a skill's body when it loads,
+        # even inside backticks. "use `$ARGUMENTS` to take input" reached Claude as "use `` to take
+        # input".
+        self.assertNotRegex(self.body, r"\$(ARGUMENTS|\d)")
+
     def test_the_description_fits_the_skill_listing(self):
         # Claude Code cuts a skill's description off at 1,536 characters in its listing.
         description = field(self.front, "description")

@@ -189,7 +189,7 @@ description: <what the skill does and when to use it>
 <Instructions for Claude>
 ```
 
-Both the user (`/<skill-name>`) and Claude can invoke a skill by default. For a workflow with side effects (e.g., `/deploy`, `/fix-issue 123`), add `disable-model-invocation: true` so only the user can start it, and use `$ARGUMENTS` to take input.
+Both the user (`/<skill-name>`) and Claude can invoke a skill by default. For a workflow with side effects (e.g., `/deploy`, `/fix-issue 123`), add `disable-model-invocation: true` so only the user can start it, and take its input from the arguments placeholder: a dollar sign followed by `ARGUMENTS`.
 
 ## Phase 7: Suggest additional optimizations
 
