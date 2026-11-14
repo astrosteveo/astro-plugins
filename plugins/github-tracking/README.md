@@ -41,7 +41,7 @@ board.py update on-track FILE       # a status update: on-track, at-risk, off-tr
 board.py views                      # the board's views of its open work, milestones and recently done issues
 ```
 
-`--repo OWNER/NAME` works on another repo's board, and `--project NUMBER` picks one when a repo has several. It needs `gh` signed in with the `project` scope (`gh auth refresh -s project`) and Python 3.8 or later. Stdlib only.
+`--repo OWNER/NAME` works on another repo's board, and `--project NUMBER` picks one when a repo has several. It needs `gh` signed in with the `project` scope (`gh auth refresh -s project`) and Python 3.11 or later. Stdlib only.
 
 ## Views
 
